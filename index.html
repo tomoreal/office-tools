@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>財務データCSV 横展開ツール</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- SheetJS CDN (for Excel generation) -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+</head>
+
+<body>
+
+    <div class="container">
+        <div class="header">
+            <h1>財務データ変換ツール</h1>
+            <p>CSVファイルをアップロードすると、<br>ブラウザ上で安全にExcelファイルに変換します。<br>(サーバーには送信されません)</p>
+        </div>
+
+        <div class="upload-area" id="dropZone">
+            <i class="fas fa-cloud-upload-alt upload-icon"></i>
+            <div class="upload-text">CSVファイルをドラッグ＆ドロップ</div>
+            <div class="upload-hint">または、クリックしてファイルを選択</div>
+            <input type="file" name="file" id="fileInput" accept=".csv" required>
+            <div class="file-name" id="fileName"></div>
+        </div>
+
+        <button type="button" class="btn-submit" id="submitBtn" disabled>
+            <span class="btn-text">ブラウザで変換してダウンロード</span>
+            <div class="loader"></div>
+        </button>
+    </div>
+
+    <!-- Application Logic -->
+    <script src="app.js"></script>
+
+</body>
+
+</html>
