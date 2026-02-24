@@ -182,36 +182,56 @@ function generateExcelWorkbook(parsedData) {
         const headerRow = ["勘定科目", ...sortedYears];
         wsData.push(headerRow);
 
-        let maxColAWidth = 10; // デフォルトのA列幅
+        // 各列の最大幅を保持する配列 (ヘッダーの要素数分初期化)
+        const colWidths = new Array(headerRow.length).fill(0);
 
         // 文字列の表示幅（半角1、全角2想定）を概算する関数
         const getDisplayWidth = (str) => {
+            if (str === null || str === undefined) return 0;
+            const s = String(str);
             let len = 0;
-            for (let i = 0; i < str.length; i++) {
-                len += (str.charCodeAt(i) > 255) ? 2 : 1;
+            for (let i = 0; i < s.length; i++) {
+                len += (s.charCodeAt(i) > 255) ? 2 : 1;
             }
             return len;
         };
+
+        // ヘッダー行の幅を初期値として設定
+        headerRow.forEach((h, i) => {
+            colWidths[i] = getDisplayWidth(h);
+        });
 
         // データ行
         items.forEach(uniqueKey => {
             const displayName = parsedData.dictItemNames[typeName][uniqueKey] || uniqueKey;
 
-            // A列の最大幅を更新
-            const currentWidth = getDisplayWidth(displayName);
-            if (currentWidth > maxColAWidth) {
-                maxColAWidth = currentWidth;
+            // A列目の幅を更新
+            const aColWidth = getDisplayWidth(displayName);
+            if (aColWidth > colWidths[0]) {
+                colWidths[0] = aColWidth;
             }
 
             const row = [displayName];
 
-            sortedYears.forEach(year => {
+            sortedYears.forEach((year, idx) => {
                 let val = parsedData.dictData[typeName][uniqueKey][year] || "";
                 if (val !== "") {
                     // 数値に変換可能なものは数値にする
                     const numericVal = Number(val.replace(/,/g, ""));
                     if (!isNaN(numericVal) && val !== "-") {
                         val = numericVal;
+                        // 数値表示はカンマがつく分長くなる可能性を考慮
+                        // ざっくり元の文字列の長さをベースにするか数値文字列で計算
+                        const valWidth = getDisplayWidth(val.toLocaleString('en-US'));
+                        if (valWidth > colWidths[idx + 1]) {
+                            colWidths[idx + 1] = valWidth;
+                        }
+                    } else {
+                        // 文字列やハイフン
+                        const valWidth = getDisplayWidth(val);
+                        if (valWidth > colWidths[idx + 1]) {
+                            colWidths[idx + 1] = valWidth;
+                        }
                     }
                 }
                 row.push(val);
@@ -221,8 +241,8 @@ function generateExcelWorkbook(parsedData) {
 
         const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-        // A列の列幅を設定 (+2 は少しの余白)
-        ws['!cols'] = [{ wch: maxColAWidth + 2 }];
+        // 全列の幅を設定 (+2 は少しの余白)
+        ws['!cols'] = colWidths.map(w => ({ wch: w + 2 }));
 
         // 全セルのフォントを「ＭＳ 明朝」10ptに設定する ＆ 数値フォーマット指定
         for (let cellAddress in ws) {
