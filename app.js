@@ -182,9 +182,27 @@ function generateExcelWorkbook(parsedData) {
         const headerRow = ["勘定科目", ...sortedYears];
         wsData.push(headerRow);
 
+        let maxColAWidth = 10; // デフォルトのA列幅
+
+        // 文字列の表示幅（半角1、全角2想定）を概算する関数
+        const getDisplayWidth = (str) => {
+            let len = 0;
+            for (let i = 0; i < str.length; i++) {
+                len += (str.charCodeAt(i) > 255) ? 2 : 1;
+            }
+            return len;
+        };
+
         // データ行
         items.forEach(uniqueKey => {
             const displayName = parsedData.dictItemNames[typeName][uniqueKey] || uniqueKey;
+
+            // A列の最大幅を更新
+            const currentWidth = getDisplayWidth(displayName);
+            if (currentWidth > maxColAWidth) {
+                maxColAWidth = currentWidth;
+            }
+
             const row = [displayName];
 
             sortedYears.forEach(year => {
@@ -203,7 +221,10 @@ function generateExcelWorkbook(parsedData) {
 
         const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-        // 全セルのフォントを「ＭＳ 明朝」10ptに設定する
+        // A列の列幅を設定 (+2 は少しの余白)
+        ws['!cols'] = [{ wch: maxColAWidth + 2 }];
+
+        // 全セルのフォントを「ＭＳ 明朝」10ptに設定する ＆ 数値フォーマット指定
         for (let cellAddress in ws) {
             if (cellAddress.startsWith("!")) continue;
 
@@ -212,6 +233,11 @@ function generateExcelWorkbook(parsedData) {
 
             ws[cellAddress].s.font.name = "ＭＳ 明朝";
             ws[cellAddress].s.font.sz = 10;
+
+            // 数値に関するフォーマット（3桁区切り、マイナスは赤字）
+            if (ws[cellAddress].t === "n") {
+                ws[cellAddress].z = '#,##0_ ;[赤]-#,##0 ';
+            }
         }
 
         XLSX.utils.book_append_sheet(wb, ws, safeTitle);
