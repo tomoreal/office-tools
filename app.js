@@ -236,7 +236,7 @@ function generateExcelWorkbook(parsedData) {
 
             // 数値に関するフォーマット（3桁区切り、マイナスは赤字）
             if (ws[cellAddress].t === "n") {
-                ws[cellAddress].z = '#,##0_ ;[赤]-#,##0 ';
+                ws[cellAddress].z = '#,##0_ ;[Red]\\-#,##0\\ ';
             }
         }
 
