@@ -1,4 +1,10 @@
 venv/
 *.csv
 *.xlsx
+*.zip
 __pycache__/
+.vscode/
+.DS_Store
+.gitignore
+.gitignore_global
+edinet_taxonomies/
