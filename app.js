@@ -1,4 +1,4 @@
-// 財務データ 横展開変換ロジック (JavaScript版) v1.2
+// 財務データ 横展開変換ロジック (JavaScript版) v1.3
 const TARGET_SHEET_NAMES = [
     "連結貸借対照表",
     "連結財政状態計算書", // IFRS BS
@@ -11,13 +11,24 @@ const TARGET_SHEET_NAMES = [
 
 const SHEET_MAPPING = {
     "連結貸借対照表": "連結貸借対照表",
-    "連結財政状態計算書": "連結財政状態計算書",
+    "連結財政状態計算書": "連結貸借対照表", // 貸借対照表系は内部で「連結貸借対照表」に統合
     "連結損益計算書": "連結損益計算書",
     "連結包括利益計算書": "連結損益計算書", // 損益系は統合
     "連結損益（及び包括利益）計算書": "連結損益計算書", // 損益系は統合
     "連結キャッシュ・フロー計算書": "連結キャッシュ・フロー計算書",
     "連結株主資本等変動計算書": "連結株主資本等変動計算書"
 };
+
+/**
+ * 項目名の正規化 (横並びの不一致を解消するため)
+ */
+function normalizeKey(str) {
+    if (!str) return "";
+    return str.normalize('NFKC')
+        .replace(/\s+/g, '') // 空白除去
+        .replace(/[・\.．、，]/g, '') // 記号の揺れを除去
+        .replace(/[（\(\)）]/g, (m) => ({ '（': '(', '）': ')', '(': '(', ' )': ')' }[m]));
+}
 
 function processFinancialCSV(csvText) {
     const lines = csvText.split(/\r?\n/);
@@ -179,7 +190,7 @@ function processFinancialCSV(csvText) {
             }
             hierarchyStack.push([indentLevel, col0]);
 
-            const uniqueKey = hierarchyStack.map(x => x[1]).join("::");
+            const uniqueKey = hierarchyStack.map(x => normalizeKey(x[1])).join("::");
 
             dictItemNames[currentBaseType][uniqueKey] = itemName;
 
@@ -242,6 +253,15 @@ function generateExcelWorkbook(parsedData) {
             const targetYears = sortedYears.filter(y => yearStandards[y] === std);
             if (targetYears.length === 0) return;
 
+            // シート名の決定
+            let suffix = (std === "IFRS") ? "(IFRS)" : "(日本基準)";
+            let sheetTitle = baseType + suffix;
+
+            // 特殊対応: IFRSの貸借対照表は「連結財政状態計算書(IFRS)」とする
+            if (baseType === "連結貸借対照表" && std === "IFRS") {
+                sheetTitle = "連結財政状態計算書(IFRS)";
+            }
+
             const items = parsedData.dictItemsOrder[baseType];
             // この基準（std）において、少なくとも1つの年度で値が存在する項目のみを抽出
             const validItems = items.filter(uniqueKey => {
@@ -249,10 +269,6 @@ function generateExcelWorkbook(parsedData) {
             });
 
             if (validItems.length === 0) return;
-
-            // シート名の決定
-            let suffix = (std === "IFRS") ? "(IFRS)" : "(日本基準)";
-            let sheetTitle = baseType + suffix;
 
             // 最大31文字かつ特殊文字を除外したシート名
             const safeTitle = sheetTitle.replace(/[・ \/]/g, "").substring(0, 31);
