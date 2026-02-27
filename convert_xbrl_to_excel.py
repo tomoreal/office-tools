@@ -5,6 +5,7 @@ import tempfile
 import shutil
 import glob
 from bs4 import BeautifulSoup
+from lxml import etree
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
@@ -44,7 +45,7 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
     }
     
     if year not in urls:
-        print(f"Taxonomy for year {year} not found in our known URL map.")
+        print(f"Taxonomy for year {year} not found in our known URL map.", file=sys.stderr)
         return {}
         
     tax_dir = os.path.join(cache_dir, year)
@@ -57,17 +58,17 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
     if not os.path.exists(tax_dir):
         os.makedirs(tax_dir, exist_ok=True)
         zip_path = os.path.join(tax_dir, 'taxonomy.zip')
-        print(f"Downloading EDINET taxonomy for {year} (takes a moment)...")
+        print(f"Downloading EDINET taxonomy for {year} (takes a moment)...", file=sys.stderr)
         try:
             urllib.request.urlretrieve(urls[year], zip_path)
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(tax_dir)
             os.remove(zip_path)
         except Exception as e:
-            print(f"Failed to download/extract taxonomy for {year}: {e}")
+            print(f"Failed to download/extract taxonomy for {year}: {e}", file=sys.stderr)
             return {}
             
-    print(f"Parsing EDINET taxonomy labels for {year}...")
+    print(f"Parsing EDINET taxonomy labels for {year}...", file=sys.stderr)
     lab_files = glob.glob(os.path.join(tax_dir, '**', '*_lab.xml'), recursive=True)
     all_labels = {}
     
@@ -88,62 +89,91 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
 
 
 def parse_labels_file(lab_file):
+    """Parse an XBRL label linkbase using lxml for robust namespace handling.
+    Returns a dict mapping element QNames (with ':' replaced by '_' ) to Japanese labels.
+    """
     labels = {}
     try:
-        with open(lab_file, 'r', encoding='utf-8') as f:
-            soup = BeautifulSoup(f.read(), 'lxml')
-    except:
+        # Parse XML with lxml to respect namespaces and recover from minor errors
+        parser = etree.XMLParser(recover=True)
+        tree = etree.parse(lab_file, parser)
+    except Exception as e:
+        # If parsing fails, return empty mapping
         return labels
 
-    locs = soup.find_all('link:loc')
-    if not locs: # BeautifulSoup with lxml might lowercase tags
-        locs = soup.find_all('link:loc'.lower())
-        
-    href_to_label_id = {}
-    for loc in locs:
-        href = loc.get('xlink:href')
-        label_id = loc.get('xlink:label')
-        if href and label_id:
-            element_name = href.split('#')[-1]
-            href_to_label_id[label_id] = element_name
-            
-    arcs = soup.find_all('link:labelarc')
-    if not arcs:
-        arcs = soup.find_all('link:labelArc')
-        
-    label_id_to_res_id = {}
-    for arc in arcs:
-        from_id = arc.get('xlink:from')
-        to_id = arc.get('xlink:to')
-        if from_id and to_id:
-            label_id_to_res_id[from_id] = to_id
-            
-    res_labels = soup.find_all('link:label')
-    if not res_labels:
-        res_labels = soup.find_all('link:label'.lower())
-        
-    res_id_to_text = {}
-    for res in res_labels:
-        res_id = res.get('xlink:label')
-        role = res.get('xlink:role')
-        if res.get('xml:lang') == 'ja':
-            text = res.text.strip()
-            if role == 'http://www.xbrl.org/2003/role/verboseLabel':
-                res_id_to_text[res_id] = text 
-            elif res_id not in res_id_to_text:
-                res_id_to_text[res_id] = text
+    # Namespace map for XBRL linkbase
+    ns = {
+        "link": "http://www.xbrl.org/2003/linkbase",
+        "xlink": "http://www.w3.org/1999/xlink",
+        "xml": "http://www.w3.org/XML/1998/namespace"
+    }
 
+    # 1. Locate all <link:loc> elements to map label IDs to element QNames
+    href_to_label_id = {}
+    for loc in tree.xpath("//link:loc", namespaces=ns):
+        href = loc.get("{http://www.w3.org/1999/xlink}href")
+        label_id = loc.get("{http://www.w3.org/1999/xlink}label")
+        if href and label_id:
+            # Element name may be a QName like jppfs_cor:CashAndDeposits
+            element_name = href.split('#')[-1].replace(':', '_')
+            href_to_label_id[label_id] = element_name
+
+    # 2. Filter arcs to only concept‑label relationships (collect ALL associated resource IDs)
+    label_id_to_res_ids = {}
+    arc_xpath = "//link:labelArc[@xlink:arcrole='http://www.xbrl.org/2003/arcrole/concept-label']"
+    for arc in tree.xpath(arc_xpath, namespaces=ns):
+        from_id = arc.get("{http://www.w3.org/1999/xlink}from")
+        to_id = arc.get("{http://www.w3.org/1999/xlink}to")
+        if from_id and to_id:
+            if from_id not in label_id_to_res_ids:
+                label_id_to_res_ids[from_id] = []
+            label_id_to_res_ids[from_id].append(to_id)
+
+    # 3. Gather label resources (<link:label>) with Japanese language
+    res_id_to_text = {}
+    res_id_to_priority = {}
+    # Role priority: standard label (label) > verboseLabel > others
+    role_priority = {
+        "http://www.xbrl.org/2003/role/label": 1,
+        "http://www.xbrl.org/2003/role/verboseLabel": 2,
+        "http://www.xbrl.org/2003/role/totalLabel": 3,
+        "http://www.xbrl.org/2003/role/terseLabel": 3
+    }
+    for res in tree.xpath("//link:label", namespaces=ns):
+        # Only Japanese labels (support ja, ja-JP etc.)
+        lang = res.get("{http://www.w3.org/XML/1998/namespace}lang")
+        if not lang or not lang.startswith('ja'):
+            continue
+        res_id = res.get("{http://www.w3.org/1999/xlink}label")
+        role = res.get("{http://www.w3.org/1999/xlink}role")
+        if not res_id:
+            continue
+        text = ''.join(res.itertext()).strip()
+        priority = role_priority.get(role, 99)
+        # Keep the highest‑priority label for each resource ID
+        if (res_id not in res_id_to_text) or (priority < res_id_to_priority.get(res_id, 100)):
+            res_id_to_text[res_id] = text
+            res_id_to_priority[res_id] = priority
+
+    # 4. Build final mapping (pick the best label text among all resource IDs)
     for label_id, element_name in href_to_label_id.items():
-        res_id = label_id_to_res_id.get(label_id)
-        if res_id:
+        res_ids = label_id_to_res_ids.get(label_id, [])
+        best_text = None
+        best_priority = 100
+        
+        for res_id in res_ids:
             text = res_id_to_text.get(res_id)
-            if text:
-                labels[element_name] = text
-                if '_' in element_name:
-                    base = element_name.split('_')[-1]
-                    # Also map the un-prefixed version so dimension parsing can find it
-                    labels[base] = text
+            priority = res_id_to_priority.get(res_id, 99)
+            if text and priority < best_priority:
+                best_text = text
+                best_priority = priority
                 
+        if best_text:
+            labels[element_name] = best_text
+            # Also map the un‑prefixed base name for dimension parsing
+            if '_' in element_name:
+                base = element_name.split('_')[-1]
+                labels[base] = best_text
     return labels
 
 def convert_camel_case_to_title(name):
@@ -152,78 +182,156 @@ def convert_camel_case_to_title(name):
     s1 = re.sub('(.)([A-Z][a-z]+)', r'\1 \2', name)
     return re.sub('([a-z0-9])([A-Z])', r'\1 \2', s1).title()
 
-def build_presentation_tree(pre_file):
-    print("Parsing presentation tree...", pre_file)
-    with open(pre_file, 'r', encoding='utf-8') as f:
-        soup = BeautifulSoup(f, 'xml')
+def parse_presentation_linkbase(pre_file):
+    print("Parsing presentation linkbase...", pre_file, file=sys.stderr)
+    try:
+        # Use lxml for robust namespace handling and performance
+        parser = etree.XMLParser(recover=True)
+        tree = etree.parse(pre_file, parser)
+    except Exception as e:
+        print(f"Error parsing presentation linkbase: {e}", file=sys.stderr)
+        return {}
 
-    # Group by Role (e.g., BalanceSheet, IncomeStatement)
-    roles = {}
-    role_refs = soup.find_all('link:roleRef')
-    # Actually presentationLinks group by role
-    pre_links = soup.find_all('link:presentationLink')
+    ns = {
+        "link": "http://www.xbrl.org/2003/linkbase",
+        "xlink": "http://www.w3.org/1999/xlink"
+    }
+
+    # 1. Group by role URI first
+    role_to_content = {} # {role_uri: {'locs': {label: element}, 'arcs': [arc_dicts]}}
     
-    statement_trees = {}
-    
-    for link in pre_links:
-        role = link.get('xlink:role')
-        if not role: continue
+    links = tree.xpath("//link:presentationLink", namespaces=ns)
+    for link in links:
+        role_uri = link.get("{http://www.w3.org/1999/xlink}role")
+        if not role_uri:
+            continue
         
-        # Filter roles for important statements (Consolidated BS, PL, CF)
-        # Roles look like: http://disclosure.edinet-fsa.go.jp/role/jppfs/rol_BalanceSheet
-        role_name = role.split('/')[-1]
-        
-        # Map locators
-        locs = link.find_all('link:loc')
-        label_to_element = {}
+        if role_uri not in role_to_content:
+            role_to_content[role_uri] = {'locs': {}, 'arcs': []}
+            
+        # Map locators in this link
+        locs = link.xpath("link:loc", namespaces=ns)
         for loc in locs:
-            href = loc.get('xlink:href')
-            label = loc.get('xlink:label')
+            href = loc.get("{http://www.w3.org/1999/xlink}href")
+            label = loc.get("{http://www.w3.org/1999/xlink}label")
             if href and label:
-                element_name = href.split('#')[-1]
-                label_to_element[label] = element_name
+                # Normalize element name: replace ':' with '_' to match facts and labels
+                element_name = href.split('#')[-1].replace(':', '_')
+                role_to_content[role_uri]['locs'][label] = element_name
                 
-        # Map arcs (parent-child relationships)
-        arcs = link.find_all('link:presentationArc')
+        # Map arcs in this link
+        arcs = link.xpath("link:presentationArc", namespaces=ns)
+        for arc in arcs:
+            from_id = arc.get("{http://www.w3.org/1999/xlink}from")
+            to_id = arc.get("{http://www.w3.org/1999/xlink}to")
+            order = arc.get("order")
+            if from_id and to_id:
+                role_to_content[role_uri]['arcs'].append({
+                    'from': from_id,
+                    'to': to_id,
+                    'order': float(order) if order else 0.0
+                })
+
+    statement_trees = {} # {role_name: [arc_dicts]}
+    
+    for role_uri, content in role_to_content.items():
+        role_name = role_uri.split('/')[-1]
+        label_to_element = content['locs']
         
         parent_child = []
-        for arc in arcs:
-            from_id = arc.get('xlink:from')
-            to_id = arc.get('xlink:to')
-            order = arc.get('order')
-            if from_id and to_id:
+        for arc in content['arcs']:
+            p = label_to_element.get(arc['from'])
+            c = label_to_element.get(arc['to'])
+            if p and c:
                 parent_child.append({
-                    'parent': label_to_element.get(from_id),
-                    'child': label_to_element.get(to_id),
-                    'order': float(order) if order else 0
+                    'parent': p,
+                    'child': c,
+                    'order': arc['order']
                 })
                 
-        # Build hierarchy
-        if parent_child:
-            statement_trees[role_name] = parent_child
+        if not parent_child:
+            continue
+        
+        # Original role
+        statement_trees[role_name] = parent_child
+        
+        # Special logic for "jumbo" roles (e.g. Cabinet Office Ordinance Form 3)
+        # These roles often contain many independent financial statements under specific Heading elements.
+        jumbo_indicators = ['formno3', 'cabinetofficeordinance', 'annualsecuritiesreport']
+        if any(ji in role_name.lower() for ji in jumbo_indicators):
+            major_headings = [
+                'ConsolidatedBalanceSheetHeading', 'ConsolidatedStatementOfIncomeHeading', 
+                'ConsolidatedStatementOfCashFlowsHeading', 'ConsolidatedStatementOfChangesInEquityHeading',
+                'BalanceSheetHeading', 'StatementOfIncomeHeading', 'StatementOfChangesInEquityHeading',
+                'ConsolidatedStatementOfFinancialPositionIFRSHeading', 'ConsolidatedStatementOfProfitOrLossIFRSHeading',
+                'ConsolidatedStatementOfCashFlowsIFRSHeading', 'ConsolidatedStatementOfChangesInEquityIFRSHeading',
+                'ConsolidatedStatementOfFinancialPositionHeading', 
+                'ConsolidatedStatementOfProfitOrLossHeading',
+                'ConsolidatedStatementOfComprehensiveIncomeIFRSHeading',
+                'SummaryOfBusinessResultsHeading', 'BusinessResultsOfGroupHeading', 'BusinessResultsOfReportingCompanyHeading'
+            ]
             
+            all_elements = label_to_element.values()
+            for h in major_headings:
+                # Look for ALL elements that end with the heading name (handles prefixes and underscores)
+                h_elements = [el for el in all_elements if el.endswith(h)]
+                
+                for h_element in h_elements:
+                    # Extract subtree starting from this heading
+                    subtree_arcs = []
+                    queue = [h_element]
+                    seen = {h_element}
+                    while queue:
+                        curr_parent = queue.pop(0)
+                        for arc in parent_child:
+                            if arc['parent'] == curr_parent:
+                                subtree_arcs.append(arc)
+                                if arc['child'] not in seen:
+                                    seen.add(arc['child'])
+                                    queue.append(arc['child'])
+                    
+                    if subtree_arcs:
+                        virtual_role = h_element
+                        if virtual_role.endswith('Heading'):
+                            virtual_role = virtual_role[:-7]
+                        statement_trees[virtual_role] = subtree_arcs
+                        
     return statement_trees
 
 def parse_instance_contexts_and_units(xbrl_file, labels_map):
-    print("Parsing XBRL contexts and units...", xbrl_file)
-    with open(xbrl_file, 'r', encoding='utf-8') as f:
-        soup = BeautifulSoup(f, 'xml')
-        
+    print("Parsing XBRL contexts and units...", xbrl_file, file=sys.stderr)
+    try:
+        # Use lxml for robust namespace handling
+        parser = etree.XMLParser(recover=True)
+        tree = etree.parse(xbrl_file, parser)
+    except Exception as e:
+        print(f"Error parsing XBRL instance: {e}", file=sys.stderr)
+        return {}, {}
+
+    # Standard namespaces for XBRL instance and dimensions
+    ns = {
+        "xbrli": "http://www.xbrl.org/2003/instance",
+        "xbrldi": "http://xbrl.org/2006/xbrldi"
+    }
+
     contexts = {}
     
-    for ctx in soup.find_all('context'):
+    # 1. Parse contexts
+    for ctx in tree.xpath("//xbrli:context", namespaces=ns):
         ctx_id = ctx.get('id')
         if not ctx_id:
             continue
             
-        members = ctx.find_all('xbrldi:explicitMember')
+        members = ctx.xpath(".//xbrldi:explicitMember", namespaces=ns)
         dimension_names = []
         for m in members:
-            member_val = m.text.split(':')[-1]
+            # Handle QNames in member text (e.g., jppfs_cor:EnergySegmentMember)
+            m_text = m.text or ""
+            member_val = m_text.split(':')[-1]
             if member_val in labels_map:
                 dimension_names.append(labels_map[member_val])
             elif member_val.endswith('Member'):
-                # fallback e.g. EnergySegmentMember -> Energy Segment
+                # Fallback: EnergySegmentMember -> Energy Segment
                 dimension_names.append(convert_camel_case_to_title(member_val.replace('Member', '')))
             else:
                 dimension_names.append(member_val)
@@ -232,29 +340,33 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
         # Clean up verbose XBRL labels
         dim_str = dim_str.replace(' [メンバー]', '').replace('、報告セグメント', '').replace('非連結又は個別', '単体')
             
-        period = ctx.find('period')
-        if period:
-            instant = period.find('instant')
-            end_date = period.find('endDate')
+        period_elem = ctx.xpath("xbrli:period", namespaces=ns)
+        if period_elem:
+            period_elem = period_elem[0]
+            instant = period_elem.xpath("xbrli:instant", namespaces=ns)
+            end_date = period_elem.xpath("xbrli:endDate", namespaces=ns)
             
             p_val = None
             if instant:
-                p_val = instant.text
+                p_val = instant[0].text
             elif end_date:
-                p_val = end_date.text
+                p_val = end_date[0].text
                 
             if p_val:
                 contexts[ctx_id] = (p_val, dim_str)
                 
     units = {}
-    for unit in soup.find_all('unit'):
+    # 2. Parse units
+    for unit in tree.xpath("//xbrli:unit", namespaces=ns):
         unit_id = unit.get('id')
-        if not unit_id: continue
+        if not unit_id:
+            continue
         
         is_jpy = False
-        if not unit.find('divide'):
-            measure = unit.find('measure')
-            if measure and 'JPY' in measure.text:
+        # Only consider simple units (non‑divide) for JPY amount identification
+        if not unit.xpath("xbrli:divide", namespaces=ns):
+            measure = unit.xpath(".//xbrli:measure", namespaces=ns)
+            if measure and 'JPY' in (measure[0].text or ""):
                 is_jpy = True
                 
         units[unit_id] = is_jpy
@@ -264,7 +376,7 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
 def parse_ixbrl_facts(ixbrl_files, contexts, units):
     facts = []
     for f in ixbrl_files:
-        print("Parsing Inline XBRL...", f)
+        print("Parsing Inline XBRL...", f, file=sys.stderr)
         # using lxml for faster html parsing, large files might take a while
         with open(f, 'r', encoding='utf-8') as file:
             soup = BeautifulSoup(file.read(), 'lxml')
@@ -273,35 +385,52 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
         for tag in tags:
             ctx_ref = tag.get('contextref')
             if ctx_ref and ctx_ref in contexts:
-                element_name = tag.get('name')
-                if element_name and ':' in element_name:
-                    # EDINET pre.xml uses jppfs_cor_CashAndDeposits, IXBRL uses jppfs_cor:CashAndDeposits
+                element_name = tag.get('name', '')
+                if ':' in element_name:
                     element_name = element_name.replace(':', '_')
-                elif element_name:
-                    element_name = element_name
-                    
-                unit_ref = tag.get('unitref')
-                is_jpy = units.get(unit_ref, False) if unit_ref else False
                     
                 value = tag.text.strip()
-                sign = tag.get('sign')
+                
+                # Filter out long text blocks (like HTML snippets) but keep short metadata
+                if tag.name == 'ix:nonnumeric':
+                    # Only keep core metadata like company name, date, etc.
+                    # Exclude: TextBlock, lengths > 100, sentences (。), or multiline
+                    if 'TextBlock' in element_name or len(value) > 100 or '。' in value or '\n' in value:
+                        continue
+                
                 valStr = ""
-                # handle signs, scales etc
-                scale = tag.get('scale', '0')
-                if tag.name == 'ix:nonfraction' and (value.replace(',','').isdigit() or (value.startswith('-') and value[1:].replace(',','').isdigit())):
+                if tag.name == 'ix:nonfraction':
+                    unit_ref = tag.get('unitref')
+                    is_jpy = units.get(unit_ref, False) if unit_ref else False
+                    sign = tag.get('sign')
+                    scale = tag.get('scale', '0')
+                    
+                    # Robust numeric detection (handle decimals and commas)
+                    clean_val = value.replace(',', '')
+                    is_numeric = False
                     try:
-                        amt_val = value.replace(',', '')
-                        amt = float(amt_val)
-                        if sign == '-': amt *= -1
-                        amt *= (10 ** int(scale))
-                        
-                        if is_jpy:
-                            amt /= 1000000.0
+                        float_val = float(clean_val)
+                        is_numeric = True
+                    except ValueError:
+                        is_numeric = False
+
+                    if is_numeric:
+                        try:
+                            amt = float(clean_val)
+                            if sign == '-': amt *= -1
+                            amt *= (10 ** int(scale))
                             
-                        valStr = str(int(amt)) if amt.is_integer() else str(amt)
-                    except:
+                            # Scaling: Only divide JPY currency amounts by 1M
+                            if is_jpy:
+                                amt /= 1000000.0
+                                
+                            valStr = str(int(amt)) if amt.is_integer() else str(amt)
+                        except:
+                            valStr = value
+                    else:
                         valStr = value
                 else:
+                    # For nonnumeric, just take the text value
                     valStr = value
                     
                 facts.append({
@@ -350,14 +479,12 @@ def create_hierarchy(parent_child_arcs):
         
     return ordered_items
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python convert_xbrl_to_excel.py <path_to_zip1> [<path_to_zip2> ...]")
-        sys.exit(1)
+def process_xbrl_zips(zip_paths, output_dir=None):
+    if not zip_paths:
+        return None
         
     global_element_period_values = {} # {element: {col_key: value}}
     merged_trees = {} # {role_name: {(parent, child): order}}
-    labels_map = {} # {element: label_text}
     labels_map = {} # {element: label_text}
     
     periods_seen = set()
@@ -366,10 +493,10 @@ def main():
     
     try:
         # Process each zip file
-        for zip_idx, zip_path in enumerate(sys.argv[1:]):
-            print(f"Processing {zip_path}...")
+        for zip_idx, zip_path in enumerate(zip_paths):
+            print(f"Processing {zip_path}...", file=sys.stderr)
             if not os.path.exists(zip_path):
-                print(f"File not found: {zip_path}")
+                print(f"File not found: {zip_path}", file=sys.stderr)
                 continue
                 
             extract_dir = os.path.join(temp_base, f"zip_{zip_idx}")
@@ -383,7 +510,7 @@ def main():
                 
             xbrl_files = find_xbrl_files(extract_dir)
             if not xbrl_files:
-                print(f"Could not find XBRL files in {zip_path}")
+                print(f"Could not find XBRL files in {zip_path}", file=sys.stderr)
                 continue
                 
             # Extract taxonomy year from _pre.xml to fetch standard labels
@@ -391,7 +518,8 @@ def main():
             if xbrl_files['pre']:
                 with open(xbrl_files['pre'], 'r', encoding='utf-8') as f:
                     content = f.read(4000) # Read start of file
-                    m = re.search(r'http://disclosure\.edinet-fsa\.go\.jp/taxonomy/jppfs/(\d{4})-\d{2}-\d{2}', content)
+                    # Support various standards like jppfs (J-GAAP), jpigp (IFRS), etc.
+                    m = re.search(r'http://disclosure\.edinet-fsa\.go\.jp/taxonomy/[a-z]+(?:_[a-z]+)?/(\d{4})-\d{2}-\d{2}', content)
                     if m:
                         taxonomy_year = m.group(1)
             
@@ -401,11 +529,14 @@ def main():
 
             # Extract local report labels
             for lf in xbrl_files.get('lab', []):
-                print(f"Parsing local labels... {lf}")
+                print(f"Parsing local labels... {lf}", file=sys.stderr)
                 local_labels = parse_labels_file(lf)
-                labels_map.update(local_labels)
+                # Standard priority: only add if not already in labels_map
+                for k, v in local_labels.items():
+                    if k not in labels_map:
+                        labels_map[k] = v
             
-            trees = build_presentation_tree(xbrl_files['pre'])
+            trees = parse_presentation_linkbase(xbrl_files['pre'])
             
             contexts, units = parse_instance_contexts_and_units(xbrl_files['xbrl'], labels_map)
             
@@ -445,7 +576,7 @@ def main():
                     if parts[1].isdigit():
                         sub_role_idx = int(parts[1]) * 1000
                     role = parts[0]
-                if not (base_name.startswith('Consolidated') or base_name.startswith('Statement') or base_name.startswith('BalanceSheet') or base_name.startswith('Notes')):
+                if not (base_name.startswith('Consolidated') or base_name.startswith('Statement') or base_name.startswith('BalanceSheet') or base_name.startswith('Notes') or 'BusinessResults' in base_name):
                     continue
                 
                 if role not in merged_trees:
@@ -488,9 +619,9 @@ def main():
                 break
 
     # Now generate Excel
-    print(f"Generating Excel for {company_name}...")
+    print(f"Generating Excel for {company_name}...", file=sys.stderr)
     wb = Workbook()
-    wb.remove(wb.active) # remove default sheet
+    default_sheet_removed = False
     
     # Identify periods that are standalone (not consolidated)
     periods_with_standalone = set()
@@ -517,6 +648,11 @@ def main():
             'ConsolidatedStatementOfCashFlows': '連結キャッシュ・フロー計算書',
             'ConsolidatedStatementOfCashFlows-indirect': '連結キャッシュ・フロー計算書',
             'ConsolidatedStatementOfCashFlows-direct': '連結キャッシュ・フロー計算書',
+            'ConsolidatedStatementOfFinancialPositionIFRS': '連結貸借対照表',
+            'ConsolidatedStatementOfProfitOrLossIFRS': '連結損益計算書',
+            'ConsolidatedStatementOfComprehensiveIncomeIFRS': '連結包括利益計算書',
+            'ConsolidatedStatementOfChangesInEquityIFRS': '連結株主資本等変動計算書',
+            'ConsolidatedStatementOfCashFlowsIFRS': '連結キャッシュ・フロー計算書',
             'BalanceSheet': '貸借対照表',
             'StatementOfIncome': '損益計算書',
             'StatementOfComprehensiveIncome': '包括利益計算書',
@@ -524,7 +660,10 @@ def main():
             'StatementOfChangesInNetAssets': '株主資本等変動計算書',
             'StatementOfCashFlows': 'キャッシュ・フロー計算書',
             'StatementOfCashFlows-indirect': 'キャッシュ・フロー計算書',
-            'StatementOfCashFlows-direct': 'キャッシュ・フロー計算書'
+            'StatementOfCashFlows-direct': 'キャッシュ・フロー計算書',
+            'SummaryOfBusinessResults': '主要な経営指標等の推移',
+            'BusinessResultsOfGroup': '主要な経営指標等の推移（連結）',
+            'BusinessResultsOfReportingCompany': '主要な経営指標等の推移（単体）'
         }
         
         japanese_name = sheet_mapping.get(base_name)
@@ -553,8 +692,17 @@ def main():
             else:
                 japanese_name = base_name
                 
-        # In Japanese, 31 characters is usually enough, but we truncate just in case
-        sheet_name = japanese_name[:31]
+        # Add accounting standard suffix
+        is_ifrs = 'IFRS' in base_name
+        suffix = '(IFRS)' if is_ifrs else '(日本基準)'
+        japanese_name += suffix
+        
+        # In Japanese, 31 characters maximum for sheet name
+        if len(japanese_name) > 31:
+            allowed_len = 31 - len(suffix)
+            sheet_name = japanese_name[:allowed_len] + suffix
+        else:
+            sheet_name = japanese_name
         
         # Collect columns relevant to THIS role based on sheet type
         is_segment = 'セグメント' in sheet_name
@@ -594,6 +742,9 @@ def main():
             
         used_sheet_names.add(sheet_name)
         ws = wb.create_sheet(title=sheet_name)
+        if not default_sheet_removed:
+            wb.remove(wb['Sheet'])
+            default_sheet_removed = True
         
         # Track separators so we only print them once per sheet
         seen_related = False
@@ -627,12 +778,12 @@ def main():
         
         if has_segments:
             # Two-tier header: Row 1 = Segments, Row 2 = Dates
-            headers_row1 = [""] + [c[0] if isinstance(c, tuple) else "" for c in sorted_role_cols]
-            headers_row2 = ["勘定科目"] + [c[1] if isinstance(c, tuple) else c for c in sorted_role_cols]
+            headers_row1 = ["", ""] + [c[0] if isinstance(c, tuple) else "" for c in sorted_role_cols]
+            headers_row2 = ["勘定科目", "項目（英名）"] + [c[1] if isinstance(c, tuple) else c for c in sorted_role_cols]
             ws.append(headers_row1)
             ws.append(headers_row2)
         else:
-            headers = ["勘定科目"] + [c[1] if isinstance(c, tuple) else c for c in sorted_role_cols]
+            headers = ["勘定科目", "項目（英名）"] + [c[1] if isinstance(c, tuple) else c for c in sorted_role_cols]
             ws.append(headers)
         
         for full_path in ordered_keys:
@@ -644,11 +795,22 @@ def main():
                 'CashAndDeposits': '現金及び預金',
                 'NotesAndAccountsReceivableTrade': '受取手形及び売掛金',
                 'MerchandiseAndFinishedGoods': '商品及び製品',
-                'RawMaterialsAndSupplies': '原材料及び貯蔵品',
-                'CurrentAssets': '流動資産',
-                'NoncurrentAssets': '固定資産',
+                'Notes': '注記',
+                'Inventory': '棚卸資産',
+                'Inventories': '棚卸資産',
                 'PropertyPlantAndEquipment': '有形固定資産',
                 'IntangibleAssets': '無形固定資産',
+                'ConsolidatedBalanceSheet': '連結貸借対照表',
+                'ConsolidatedStatementOfIncome': '連結損益計算書',
+                'ConsolidatedStatementOfCashFlows': '連結キャッシュ・フロー計算書',
+                'ConsolidatedStatementOfChangesInEquity': '連結株主資本等変動計算書',
+                'ConsolidatedStatementOfFinancialPosition': '連結財政状態計算書',
+                'ConsolidatedStatementOfProfitOrLoss': '連結損益計算書',
+                'ConsolidatedStatementOfFinancialPositionIFRS': '連結財政状態計算書',
+                'ConsolidatedStatementOfProfitOrLossIFRS': '連結損益計算書',
+                'ConsolidatedStatementOfCashFlowsIFRS': '連結キャッシュ・フロー計算書',
+                'ConsolidatedStatementOfChangesInEquityIFRS': '連結株主資本等変動計算書',
+                'ConsolidatedStatementOfComprehensiveIncomeIFRS': '連結包括利益計算書',
                 'InvestmentsAndOtherAssets': '投資その他の資産',
                 'Assets': '資産合計',
                 'CurrentLiabilities': '流動負債',
@@ -657,21 +819,61 @@ def main():
                 'NetAssets': '純資産合計',
                 'LiabilitiesAndNetAssets': '負債純資産合計',
                 'NetSales': '売上高',
+                'Revenue': '売上収益',
                 'CostOfSales': '売上原価',
                 'GrossProfit': '売上総利益',
                 'SellingGeneralAndAdministrativeExpenses': '販売費及び一般管理費',
+                'SellingGeneralAndAdministrativeExpense': '販売費及び一般管理費',
+                'OtherOperatingIncome': 'その他の営業収益',
+                'OtherOperatingExpenses': 'その他の営業費用',
+                'OtherOperatingExpense': 'その他の営業費用',
+                'ShareOfProfitLossOfAssociatesAndJointVenturesAccountedForUsingEquityMethod': '持分法による投資利益',
                 'OperatingIncome': '営業利益',
+                'OperatingProfit': '営業利益',
                 'OrdinaryIncome': '経常利益',
-                'NetIncome': '当期純利益'
+                'FinanceIncome': '金融収益',
+                'FinancialIncome': '金融収益',
+                'FinanceCosts': '金融費用',
+                'FinancialExpenses': '金融費用',
+                'FinanceExpenses': '金融費用',
+                'ProfitBeforeTax': '税引前利益',
+                'IncomeTaxExpense': '法人所得税費用',
+                'Profit': '当期利益',
+                'NetIncome': '当期利益',
+                'ProfitLossAttributableToAbstract': '当期利益の帰属',
+                'ProfitAttributableToOwnersOfParent': '親会社の所有者',
+                'ProfitLossAttributableToOwnersOfParent': '親会社の所有者',
+                'ProfitAttributableToNoncontrollingInterests': '非支配持分',
+                'ProfitLossAttributableToNoncontrollingInterests': '非支配持分',
+                'BasicEarningsPerShare': '基本的１株当たり当期利益（円）',
+                'BasicEarningsLossPerShare': '基本的１株当たり当期利益（円）',
+                # Priority IFRS items
+                'RevenueIFRS': '売上収益',
+                'CostOfSalesIFRS': '売上原価',
+                'GrossProfitIFRS': '売上総利益',
+                'SellingGeneralAndAdministrativeExpensesIFRS': '販売費及び一般管理費',
+                'OtherOperatingIncomeIFRS': 'その他の営業収益',
+                'OtherOperatingExpensesIFRS': 'その他の営業費用',
+                'ShareOfProfitLossOfInvestmentsAccountedForUsingEquityMethodIFRS': '持分法による投資利益',
+                'OperatingProfitLossIFRS': '営業利益',
+                'FinanceIncomeIFRS': '金融収益',
+                'FinanceCostsIFRS': '金融費用',
+                'ProfitLossBeforeTaxIFRS': '税引前利益',
+                'IncomeTaxExpenseIFRS': '法人所得税費用',
+                'ProfitLossIFRS': '当期利益',
+                'ProfitLossAttributableToOwnersOfParentIFRS': '親会社の所有者',
+                'ProfitLossAttributableToNonControllingInterestsIFRS': '非支配持分',
+                'BasicEarningsPerShareIFRS': '基本的１株当たり当期利益（円）'
             }
             
-            label = labels_map.get(el)
-            if not label:
-                parts = el.split('_')
-                base_name = parts[-1] if len(parts) > 1 else el
-                if base_name in common_dict:
-                    label = common_dict[base_name]
-                else:
+            parts = el.split('_')
+            base_name = parts[-1] if len(parts) > 1 else el
+            
+            if base_name in common_dict:
+                label = common_dict[base_name]
+            else:
+                label = labels_map.get(el)
+                if not label:
                     label = convert_camel_case_to_title(base_name)
                     
             # Insert Separator rows for Segment Notes subsets
@@ -698,15 +900,20 @@ def main():
             depth = len(full_path.split('::')) - 1
             indent_prefix = "　" * depth
             
-            row_data = [indent_prefix + label]
+            row_data = [indent_prefix + label, el]
             
             has_data = False
             for col_key in sorted_role_cols:
                 val = all_years_data[role][full_path].get(col_key, "")
                 # Clean numeric values
-                if val and not val.isalpha():
+                if val:
+                    # Handle full-width characters and commas
+                    import unicodedata
+                    val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
                     try:
-                        val = float(val)
+                        # Only convert if it looks numeric (don't convert plain text names)
+                        if val_clean and not any(c.isalpha() for c in val_clean):
+                            val = float(val_clean)
                     except:
                         pass
                 row_data.append(val)
@@ -741,10 +948,51 @@ def main():
                 adjusted_width = 50
             out_ws.column_dimensions[column_letter].width = adjusted_width
 
-    out_file = f'XBRL_横展開_{company_name}.xlsx'
-    wb.save(out_file)
-    print(f"Saved to {out_file}")
+    # シートの並び替え
+    def get_sheet_order(title):
+        is_note = '注記' in title
+        group = 0
+        if not is_note:
+            group = 1 if '連結' in title else 3
+        else:
+            # 単体の財務諸表に対応する注記名かどうかで判定
+            non_consolidated_notes = ['注記_貸借対照表', '注記_損益計算書', '注記_株主資本等変動計算書', '注記_包括利益計算書', '注記_キャッシュ・フロー計算書', '注記_製造原価明細書']
+            if '連結' not in title and any(n in title for n in non_consolidated_notes):
+                group = 4
+            else:
+                group = 2
+                
+        # 財務諸表の種別による並び順
+        stmt_order = 99
+        if '貸借対照表' in title or '財政状態' in title:
+            stmt_order = 1
+        elif '損益' in title or ('利益' in title and '包括' not in title):
+            stmt_order = 2
+        elif '包括' in title:
+            stmt_order = 3
+        elif '変動' in title:
+            stmt_order = 4
+        elif 'キャッシュ' in title:
+            stmt_order = 5
+            
+        # 基準ごとの並び順 (日本基準が先)
+        std_order = 2 if '(IFRS)' in title else 1
+        
+        return (group, stmt_order, std_order)
+                
+    wb._sheets.sort(key=lambda s: get_sheet_order(s.title))
 
+    out_file = f'XBRL_横展開_{company_name}.xlsx'
+    if output_dir:
+        out_file = os.path.join(output_dir, out_file)
+    wb.save(out_file)
+    return out_file
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python convert_xbrl_to_excel.py <path_to_zip1> [<path_to_zip2> ...]", file=sys.stderr)
+        sys.exit(1)
+    process_xbrl_zips(sys.argv[1:])
 
 if __name__ == "__main__":
     main()
