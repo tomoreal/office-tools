@@ -1,4 +1,4 @@
-// 財務データ 横展開変換ロジック (JavaScript版)
+// 財務データ 横展開変換ロジック (JavaScript版) v1.1
 const TARGET_SHEET_NAMES = [
     "連結貸借対照表",
     "連結財政状態計算書", // IFRS BS
@@ -81,7 +81,11 @@ function processFinancialCSV(csvText) {
         const col3 = row.length > 3 ? row[3].trim() : "";
 
         if (col0.includes("現在") && (col0.includes("/") || col0.includes("年"))) {
-            currentYear = col0.replace("現在", "").trim();
+            // 年度文字列の正規化 (2024/3/31 -> 2024/03/31)
+            let rawYear = col0.replace("現在", "").trim();
+            currentYear = rawYear.replace(/(\d+)\/(\d+)\/(\d+)/, (m, y, m1, d) => {
+                return `${y}/${m1.padStart(2, '0')}/${d.padStart(2, '0')}`;
+            });
             dictYears.add(currentYear);
             if (firstYear === "") firstYear = currentYear;
             continue;
@@ -92,11 +96,15 @@ function processFinancialCSV(csvText) {
             if (TARGET_SHEET_NAMES.includes(rawType)) {
                 currentBaseType = SHEET_MAPPING[rawType] || rawType;
 
-                // IFRS判定: 年度ごとに「連結財政状態計算書」が出現したらその年度はIFRS
-                if (rawType === "連結財政状態計算書") {
-                    yearStandards[currentYear] = "IFRS";
-                } else if (rawType === "連結貸借対照表") {
-                    yearStandards[currentYear] = "J-GAAP";
+                // IFRS判定: IFRS優先で設定（currentYearが空でない場合のみ）
+                if (currentYear) {
+                    if (rawType === "連結財政状態計算書") {
+                        yearStandards[currentYear] = "IFRS";
+                    } else if (rawType === "連結貸借対照表") {
+                        if (yearStandards[currentYear] !== "IFRS") {
+                            yearStandards[currentYear] = "J-GAAP";
+                        }
+                    }
                 }
 
                 prevItem = "";
@@ -121,10 +129,14 @@ function processFinancialCSV(csvText) {
             if (TARGET_SHEET_NAMES.includes(rawType)) {
                 currentBaseType = SHEET_MAPPING[rawType] || rawType;
 
-                if (rawType === "連結財政状態計算書") {
-                    yearStandards[currentYear] = "IFRS";
-                } else if (rawType === "連結貸借対照表") {
-                    yearStandards[currentYear] = "J-GAAP";
+                if (currentYear) {
+                    if (rawType === "連結財政状態計算書") {
+                        yearStandards[currentYear] = "IFRS";
+                    } else if (rawType === "連結貸借対照表") {
+                        if (yearStandards[currentYear] !== "IFRS") {
+                            yearStandards[currentYear] = "J-GAAP";
+                        }
+                    }
                 }
 
                 prevItem = "";
@@ -188,7 +200,7 @@ function processFinancialCSV(csvText) {
     }
 
     // 最終的な年度ごとの基準を確定させる（一度IFRSになった後は、以降の年度もすべてIFRS）
-    const sortedYears = Array.from(dictYears).sort();
+    const sortedYears = Array.from(dictYears).filter(y => y !== "").sort();
     let reachedIFRS = false;
     sortedYears.forEach(year => {
         if (yearStandards[year] === "IFRS") {
@@ -197,7 +209,9 @@ function processFinancialCSV(csvText) {
         if (reachedIFRS) {
             yearStandards[year] = "IFRS";
         } else {
-            yearStandards[year] = "J-GAAP";
+            if (yearStandards[year] !== "IFRS") {
+                yearStandards[year] = "J-GAAP";
+            }
         }
     });
 
