@@ -1,6 +1,7 @@
 // 財務データ 横展開変換ロジック (JavaScript版)
 const TARGET_SHEET_NAMES = [
     "連結貸借対照表",
+    "連結財政状態計算書", // IFRS BS
     "連結損益計算書",
     "連結包括利益計算書",
     "連結損益（及び包括利益）計算書",
@@ -8,17 +9,28 @@ const TARGET_SHEET_NAMES = [
     "連結株主資本等変動計算書"
 ];
 
+const SHEET_MAPPING = {
+    "連結貸借対照表": "連結貸借対照表",
+    "連結財政状態計算書": "連結財政状態計算書",
+    "連結損益計算書": "連結損益計算書",
+    "連結包括利益計算書": "連結損益計算書", // 損益系は統合
+    "連結損益（及び包括利益）計算書": "連結損益計算書", // 損益系は統合
+    "連結キャッシュ・フロー計算書": "連結キャッシュ・フロー計算書",
+    "連結株主資本等変動計算書": "連結株主資本等変動計算書"
+};
+
 function processFinancialCSV(csvText) {
     const lines = csvText.split(/\r?\n/);
 
-    let dictData = {};
+    let dictData = {}; // dictData[baseType][uniqueKey][year]
     let dictYears = new Set();
-    let dictItemsOrder = {};
-    let dictItemNames = {};
+    let dictItemsOrder = {}; // dictItemsOrder[baseType] = []
+    let dictItemNames = {}; // dictItemNames[baseType][uniqueKey] = itemName
+    let yearStandards = {}; // yearStandards[year] = "IFRS" | "J-GAAP"
 
     let currentYear = "";
     let firstYear = "";
-    let currentType = "";
+    let currentBaseType = "";
     let prevItem = "";
     let hierarchyStack = [];
 
@@ -76,15 +88,26 @@ function processFinancialCSV(csvText) {
         }
 
         if (col0 === "表名称") {
-            if (TARGET_SHEET_NAMES.includes(col1)) {
-                currentType = col1;
+            const rawType = col1;
+            if (TARGET_SHEET_NAMES.includes(rawType)) {
+                currentBaseType = SHEET_MAPPING[rawType] || rawType;
+
+                // IFRS判定: 年度ごとに「連結財政状態計算書」が出現したらその年度はIFRS
+                if (rawType === "連結財政状態計算書") {
+                    yearStandards[currentYear] = "IFRS";
+                } else if (rawType === "連結貸借対照表") {
+                    yearStandards[currentYear] = "J-GAAP";
+                }
+
                 prevItem = "";
                 hierarchyStack = [];
-                if (!dictData[currentType]) {
-                    dictData[currentType] = {};
-                    dictItemsOrder[currentType] = [];
-                    dictItemNames[currentType] = {};
+                if (!dictData[currentBaseType]) {
+                    dictData[currentBaseType] = {};
+                    dictItemsOrder[currentBaseType] = [];
+                    dictItemNames[currentBaseType] = {};
                 }
+            } else {
+                currentBaseType = "";
             }
             continue;
         }
@@ -94,20 +117,28 @@ function processFinancialCSV(csvText) {
         }
 
         if (col0 !== "" && col1 !== "" && col2 === "" && col3 === "") {
-            if (TARGET_SHEET_NAMES.includes(col0)) {
-                currentType = col0;
+            const rawType = col0;
+            if (TARGET_SHEET_NAMES.includes(rawType)) {
+                currentBaseType = SHEET_MAPPING[rawType] || rawType;
+
+                if (rawType === "連結財政状態計算書") {
+                    yearStandards[currentYear] = "IFRS";
+                } else if (rawType === "連結貸借対照表") {
+                    yearStandards[currentYear] = "J-GAAP";
+                }
+
                 prevItem = "";
                 hierarchyStack = [];
-                if (!dictData[currentType]) {
-                    dictData[currentType] = {};
-                    dictItemsOrder[currentType] = [];
-                    dictItemNames[currentType] = {};
+                if (!dictData[currentBaseType]) {
+                    dictData[currentBaseType] = {};
+                    dictItemsOrder[currentBaseType] = [];
+                    dictItemNames[currentBaseType] = {};
                 }
                 continue;
             }
         }
 
-        if (col0 !== "" && currentType !== "") {
+        if (col0 !== "" && currentBaseType !== "") {
             const itemName = rawCol0.trimEnd();
             let amount = "";
 
@@ -133,134 +164,139 @@ function processFinancialCSV(csvText) {
 
             const uniqueKey = hierarchyStack.map(x => x[1]).join("::");
 
-            dictItemNames[currentType][uniqueKey] = itemName;
+            dictItemNames[currentBaseType][uniqueKey] = itemName;
 
-            if (!dictItemsOrder[currentType].includes(uniqueKey)) {
-                if (currentYear !== firstYear && dictItemsOrder[currentType].includes(prevItem)) {
-                    const idx = dictItemsOrder[currentType].indexOf(prevItem);
-                    dictItemsOrder[currentType].splice(idx + 1, 0, uniqueKey);
+            if (!dictItemsOrder[currentBaseType].includes(uniqueKey)) {
+                if (currentYear !== firstYear && dictItemsOrder[currentBaseType].includes(prevItem)) {
+                    const idx = dictItemsOrder[currentBaseType].indexOf(prevItem);
+                    dictItemsOrder[currentBaseType].splice(idx + 1, 0, uniqueKey);
                 } else {
-                    dictItemsOrder[currentType].push(uniqueKey);
+                    dictItemsOrder[currentBaseType].push(uniqueKey);
                 }
             }
 
             prevItem = uniqueKey;
 
-            if (!dictData[currentType][uniqueKey]) {
-                dictData[currentType][uniqueKey] = {};
+            if (!dictData[currentBaseType][uniqueKey]) {
+                dictData[currentBaseType][uniqueKey] = {};
             }
 
             if (currentYear !== "" && amount !== "") {
-                dictData[currentType][uniqueKey][currentYear] = amount;
+                dictData[currentBaseType][uniqueKey][currentYear] = amount;
             }
         }
     }
 
+    // 最終的な年度ごとの基準を確定させる（一度IFRSになった後は、以降の年度もすべてIFRS）
+    const sortedYears = Array.from(dictYears).sort();
+    let reachedIFRS = false;
+    sortedYears.forEach(year => {
+        if (yearStandards[year] === "IFRS") {
+            reachedIFRS = true;
+        }
+        if (reachedIFRS) {
+            yearStandards[year] = "IFRS";
+        } else {
+            yearStandards[year] = "J-GAAP";
+        }
+    });
+
     return {
         dictData,
-        dictYears: Array.from(dictYears).sort(),
+        dictYears: sortedYears,
         dictItemsOrder,
-        dictItemNames
+        dictItemNames,
+        yearStandards
     };
 }
 
 function generateExcelWorkbook(parsedData) {
     const wb = XLSX.utils.book_new();
     const sortedYears = parsedData.dictYears;
+    const yearStandards = parsedData.yearStandards;
 
-    Object.keys(parsedData.dictData).forEach(typeName => {
-        const items = parsedData.dictItemsOrder[typeName];
-        if (items.length === 0) return;
+    Object.keys(parsedData.dictData).forEach(baseType => {
+        // 日本基準とIFRSでデータを分ける
+        const standards = ["J-GAAP", "IFRS"];
 
-        // 最大31文字かつ特殊文字を除外したシート名
-        const safeTitle = typeName.replace(/[・ \/]/g, "").substring(0, 31);
-        if (!safeTitle) return;
+        standards.forEach(std => {
+            const targetYears = sortedYears.filter(y => yearStandards[y] === std);
+            if (targetYears.length === 0) return;
 
-        const wsData = [];
+            const items = parsedData.dictItemsOrder[baseType];
+            // この基準（std）において、少なくとも1つの年度で値が存在する項目のみを抽出
+            const validItems = items.filter(uniqueKey => {
+                return targetYears.some(year => parsedData.dictData[baseType][uniqueKey][year] !== undefined);
+            });
 
-        // ヘッダー行
-        const headerRow = ["勘定科目", ...sortedYears];
-        wsData.push(headerRow);
+            if (validItems.length === 0) return;
 
-        // 各列の最大幅を保持する配列 (ヘッダーの要素数分初期化)
-        const colWidths = new Array(headerRow.length).fill(0);
+            // シート名の決定
+            let suffix = (std === "IFRS") ? "(IFRS)" : "(日本基準)";
+            let sheetTitle = baseType + suffix;
 
-        // 文字列の表示幅（半角1、全角2想定）を概算する関数
-        const getDisplayWidth = (str) => {
-            if (str === null || str === undefined) return 0;
-            const s = String(str);
-            let len = 0;
-            for (let i = 0; i < s.length; i++) {
-                len += (s.charCodeAt(i) > 255) ? 2 : 1;
-            }
-            return len;
-        };
+            // 最大31文字かつ特殊文字を除外したシート名
+            const safeTitle = sheetTitle.replace(/[・ \/]/g, "").substring(0, 31);
 
-        // ヘッダー行の幅を初期値として設定
-        headerRow.forEach((h, i) => {
-            colWidths[i] = getDisplayWidth(h);
-        });
+            const wsData = [];
+            const headerRow = ["勘定科目", ...targetYears];
+            wsData.push(headerRow);
 
-        // データ行
-        items.forEach(uniqueKey => {
-            const displayName = parsedData.dictItemNames[typeName][uniqueKey] || uniqueKey;
+            const colWidths = new Array(headerRow.length).fill(0);
+            const getDisplayWidth = (str) => {
+                if (str === null || str === undefined) return 0;
+                const s = String(str);
+                let len = 0;
+                for (let i = 0; i < s.length; i++) {
+                    len += (s.charCodeAt(i) > 255) ? 2 : 1;
+                }
+                return len;
+            };
 
-            // A列目の幅を更新
-            const aColWidth = getDisplayWidth(displayName);
-            if (aColWidth > colWidths[0]) {
-                colWidths[0] = aColWidth;
-            }
+            headerRow.forEach((h, i) => {
+                colWidths[i] = getDisplayWidth(h);
+            });
 
-            const row = [displayName];
+            validItems.forEach(uniqueKey => {
+                const displayName = parsedData.dictItemNames[baseType][uniqueKey] || uniqueKey;
+                const aColWidth = getDisplayWidth(displayName);
+                if (aColWidth > colWidths[0]) colWidths[0] = aColWidth;
 
-            sortedYears.forEach((year, idx) => {
-                let val = parsedData.dictData[typeName][uniqueKey][year] || "";
-                if (val !== "") {
-                    // 数値に変換可能なものは数値にする
-                    const numericVal = Number(val.replace(/,/g, ""));
-                    if (!isNaN(numericVal) && val !== "-") {
-                        val = numericVal;
-                        // 数値表示はカンマがつく分長くなる可能性を考慮
-                        // ざっくり元の文字列の長さをベースにするか数値文字列で計算
-                        const valWidth = getDisplayWidth(val.toLocaleString('en-US'));
-                        if (valWidth > colWidths[idx + 1]) {
-                            colWidths[idx + 1] = valWidth;
-                        }
-                    } else {
-                        // 文字列やハイフン
-                        const valWidth = getDisplayWidth(val);
-                        if (valWidth > colWidths[idx + 1]) {
-                            colWidths[idx + 1] = valWidth;
+                const row = [displayName];
+                targetYears.forEach((year, idx) => {
+                    let val = parsedData.dictData[baseType][uniqueKey][year] || "";
+                    if (val !== "") {
+                        const numericVal = Number(val.replace(/,/g, ""));
+                        if (!isNaN(numericVal) && val !== "-") {
+                            val = numericVal;
+                            const valWidth = getDisplayWidth(val.toLocaleString('en-US'));
+                            if (valWidth > colWidths[idx + 1]) colWidths[idx + 1] = valWidth;
+                        } else {
+                            const valWidth = getDisplayWidth(val);
+                            if (valWidth > colWidths[idx + 1]) colWidths[idx + 1] = valWidth;
                         }
                     }
-                }
-                row.push(val);
+                    row.push(val);
+                });
+                wsData.push(row);
             });
-            wsData.push(row);
-        });
 
-        const ws = XLSX.utils.aoa_to_sheet(wsData);
+            const ws = XLSX.utils.aoa_to_sheet(wsData);
+            ws['!cols'] = colWidths.map(w => ({ wch: w + 2 }));
 
-        // 全列の幅を設定 (+2 は少しの余白)
-        ws['!cols'] = colWidths.map(w => ({ wch: w + 2 }));
-
-        // 全セルのフォントを「ＭＳ 明朝」10ptに設定する ＆ 数値フォーマット指定
-        for (let cellAddress in ws) {
-            if (cellAddress.startsWith("!")) continue;
-
-            if (!ws[cellAddress].s) ws[cellAddress].s = {};
-            if (!ws[cellAddress].s.font) ws[cellAddress].s.font = {};
-
-            ws[cellAddress].s.font.name = "ＭＳ 明朝";
-            ws[cellAddress].s.font.sz = 10;
-
-            // 数値に関するフォーマット（3桁区切り、マイナスは赤字）
-            if (ws[cellAddress].t === "n") {
-                ws[cellAddress].z = '#,##0_ ;[Red]\\-#,##0\\ ';
+            for (let cellAddress in ws) {
+                if (cellAddress.startsWith("!")) continue;
+                if (!ws[cellAddress].s) ws[cellAddress].s = {};
+                if (!ws[cellAddress].s.font) ws[cellAddress].s.font = {};
+                ws[cellAddress].s.font.name = "ＭＳ 明朝";
+                ws[cellAddress].s.font.sz = 10;
+                if (ws[cellAddress].t === "n") {
+                    ws[cellAddress].z = '#,##0_ ;[Red]\\-#,##0\\ ';
+                }
             }
-        }
 
-        XLSX.utils.book_append_sheet(wb, ws, safeTitle);
+            XLSX.utils.book_append_sheet(wb, ws, safeTitle);
+        });
     });
 
     return wb;
