@@ -1,4 +1,4 @@
-// 財務データ 横展開変換ロジック (JavaScript版) v1.3
+// 財務データ 横展開変換ロジック (JavaScript版) v1.4
 const TARGET_SHEET_NAMES = [
     "連結貸借対照表",
     "連結財政状態計算書", // IFRS BS
@@ -190,11 +190,16 @@ function processFinancialCSV(csvText) {
             }
             hierarchyStack.push([indentLevel, col0]);
 
-            const uniqueKey = hierarchyStack.map(x => normalizeKey(x[1])).join("::");
+            // ユニークキーを「階層」ではなく「正規化した項目名のみ」にする
+            const uniqueKey = normalizeKey(col0);
 
-            dictItemNames[currentBaseType][uniqueKey] = itemName;
+            // 表示名は最初に出現したものを優先して保持
+            if (!dictItemNames[currentBaseType][uniqueKey]) {
+                dictItemNames[currentBaseType][uniqueKey] = itemName;
+            }
 
             if (!dictItemsOrder[currentBaseType].includes(uniqueKey)) {
+                // 正規化したkeyをprevItemとする
                 if (currentYear !== firstYear && dictItemsOrder[currentBaseType].includes(prevItem)) {
                     const idx = dictItemsOrder[currentBaseType].indexOf(prevItem);
                     dictItemsOrder[currentBaseType].splice(idx + 1, 0, uniqueKey);
