@@ -1,4 +1,4 @@
-// 財務データ 横展開変換ロジック (JavaScript版) v1.1
+// 財務データ 横展開変換ロジック (JavaScript版) v1.2
 const TARGET_SHEET_NAMES = [
     "連結貸借対照表",
     "連結財政状態計算書", // IFRS BS
@@ -151,6 +151,11 @@ function processFinancialCSV(csvText) {
         }
 
         if (col0 !== "" && currentBaseType !== "") {
+            // IFRS特有の項目名が含まれる場合はIFRS判定にする (連結貸借対照表であっても)
+            if (currentYear && (col0.includes("非流動資産") || col0.includes("非流動負債"))) {
+                yearStandards[currentYear] = "IFRS";
+            }
+
             const itemName = rawCol0.trimEnd();
             let amount = "";
 
