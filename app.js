@@ -210,8 +210,8 @@ function processFinancialCSV(csvText) {
         const row = parseCSVLine(line);
         if (row.length < 1) continue;
 
-        const rawCol0 = row[0];
-        const col0 = rawCol0.trim();
+        let rawCol0 = row[0];
+        let col0 = rawCol0.trim();
         const col1 = row.length > 1 ? row[1].trim() : "";
         const col2 = row.length > 2 ? row[2].trim() : "";
         const col3 = row.length > 3 ? row[3].trim() : "";
@@ -284,7 +284,14 @@ function processFinancialCSV(csvText) {
         if (col0 !== "" && currentBaseType !== "") {
             // IFRS判定は事前スキャンで完了済み（ここでは追加の判定はしない）
 
-            const itemName = rawCol0.trim(); // 前後の空白を完全に除去
+            let itemName = rawCol0.trim(); // 前後の空白を完全に除去
+
+            // J-GAAP等の「（内訳）」ラベルを「包括利益の帰属」に統一
+            if (itemName === "（内訳）" || itemName === "(内訳)") {
+                col0 = "包括利益の帰属";
+                itemName = "包括利益の帰属";
+                rawCol0 = rawCol0.replace(/（内訳）|\(内訳\)/, "包括利益の帰属");
+            }
             // col0 は既に先頭で定義されている（rawCol0.trim()済）
             let amount = "";
 
