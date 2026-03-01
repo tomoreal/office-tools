@@ -86,6 +86,7 @@ function processFinancialCSV(csvText) {
 
     // 事前スキャン1：年度ごとの基準（IFRSかどうか）を特定する
     let scanYear = "";
+    let cfSectionsByYear = {}; // {year: [{startRow, endRow, section}]}
     let scanInBSSection = false; // 貸借対照表セクション内かどうか
     lines.forEach(line => {
         if (!line.trim()) return;
@@ -283,6 +284,37 @@ function processFinancialCSV(csvText) {
         }
 
         if (col0 !== "" && currentBaseType !== "") {
+            if (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") {
+                const nName = normalizeKey(col0);
+                if (!cfSectionsByYear[currentYear]) cfSectionsByYear[currentYear] = [];
+                // IF bottom-up style: items then "Net cash provided by ... activities"
+                if (nName.includes("営業活動") && nName.includes("キャッシュ")) {
+                    cfSectionsByYear[currentYear].push({
+                        section: "営業活動によるキャッシュフロー",
+                        startRow: cfSectionsByYear[currentYear]._lastStart || 0,
+                        endRow: rowIdx
+                    });
+                    cfSectionsByYear[currentYear]._lastStart = rowIdx + 1;
+                } else if (nName.includes("投資活動") && nName.includes("キャッシュ")) {
+                    cfSectionsByYear[currentYear].push({
+                        section: "投資活動によるキャッシュフロー",
+                        startRow: cfSectionsByYear[currentYear]._lastStart || 0,
+                        endRow: rowIdx
+                    });
+                    cfSectionsByYear[currentYear]._lastStart = rowIdx + 1;
+                } else if (nName.includes("財務活動") && nName.includes("キャッシュ")) {
+                    cfSectionsByYear[currentYear].push({
+                        section: "財務活動によるキャッシュフロー",
+                        startRow: cfSectionsByYear[currentYear]._lastStart || 0,
+                        endRow: rowIdx
+                    });
+                    cfSectionsByYear[currentYear]._lastStart = rowIdx + 1;
+                } else if (nName.includes("現金及び現金同等物") && nName.includes("増減額")) {
+                    // キャッシュフロー外
+                    cfSectionsByYear[currentYear]._lastStart = rowIdx + 1;
+                }
+            }
+
             // IFRS判定は事前スキャンで完了済み（ここでは追加の判定はしない）
 
             let itemName = rawCol0.trim(); // 前後の空白を完全に除去
@@ -428,6 +460,17 @@ function processFinancialCSV(csvText) {
                     currentCFSubsection = "財務活動によるキャッシュフロー";
                 } else if (nName.includes("現金及び現金同等物") && nName.includes("増減額")) {
                     currentCFSubsection = ""; // キャッシュフローセクションから抜ける場合
+                } else if (isNonHierarchical) {
+                    // 非階層化かつボトムアップ型セクションの場合、事前スキャンした行範囲からセクションを特定する
+                    const sections = cfSectionsByYear[currentYear];
+                    if (sections) {
+                        const matchingSection = sections.find(s => rowIdx >= s.startRow && rowIdx <= s.endRow);
+                        if (matchingSection) {
+                            currentCFSubsection = matchingSection.section;
+                        } else {
+                            currentCFSubsection = "";
+                        }
+                    }
                 }
             }
 
@@ -657,15 +700,13 @@ function processFinancialCSV(csvText) {
                     for (let i = parentIndex + 1; i < dictItemsOrder[currentBaseType].length; i++) {
                         const siblingKey = dictItemsOrder[currentBaseType][i];
 
-                        // 同じ親の子要素かどうかをパスの深さで判断
-                        const siblingPath = siblingKey.split('|');
-                        const parentPath = parentKey.split('|');
-                        const siblingHasParent = siblingPath.length > parentPath.length;
+                        // 親のキー（+区切り文字）で始まっていれば、それはこの親の子（または孫）要素
+                        const siblingHasParent = siblingKey.startsWith(parentKey + "|");
 
                         if (siblingHasParent) {
                             lastSiblingIndex = i;
                         } else {
-                            // 同じレベルまたは上のレベルに達したら終了
+                            // 同じレベルまたは別の親の要素に達したら終了
                             break;
                         }
                     }
