@@ -271,6 +271,7 @@ function processFinancialCSV(csvText) {
             hierarchyStack = [];
             currentLandmarks = { major: "", sub: "" };
             currentPLSubsection = ""; // 新しいシートに入ったらリセット
+            currentCFSubsection = "";
             if (!dictData[currentBaseType]) {
                 dictData[currentBaseType] = {};
                 dictItemsOrder[currentBaseType] = [];
@@ -417,6 +418,19 @@ function processFinancialCSV(csvText) {
                 }
             }
 
+            // キャッシュ・フロー計算書のセクション検出（階層化の有無に関わらず有用）
+            if (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") {
+                if (nName.includes("営業活動") && nName.includes("キャッシュ")) {
+                    currentCFSubsection = "営業活動によるキャッシュフロー";
+                } else if (nName.includes("投資活動") && nName.includes("キャッシュ")) {
+                    currentCFSubsection = "投資活動によるキャッシュフロー";
+                } else if (nName.includes("財務活動") && nName.includes("キャッシュ")) {
+                    currentCFSubsection = "財務活動によるキャッシュフロー";
+                } else if (nName.includes("現金及び現金同等物") && nName.includes("増減額")) {
+                    currentCFSubsection = ""; // キャッシュフローセクションから抜ける場合
+                }
+            }
+
             if (landmarkChanged && isSectionHeader) {
                 // セクション見出しそのものの場合は、スタックを空にして本人のみ入れる
                 hierarchyStack = [];
@@ -495,6 +509,10 @@ function processFinancialCSV(csvText) {
                     } else if (currentLandmarks.sub) {
                         parentSections.push(currentLandmarks.sub);
                     }
+                } else if (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") {
+                    if (currentCFSubsection && !normalizedCol0.includes(currentCFSubsection.replace("フロー", ""))) {
+                        parentSections.push(currentCFSubsection);
+                    }
                 } else {
                     // その他の財務諸表
                     if (currentLandmarks.sub) {
@@ -550,18 +568,17 @@ function processFinancialCSV(csvText) {
             const headerKeyExists = dictData[currentBaseType] && dictData[currentBaseType][uniqueKey + "_header"];
 
             // 見出しとデータ行の統合ロジック
+            let shouldSkipItemRegistration = false;
+
             if (isSectionHeader) {
                 // 現在の行は見出し（金額なし）
                 if (baseKeyExists) {
-                    // 既にデータ行として登録済み → データ行を優先して見出しは無視
-                    // ただし、初出が見出しの場合は統合
                     const existingIsHeader = dictIsHeader[currentBaseType] && dictIsHeader[currentBaseType][uniqueKey];
                     if (!existingIsHeader) {
-                        // データ行が先に登録されているので、この見出しはスキップ
-                        continue;
-                    }
-                    // 既存が見出しの場合は、その見出しが出現した年度を追加
-                    if (currentYear) {
+                        // データ行が先に登録されているので、この見出しの新規項目としての登録はスキップ
+                        // ただし、子要素の親になるためのスタック追加処理は必要
+                        shouldSkipItemRegistration = true;
+                    } else if (currentYear) {
                         dictIsHeader[currentBaseType][uniqueKey].add(currentYear);
                     }
                 } else if (headerKeyExists) {
@@ -664,6 +681,10 @@ function processFinancialCSV(csvText) {
 
             // 現在の項目をスタックに追加（次の項目の親候補として）
             hierarchyStack.push({ level: indentLevel, name: col0, uniqueKey: uniqueKey });
+
+            if (shouldSkipItemRegistration) {
+                continue;
+            }
 
             if (!dictData[currentBaseType][uniqueKey]) {
                 dictData[currentBaseType][uniqueKey] = {};
