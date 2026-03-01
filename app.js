@@ -134,7 +134,7 @@ function processFinancialCSV(csvText) {
     scanBaseType = "";
     let scanStandard = "";
 
-    lines.forEach(line => {
+    lines.forEach((line, index) => {
         if (!line.trim()) return;
         const row = parseCSVLine(line);
         if (row.length < 1) return;
@@ -155,6 +155,10 @@ function processFinancialCSV(csvText) {
             const rawType = row.length > 1 ? row[1].trim() : "";
             if (TARGET_SHEET_NAMES.includes(rawType)) {
                 scanBaseType = SHEET_MAPPING[rawType] || rawType;
+                if (scanBaseType === "連結キャッシュ・フロー計算書" || scanBaseType === "連結キャッシュフロー計算書") {
+                    if (!cfSectionsByYear[scanYear]) cfSectionsByYear[scanYear] = [];
+                    cfSectionsByYear[scanYear]._lastStart = 0;
+                }
             } else {
                 scanBaseType = "";
             }
@@ -162,6 +166,10 @@ function processFinancialCSV(csvText) {
             // データ行の中にシート名が出現する場合
             if (col1 === "" || col1.includes("Consolidated") || col1.includes("Statement")) {
                 scanBaseType = SHEET_MAPPING[col0] || col0;
+                if (scanBaseType === "連結キャッシュ・フロー計算書" || scanBaseType === "連結キャッシュフロー計算書") {
+                    if (!cfSectionsByYear[scanYear]) cfSectionsByYear[scanYear] = [];
+                    cfSectionsByYear[scanYear]._lastStart = 0;
+                }
             }
         } else if (scanYear && ["連結貸借対照表", "連結損益計算書"].includes(scanBaseType) && col0 !== "") {
             // 貸借対照表と損益計算書の項目をチェック
@@ -185,6 +193,37 @@ function processFinancialCSV(csvText) {
                 } else {
                     yearStandardHierarchy[key].noIndent++;
                 }
+            }
+        }
+
+        // CFのセクション範囲を記録
+        if (scanYear && (scanBaseType === "連結キャッシュ・フロー計算書" || scanBaseType === "連結キャッシュフロー計算書") && col0 !== "") {
+            const nName = normalizeKey(col0);
+            if (!cfSectionsByYear[scanYear]) cfSectionsByYear[scanYear] = [];
+
+            if (nName.includes("営業活動") && nName.includes("キャッシュ")) {
+                cfSectionsByYear[scanYear].push({
+                    section: "営業活動によるキャッシュフロー",
+                    startRow: cfSectionsByYear[scanYear]._lastStart || 0,
+                    endRow: index // use `index` from lines.forEach
+                });
+                cfSectionsByYear[scanYear]._lastStart = index + 1;
+            } else if (nName.includes("投資活動") && nName.includes("キャッシュ")) {
+                cfSectionsByYear[scanYear].push({
+                    section: "投資活動によるキャッシュフロー",
+                    startRow: cfSectionsByYear[scanYear]._lastStart || 0,
+                    endRow: index
+                });
+                cfSectionsByYear[scanYear]._lastStart = index + 1;
+            } else if (nName.includes("財務活動") && nName.includes("キャッシュ")) {
+                cfSectionsByYear[scanYear].push({
+                    section: "財務活動によるキャッシュフロー",
+                    startRow: cfSectionsByYear[scanYear]._lastStart || 0,
+                    endRow: index
+                });
+                cfSectionsByYear[scanYear]._lastStart = index + 1;
+            } else if (nName.includes("現金及び現金同等物") && nName.includes("増減額")) {
+                cfSectionsByYear[scanYear]._lastStart = index + 1;
             }
         }
     });
@@ -284,37 +323,6 @@ function processFinancialCSV(csvText) {
         }
 
         if (col0 !== "" && currentBaseType !== "") {
-            if (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") {
-                const nName = normalizeKey(col0);
-                if (!cfSectionsByYear[currentYear]) cfSectionsByYear[currentYear] = [];
-                // IF bottom-up style: items then "Net cash provided by ... activities"
-                if (nName.includes("営業活動") && nName.includes("キャッシュ")) {
-                    cfSectionsByYear[currentYear].push({
-                        section: "営業活動によるキャッシュフロー",
-                        startRow: cfSectionsByYear[currentYear]._lastStart || 0,
-                        endRow: rowIdx
-                    });
-                    cfSectionsByYear[currentYear]._lastStart = rowIdx + 1;
-                } else if (nName.includes("投資活動") && nName.includes("キャッシュ")) {
-                    cfSectionsByYear[currentYear].push({
-                        section: "投資活動によるキャッシュフロー",
-                        startRow: cfSectionsByYear[currentYear]._lastStart || 0,
-                        endRow: rowIdx
-                    });
-                    cfSectionsByYear[currentYear]._lastStart = rowIdx + 1;
-                } else if (nName.includes("財務活動") && nName.includes("キャッシュ")) {
-                    cfSectionsByYear[currentYear].push({
-                        section: "財務活動によるキャッシュフロー",
-                        startRow: cfSectionsByYear[currentYear]._lastStart || 0,
-                        endRow: rowIdx
-                    });
-                    cfSectionsByYear[currentYear]._lastStart = rowIdx + 1;
-                } else if (nName.includes("現金及び現金同等物") && nName.includes("増減額")) {
-                    // キャッシュフロー外
-                    cfSectionsByYear[currentYear]._lastStart = rowIdx + 1;
-                }
-            }
-
             // IFRS判定は事前スキャンで完了済み（ここでは追加の判定はしない）
 
             let itemName = rawCol0.trim(); // 前後の空白を完全に除去
@@ -470,6 +478,8 @@ function processFinancialCSV(csvText) {
                         } else {
                             currentCFSubsection = "";
                         }
+                    } else {
+                        currentCFSubsection = "";
                     }
                 }
             }
@@ -577,6 +587,8 @@ function processFinancialCSV(csvText) {
                 // 階層化ありの場合: 従来通りスタックを使用
                 if (currentLandmarks.major) pathParts.push(currentLandmarks.major);
                 if (currentLandmarks.sub) pathParts.push(currentLandmarks.sub);
+
+
 
                 // スタック内のヘッダー名を追加 (ランドマークと重複しないように)
                 hierarchyStack.forEach(h => {
@@ -712,6 +724,20 @@ function processFinancialCSV(csvText) {
                     }
 
                     insertIndex = lastSiblingIndex + 1;
+                } else if ((currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") && currentCFSubsection) {
+                    // 非階層データ等で親要素（スタック）が存在しない場合でも、CFセクションに属することがわかっていれば、そのセクションの末尾に挿入する
+                    const sectionPrefix = `${currentBaseType}|${currentCFSubsection}`;
+                    let lastSectionIndex = -1;
+                    for (let i = 0; i < dictItemsOrder[currentBaseType].length; i++) {
+                        if (dictItemsOrder[currentBaseType][i].startsWith(sectionPrefix)) {
+                            lastSectionIndex = i;
+                        }
+                    }
+                    if (lastSectionIndex !== -1) {
+                        insertIndex = lastSectionIndex + 1;
+                    } else {
+                        insertIndex = dictItemsOrder[currentBaseType].length;
+                    }
                 } else {
                     // 親が見つからない場合、同じレベルの最後に追加
                     insertIndex = dictItemsOrder[currentBaseType].length;
