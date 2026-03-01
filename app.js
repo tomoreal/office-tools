@@ -292,6 +292,13 @@ function processFinancialCSV(csvText) {
                 itemName = "包括利益の帰属";
                 rawCol0 = rawCol0.replace(/（内訳）|\(内訳\)/, "包括利益の帰属");
             }
+
+            // 古いIFRSの「持分法による投資損益（△は損失）」を統一
+            if (col0.includes("持分法による投資損益") && col0.includes("△は損失")) {
+                col0 = "持分法による投資損益";
+                itemName = "持分法による投資損益";
+                rawCol0 = "持分法による投資損益";
+            }
             // col0 は既に先頭で定義されている（rawCol0.trim()済）
             let amount = "";
 
@@ -464,7 +471,7 @@ function processFinancialCSV(csvText) {
                     } else if (normalizedCol0.includes("その他の包括利益")) {
                         parentSections.push("その他の包括利益");
                         // currentPLSubsectionを使用（事前に検出済み）
-                        if (currentPLSubsection === "純損益に振り替えられることのない項目" || currentPLSubsection === "純損益に振り替えられる可能性のある項目") {
+                        if ((currentPLSubsection === "純損益に振り替えられることのない項目" || currentPLSubsection === "純損益に振り替えられる可能性のある項目") && !normalizedCol0.includes("税引後その他の包括利益")) {
                             parentSections.push(currentPLSubsection);
                             console.log(`[パス構築] ${normalizedCol0} に中間セクション追加: ${currentPLSubsection}`);
                         }
@@ -472,14 +479,19 @@ function processFinancialCSV(csvText) {
                         parentSections.push("当期利益の帰属");
                     } else if (normalizedCol0 === "当期包括利益" && currentPLSubsection === "当期包括利益の帰属") {
                         parentSections.push("当期包括利益の帰属");
-                    } else if (normalizedCol0.includes("当期利益の帰属") ||
-                        (normalizedCol0.includes("親会社") && normalizedCol0.includes("所有者")) ||
-                        (normalizedCol0.includes("非支配持分") && !normalizedCol0.includes("当期包括利益"))) {
-                        parentSections.push("当期利益の帰属");
                     } else if (normalizedCol0.includes("当期包括利益の帰属") ||
                         (normalizedCol0.includes("親会社") && normalizedCol0.includes("当期包括利益")) ||
                         (normalizedCol0.includes("非支配") && normalizedCol0.includes("当期包括利益"))) {
                         parentSections.push("当期包括利益の帰属");
+                    } else if (normalizedCol0 === "当期包括利益") {
+                        // OCI などのセクション外、ルートに戻す
+                    } else if (currentPLSubsection === "純損益に振り替えられることのない項目" || currentPLSubsection === "純損益に振り替えられる可能性のある項目") {
+                        parentSections.push("その他の包括利益");
+                        parentSections.push(currentPLSubsection);
+                    } else if (normalizedCol0.includes("当期利益の帰属") ||
+                        (normalizedCol0.includes("親会社") && normalizedCol0.includes("所有者")) ||
+                        (normalizedCol0.includes("非支配持分") && !normalizedCol0.includes("当期包括利益"))) {
+                        parentSections.push("当期利益の帰属");
                     } else if (currentLandmarks.sub) {
                         parentSections.push(currentLandmarks.sub);
                     }
