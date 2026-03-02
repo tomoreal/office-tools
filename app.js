@@ -40,6 +40,7 @@ function processFinancialCSV(csvText) {
     let dictItemNames = {}; // dictItemNames[baseType][uniqueKey] = itemName
     let dictIsHeader = {}; // dictIsHeader[baseType][uniqueKey] = Set([year1, year2, ...])
     let dictItemFirstSeen = {}; // dictItemFirstSeen[baseType][uniqueKey] = {yearIndex, rowIndex}
+    let dictItemIndents = {}; // dictItemIndents[baseType][uniqueKey] = maxIndentLevel
     let yearStandards = {}; // yearStandards[year] = "IFRS" | "J-GAAP"
 
     let currentYear = "";
@@ -292,6 +293,7 @@ function processFinancialCSV(csvText) {
                     dictItemNames[currentBaseType] = {};
                     dictIsHeader[currentBaseType] = {};
                     dictItemFirstSeen[currentBaseType] = {};
+                    dictItemIndents[currentBaseType] = {};
                 }
                 lastSeenUniqueKey = ""; // 新しいシートに入ったらリセット
             } else {
@@ -325,6 +327,7 @@ function processFinancialCSV(csvText) {
                 dictItemNames[currentBaseType] = {};
                 dictIsHeader[currentBaseType] = {};
                 dictItemFirstSeen[currentBaseType] = {};
+                dictItemIndents[currentBaseType] = {};
             }
             continue;
         }
@@ -727,6 +730,11 @@ function processFinancialCSV(csvText) {
                 delete dictIsHeader[currentBaseType][uniqueKey];
             }
 
+            // インデント情報を記録 (最大値を保持)
+            if (dictItemIndents[currentBaseType][uniqueKey] === undefined || indentLevel > dictItemIndents[currentBaseType][uniqueKey]) {
+                dictItemIndents[currentBaseType][uniqueKey] = indentLevel;
+            }
+
             // 項目の順序を管理: 初出位置を記録し、適切な場所に挿入
             const alreadyExists = dictItemsOrder[currentBaseType].includes(uniqueKey);
 
@@ -857,8 +865,9 @@ function processFinancialCSV(csvText) {
         dictItemsOrder,
         dictItemNames,
         yearStandards,
-        dictIsHeader, // 追加
-        dictItemFirstSeen // 初出情報を追加
+        dictIsHeader,
+        dictItemFirstSeen,
+        dictItemIndents
     };
 }
 
@@ -993,7 +1002,15 @@ function generateExcelWorkbook(parsedData) {
             });
 
             validItems.forEach(uniqueKey => {
-                const displayName = parsedData.dictItemNames[baseType][uniqueKey] || uniqueKey;
+                let displayName = parsedData.dictItemNames[baseType][uniqueKey] || uniqueKey;
+
+                // インデントを適用 (全角スペースを優先的に使用するか、半角スペースか)
+                // 元のCSVが半角スペースを使用している可能性が高いため、半角スペースを使用
+                const indent = parsedData.dictItemIndents[baseType][uniqueKey] || 0;
+                if (indent > 0) {
+                    displayName = " ".repeat(indent) + displayName;
+                }
+
                 const aColWidth = getDisplayWidth(displayName);
                 if (aColWidth > colWidths[0]) colWidths[0] = aColWidth;
 
