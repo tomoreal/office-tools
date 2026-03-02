@@ -21,6 +21,23 @@ try:
 except ImportError:
     Workbook = None
 
+# IFRS account name mapping to match commercial tools
+IFRS_LABEL_MAPPING = {
+    'jpigp_cor_RevenueIFRS': '売上高',
+    'jpigp_cor_Revenue': '売上高',
+    'jpigp_cor_ProfitLossBeforeTaxIFRS': '税引前当期利益',
+    'jpigp_cor_ProfitLossAttributableToOwnersOfParentIFRS': '親会社の所有者',
+    'jpigp_cor_ProfitLossAttributableToNonControllingInterestsIFRS': '非支配持分',
+    'jpigp_cor_AssetsIFRS': '資産合計',
+    'jpigp_cor_EquityIFRS': '資本合計',
+    'jpigp_cor_EquityAttributableToOwnersOfParentIFRS': '親会社の所有者に帰属する持分合計',
+    'jpigp_cor_OperatingProfitIFRS': '営業利益',
+    'jpigp_cor_OperatingRevenueIFRS': '営業収益',
+    'jpigp_cor_CostOfSalesIFRS': '売上原価',
+    'jpigp_cor_GrossProfitIFRS': '売上総利益',
+    'jpigp_cor_SellingGeneralAndAdministrativeExpensesIFRS': '販売費及び一般管理費',
+}
+
 # Helper to find specific linkbase/instance files in the unzipped folder
 def find_xbrl_files(extract_dir):
     files = {'lab': []}
@@ -599,6 +616,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     if k not in labels_map or p < labels_map_priorities.get(k, 100):
                         labels_map[k] = v
                         labels_map_priorities[k] = p
+            
+            # Apply IFRS label mapping overrides
+            for el_name, alias in IFRS_LABEL_MAPPING.items():
+                labels_map[el_name] = alias
+                labels_map_priorities[el_name] = 0 # Highest priority
             
             trees = parse_presentation_linkbase(xbrl_files['pre'])
             

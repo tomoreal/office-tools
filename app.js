@@ -390,18 +390,45 @@ function processFinancialCSV(csvText) {
             const periodKey = `${currentYear}_${currentStandard}`;
             const isNonHierarchical = nonHierarchicalPeriods.has(periodKey);
 
-            // 全角・半角スペースとタブによるインデントレベルの計算
-            const strippedLen = rawCol0.replace(/^[ \t　]+/, '').length;
-            let indentLevel = rawCol0.length - strippedLen;
+            // インデントの計算（全角・半角スペース、タブ、非改行スペースをカウント）
+            const spacesMatch = rawCol0.match(/^[ \t　\u00A0]+/);
+            let rawSpaces = spacesMatch ? spacesMatch[0].length : 0;
+            let indentLevel = rawSpaces;
 
-            // 階層化されていない期間の場合、インデントレベルを推測
-            // （ランドマークやキーワードから階層を推論）
-            if (isNonHierarchical && indentLevel === 0) {
-                const nName = normalizeKey(col0);
+            const isSectionHeader = amount === "";
+            const nName = normalizeKey(col0);
+
+            // 【重要】キャッシュ・フロー計算書専用のインデントロジック
+            if (currentBaseType.includes("キャッシュ・フロー")) {
+                const currentStandard = yearStandards[currentYear] || "J-GAAP";
+                // 主要な見出しを特定（営業・投資・財務それぞれのセクションの開始または合計行）
+                const isMajorCFSection = (nName.includes("営業活動") || nName.includes("投資活動") || nName.includes("財務活動")) && nName.includes("キャッシュフロー");
+                const isCashFooter = nName.includes("現金及び現金同等物");
+
+                if (isMajorCFSection || isCashFooter) {
+                    indentLevel = 0;
+                } else {
+                    if (currentStandard === "IFRS") {
+                        // IFRS: 主要見出し以外は一律レベル1（2スペース）に統一
+                        indentLevel = 1;
+                    } else {
+                        // J-GAAP: CSVのスペース数をベースにする。
+                        // ただし主要見出し(通常1スペース)を0にするため、全体を1つ分左に寄せる
+                        indentLevel = Math.max(0, rawSpaces - 1);
+
+                        // 非階層化期間（過去データ）でスペースが0の場合の補完
+                        if (isNonHierarchical && rawSpaces === 0) {
+                            indentLevel = 1;
+                        }
+                    }
+                }
+            }
+            // その他の財務諸表（BS, PL等）
+            else if (isNonHierarchical && indentLevel === 0) {
                 // レベル1: 大セクション（資産、負債、資本）
                 if (nName.includes("資産合計") || nName === "資産" || nName.includes("資産の部") ||
                     nName.includes("負債合計") || nName.includes("負債の部") || nName === "負債" ||
-                    nName.includes("資本合計") || nName.includes("純資産合計") || nName === "資本" ||
+                    nName.includes("資本合計") || nName.includes("純資産合計") || nName.includes("資本の部") || nName === "資本" ||
                     nName === "純資産" || nName === "株主資本" || nName.includes("負債及び資本")) {
                     indentLevel = 1;
                 }
@@ -416,15 +443,12 @@ function processFinancialCSV(csvText) {
                 }
             }
 
-            const isSectionHeader = amount === "";
-
             // デバッグ: 「純損益に振り替えられる」を含む行を全て記録
             if (col0.includes("純損益に振り替えられる")) {
                 console.log(`[デバッグ/純損益] year=${currentYear}, baseType=${currentBaseType}, col0="${col0}", amount="${amount}", isSectionHeader=${isSectionHeader}, isNonHierarchical=${isNonHierarchical}`);
             }
 
             // ランドマーク（主要セクション）の特定
-            const nName = normalizeKey(col0);
             let landmarkChanged = false;
             const prevMajor = currentLandmarks.major;
 
@@ -969,7 +993,8 @@ function generateExcelWorkbook(parsedData) {
 
                 // インデントを適用 (全角スペースを優先的に使用するか、半角スペースか)
                 // 元のCSVが半角スペースを使用している可能性が高いため、半角スペースを使用
-                const indent = parsedData.dictItemIndents[baseType][uniqueKey] || 0;
+                // ユーザーの要望（CF見出しで0スペース, 配下で2スペース）に合わせるため、インデントレベルを2倍にする
+                const indent = (parsedData.dictItemIndents[baseType][uniqueKey] || 0) * 2;
                 if (indent > 0) {
                     displayName = " ".repeat(indent) + displayName;
                 }
