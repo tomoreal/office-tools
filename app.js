@@ -27,6 +27,7 @@ function normalizeKey(str) {
     return str.normalize('NFKC')
         .replace(/\s+/g, '') // 空白除去
         .replace(/[・\.．、，]/g, '') // 記号の揺れを除去
+        .replace(/[（\(\[]?△は(?:損失|減少|増加|利益)[）\)\]]?/g, "") // (△は減少), (△は損失) などを除去
         .replace(/[（\(\)）]/g, (m) => ({ '（': '(', '）': ')', '(': '(', ')': ')' }[m]));
 }
 
@@ -50,6 +51,9 @@ function processFinancialCSV(csvText) {
         sub: ""    // 流動, 非流動
     };
     let currentPLSubsection = ""; // 損益計算書の中間セクション（非階層化期間用）
+    let currentCFSubsection = ""; // キャッシュフロー計算書の中間セクション
+    let scanBaseType = "";
+    let lastSeenUniqueKey = ""; // 直前に処理した項目のキー
 
     // csv-parse の簡易実装 (クオート対応)
     const parseCSVLine = (text) => {
@@ -183,7 +187,8 @@ function processFinancialCSV(csvText) {
 
             // より広範な項目をチェック対象とする（表名やメタ情報は除外）
             const isMetaData = col0 === "連結貸借対照表" || col0 === "連結財政状態計算書" ||
-                col0.includes("Consolidated") || col0.includes("（百万円）");
+                col0 === "連結損益計算書" || col0 === "連結損益（及び包括利益）計算書" || col0 === "連結包括利益計算書" ||
+                col0.includes("Consolidated") || col0.includes("（百万円）") || col0.includes("（円）");
             const isLikelyDataItem = !isMetaData && col0.length > 2;
 
             if (isLikelyDataItem) {
@@ -288,8 +293,10 @@ function processFinancialCSV(csvText) {
                     dictIsHeader[currentBaseType] = {};
                     dictItemFirstSeen[currentBaseType] = {};
                 }
+                lastSeenUniqueKey = ""; // 新しいシートに入ったらリセット
             } else {
                 currentBaseType = "";
+                lastSeenUniqueKey = ""; // 新しいシートに入ったらリセット
             }
             continue;
         }
@@ -334,11 +341,26 @@ function processFinancialCSV(csvText) {
                 rawCol0 = rawCol0.replace(/（内訳）|\(内訳\)/, "包括利益の帰属");
             }
 
-            // 古いIFRSの「持分法による投資損益（△は損失）」を統一
-            if (col0.includes("持分法による投資損益") && col0.includes("△は損失")) {
+            // 「（△は損失）」「（△は減少）」などを表示名からも除去
+            itemName = itemName.replace(/[（\(\[]?△は(?:損失|減少|増加|利益)[）\)\]]?/g, "");
+
+            // 「持分法による投資利益」と「持分法による投資損益」を統一
+            if (col0.includes("持分法による投資") && (col0.includes("利益") || col0.includes("損益"))) {
                 col0 = "持分法による投資損益";
                 itemName = "持分法による投資損益";
-                rawCol0 = "持分法による投資損益";
+            }
+
+            // 「その他の包括利益を通じて公正価値で測定する金融資産」と「資本性金融資産」を統一
+            if (col0.includes("その他の包括利益を通じて公正価値で測定する") && col0.includes("金融資産") && !col0.includes("負債性")) {
+                col0 = "その他の包括利益を通じて公正価値で測定する金融資産";
+                itemName = "その他の包括利益を通じて公正価値で測定する金融資産";
+            }
+
+            // 「税引後その他の包括利益」と「その他の包括利益合計」を統一
+            // ただし、「その他の包括利益累計額合計」（貸借対照表の項目）は除外
+            if (col0.includes("税引後その他の包括利益") || (col0.includes("その他の包括利益") && col0.includes("合計") && !col0.includes("振り替えられ") && !col0.includes("累計額"))) {
+                col0 = "その他の包括利益合計";
+                itemName = "その他の包括利益合計";
             }
             // col0 は既に先頭で定義されている（rawCol0.trim()済）
             let amount = "";
@@ -466,8 +488,8 @@ function processFinancialCSV(csvText) {
                     currentCFSubsection = "投資活動によるキャッシュフロー";
                 } else if (nName.includes("財務活動") && nName.includes("キャッシュ")) {
                     currentCFSubsection = "財務活動によるキャッシュフロー";
-                } else if (nName.includes("現金及び現金同等物") && nName.includes("増減額")) {
-                    currentCFSubsection = ""; // キャッシュフローセクションから抜ける場合
+                } else if (nName.includes("現金及び現金同等物") && (nName.includes("増減額") || nName.includes("期首") || nName.includes("期末"))) {
+                    currentCFSubsection = "現金及び現金同等物の増減"; // 増減額セクションに入る
                 } else if (isNonHierarchical) {
                     // 非階層化かつボトムアップ型セクションの場合、事前スキャンした行範囲からセクションを特定する
                     const sections = cfSectionsByYear[currentYear];
@@ -538,7 +560,8 @@ function processFinancialCSV(csvText) {
                     } else if (normalizedCol0.includes("その他の包括利益")) {
                         parentSections.push("その他の包括利益");
                         // currentPLSubsectionを使用（事前に検出済み）
-                        if ((currentPLSubsection === "純損益に振り替えられることのない項目" || currentPLSubsection === "純損益に振り替えられる可能性のある項目") && !normalizedCol0.includes("税引後その他の包括利益")) {
+                        // ただし、「その他の包括利益合計」は中間セクションを追加しない（常に直接の子にする）
+                        if ((currentPLSubsection === "純損益に振り替えられることのない項目" || currentPLSubsection === "純損益に振り替えられる可能性のある項目") && !normalizedCol0.includes("税引後その他の包括利益") && normalizedCol0 !== "その他の包括利益合計") {
                             parentSections.push(currentPLSubsection);
                             console.log(`[パス構築] ${normalizedCol0} に中間セクション追加: ${currentPLSubsection}`);
                         }
@@ -609,6 +632,23 @@ function processFinancialCSV(csvText) {
 
             // ユニークキーを「表名称|フルパス」にする（_headerサフィックスなし）
             let uniqueKey = `${currentBaseType}|${pathParts.join("|")}`;
+
+            // 特殊処理: CFの末尾項目（期首残高、期末残高、増減額、換算差額）は階層を無視してキーを統一する
+            if (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") {
+                const footerTerms = ["期首残高", "期末残高", "増減額", "換算差額"];
+                if (footerTerms.some(term => normalizedCol0.includes(term)) && normalizedCol0.includes("現金及び現金同等物")) {
+                    uniqueKey = `${currentBaseType}|${normalizedCol0}`;
+                }
+            }
+
+            // 特殊処理: 「その他の包括利益合計」は階層に関わらず統一キーにする
+            if (normalizedCol0 === "その他の包括利益合計") {
+                const oldKey = uniqueKey;
+                uniqueKey = `${currentBaseType}|その他の包括利益合計`;
+                if (currentYear && currentBaseType === "連結損益計算書") {
+                    console.log(`[OCI合計統一] ${currentYear}: "${oldKey}" -> "${uniqueKey}"`);
+                }
+            }
 
             // デバッグ用
             if (isNonHierarchical && currentBaseType === "連結損益計算書" && (col0.includes("売上") || col0.includes("当期利益") || col0.includes("包括利益"))) {
@@ -688,7 +728,9 @@ function processFinancialCSV(csvText) {
             }
 
             // 項目の順序を管理: 初出位置を記録し、適切な場所に挿入
-            if (!dictItemsOrder[currentBaseType].includes(uniqueKey)) {
+            const alreadyExists = dictItemsOrder[currentBaseType].includes(uniqueKey);
+
+            if (!alreadyExists) {
                 // 初めて見る項目の場合、出現情報を記録
                 dictItemFirstSeen[currentBaseType][uniqueKey] = {
                     yearIndex: yearIndex,
@@ -698,56 +740,88 @@ function processFinancialCSV(csvText) {
                 // 挿入位置を決定
                 let insertIndex = dictItemsOrder[currentBaseType].length;
 
-                // 親要素（スタックの最後の要素）を取得
-                const parentKey = hierarchyStack.length > 0
-                    ? hierarchyStack[hierarchyStack.length - 1].uniqueKey
-                    : null;
+                // 特殊処理: CF調整項目は「期首残高」の直後に挿入
+                const isCFFooterItem = (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") &&
+                    (normalizedCol0.includes("期首残高") || normalizedCol0.includes("決算期変更") || normalizedCol0.includes("範囲の変更") || normalizedCol0.includes("期末残高")) &&
+                    normalizedCol0.includes("現金及び現金同等物");
 
-                if (parentKey && dictItemsOrder[currentBaseType].includes(parentKey)) {
-                    // 親要素が存在する場合、その子要素の最後に挿入
-                    const parentIndex = dictItemsOrder[currentBaseType].indexOf(parentKey);
+                if (isCFFooterItem) {
+                    // 相対的な順序を定義
+                    const footerOrder = ["期首残高", "決算期変更", "範囲の変更", "期末残高"];
+                    const currentRank = footerOrder.findIndex(term => normalizedCol0.includes(term));
 
-                    // 親の直後から、同じ親を持つ兄弟要素を探す
-                    let lastSiblingIndex = parentIndex;
-                    for (let i = parentIndex + 1; i < dictItemsOrder[currentBaseType].length; i++) {
-                        const siblingKey = dictItemsOrder[currentBaseType][i];
+                    // 既に登録されているフッター項目を探す
+                    let bestInsertIndex = -1;
+                    let foundHigherRank = false;
 
-                        // 親のキー（+区切り文字）で始まっていれば、それはこの親の子（または孫）要素
-                        const siblingHasParent = siblingKey.startsWith(parentKey + "|");
-
-                        if (siblingHasParent) {
-                            lastSiblingIndex = i;
-                        } else {
-                            // 同じレベルまたは別の親の要素に達したら終了
-                            break;
-                        }
-                    }
-
-                    insertIndex = lastSiblingIndex + 1;
-                } else if ((currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") && currentCFSubsection) {
-                    // 非階層データ等で親要素（スタック）が存在しない場合でも、CFセクションに属することがわかっていれば、そのセクションの末尾に挿入する
-                    const sectionPrefix = `${currentBaseType}|${currentCFSubsection}`;
-                    let lastSectionIndex = -1;
                     for (let i = 0; i < dictItemsOrder[currentBaseType].length; i++) {
-                        if (dictItemsOrder[currentBaseType][i].startsWith(sectionPrefix)) {
-                            lastSectionIndex = i;
+                        const key = dictItemsOrder[currentBaseType][i];
+                        if (key.includes("現金及び現金同等物")) {
+                            const rank = footerOrder.findIndex(term => key.includes(term));
+                            if (rank !== -1) {
+                                if (rank < currentRank) {
+                                    // 自分より前の項目の後ろ
+                                    bestInsertIndex = i + 1;
+                                } else if (rank > currentRank && !foundHigherRank) {
+                                    // 自分より後の項目の前
+                                    bestInsertIndex = i;
+                                    foundHigherRank = true;
+                                }
+                            }
                         }
                     }
-                    if (lastSectionIndex !== -1) {
-                        insertIndex = lastSectionIndex + 1;
+
+                    if (bestInsertIndex !== -1) {
+                        insertIndex = bestInsertIndex;
+                        console.log(`[CFフッター配置] "${normalizedCol0}" (rank=${currentRank}) を index=${insertIndex} に挿入`);
                     } else {
+                        // まだフッター項目がない場合は末尾
                         insertIndex = dictItemsOrder[currentBaseType].length;
                     }
                 } else {
-                    // 親が見つからない場合、同じレベルの最後に追加
-                    insertIndex = dictItemsOrder[currentBaseType].length;
+                    // 通常の処理
+                    // 親要素（スタックの最後の要素）を取得
+                    const parentKey = hierarchyStack.length > 0
+                        ? hierarchyStack[hierarchyStack.length - 1].uniqueKey
+                        : null;
+
+                    if (lastSeenUniqueKey && dictItemsOrder[currentBaseType].includes(lastSeenUniqueKey)) {
+                        // 直前の項目がリストにある場合は、その直後に挿入する
+                        // これがCSVの並び順（線形）を最も忠実に再現する
+                        insertIndex = dictItemsOrder[currentBaseType].indexOf(lastSeenUniqueKey) + 1;
+                    } else if (parentKey && dictItemsOrder[currentBaseType].includes(parentKey)) {
+                        // 親が見つかり、かつ直前の項目がリストにない場合（セクションの最初の項目など）
+                        // 親要素の直後に挿入する
+                        insertIndex = dictItemsOrder[currentBaseType].indexOf(parentKey) + 1;
+                    } else if ((currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") && currentCFSubsection) {
+                        // 非階層データ等でセクションに属することがわかっていれば、そのセクションの末尾に挿入する
+                        const sectionPrefix = `${currentBaseType}|${currentCFSubsection}`;
+                        let lastSectionIndex = -1;
+                        for (let i = 0; i < dictItemsOrder[currentBaseType].length; i++) {
+                            if (dictItemsOrder[currentBaseType][i].startsWith(sectionPrefix)) {
+                                lastSectionIndex = i;
+                            }
+                        }
+                        if (lastSectionIndex !== -1) {
+                            insertIndex = lastSectionIndex + 1;
+                        } else {
+                            insertIndex = dictItemsOrder[currentBaseType].length;
+                        }
+                    } else {
+                        // いずれも見つからない場合のみ末尾に追加
+                        insertIndex = dictItemsOrder[currentBaseType].length;
+                    }
                 }
 
                 dictItemsOrder[currentBaseType].splice(insertIndex, 0, uniqueKey);
+            } else {
+                // 既に存在する項目の場合は、順序の変更は行わない
+                // これにより、CSV上で最初に出現した順序（最新年度での順序）が維持される
             }
 
             // 現在の項目をスタックに追加（次の項目の親候補として）
             hierarchyStack.push({ level: indentLevel, name: col0, uniqueKey: uniqueKey });
+            lastSeenUniqueKey = uniqueKey; // 次回参照用に記録
 
             if (shouldSkipItemRegistration) {
                 continue;
@@ -783,7 +857,8 @@ function processFinancialCSV(csvText) {
         dictItemsOrder,
         dictItemNames,
         yearStandards,
-        dictIsHeader // 追加
+        dictIsHeader, // 追加
+        dictItemFirstSeen // 初出情報を追加
     };
 }
 
@@ -891,6 +966,9 @@ function generateExcelWorkbook(parsedData) {
             }
 
             if (validItems.length === 0) return;
+
+            // validItemsはdictItemsOrderの順序を保持しているので、そのまま使用
+            // dictItemsOrderは既に年度優先の再配置ロジックで正しい順序になっている
 
             // 最大31文字かつ特殊文字を除外したシート名
             const safeTitle = sheetTitle.replace(/[・ \/]/g, "").substring(0, 31);
