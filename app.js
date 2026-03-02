@@ -748,77 +748,23 @@ function processFinancialCSV(csvText) {
                 // 挿入位置を決定
                 let insertIndex = dictItemsOrder[currentBaseType].length;
 
-                // 特殊処理: CF調整項目は「期首残高」の直後に挿入
-                const isCFFooterItem = (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") &&
-                    (normalizedCol0.includes("期首残高") || normalizedCol0.includes("決算期変更") || normalizedCol0.includes("範囲の変更") || normalizedCol0.includes("期末残高")) &&
-                    normalizedCol0.includes("現金及び現金同等物");
+                // 通常の処理
+                // 親要素（スタックの最後の要素）を取得
+                const parentKey = hierarchyStack.length > 0
+                    ? hierarchyStack[hierarchyStack.length - 1].uniqueKey
+                    : null;
 
-                if (isCFFooterItem) {
-                    // 相対的な順序を定義
-                    const footerOrder = ["期首残高", "決算期変更", "範囲の変更", "期末残高"];
-                    const currentRank = footerOrder.findIndex(term => normalizedCol0.includes(term));
-
-                    // 既に登録されているフッター項目を探す
-                    let bestInsertIndex = -1;
-                    let foundHigherRank = false;
-
-                    for (let i = 0; i < dictItemsOrder[currentBaseType].length; i++) {
-                        const key = dictItemsOrder[currentBaseType][i];
-                        if (key.includes("現金及び現金同等物")) {
-                            const rank = footerOrder.findIndex(term => key.includes(term));
-                            if (rank !== -1) {
-                                if (rank < currentRank) {
-                                    // 自分より前の項目の後ろ
-                                    bestInsertIndex = i + 1;
-                                } else if (rank > currentRank && !foundHigherRank) {
-                                    // 自分より後の項目の前
-                                    bestInsertIndex = i;
-                                    foundHigherRank = true;
-                                }
-                            }
-                        }
-                    }
-
-                    if (bestInsertIndex !== -1) {
-                        insertIndex = bestInsertIndex;
-                        console.log(`[CFフッター配置] "${normalizedCol0}" (rank=${currentRank}) を index=${insertIndex} に挿入`);
-                    } else {
-                        // まだフッター項目がない場合は末尾
-                        insertIndex = dictItemsOrder[currentBaseType].length;
-                    }
+                if (lastSeenUniqueKey && dictItemsOrder[currentBaseType].includes(lastSeenUniqueKey)) {
+                    // 直前の項目がリストにある場合は、その直後に挿入する
+                    // これがCSVの並び順（線形）を最も忠実に再現する
+                    insertIndex = dictItemsOrder[currentBaseType].indexOf(lastSeenUniqueKey) + 1;
+                } else if (parentKey && dictItemsOrder[currentBaseType].includes(parentKey)) {
+                    // 親が見つかり、かつ直前の項目がリストにない場合（セクションの最初の項目など）
+                    // 親要素の直後に挿入する
+                    insertIndex = dictItemsOrder[currentBaseType].indexOf(parentKey) + 1;
                 } else {
-                    // 通常の処理
-                    // 親要素（スタックの最後の要素）を取得
-                    const parentKey = hierarchyStack.length > 0
-                        ? hierarchyStack[hierarchyStack.length - 1].uniqueKey
-                        : null;
-
-                    if (lastSeenUniqueKey && dictItemsOrder[currentBaseType].includes(lastSeenUniqueKey)) {
-                        // 直前の項目がリストにある場合は、その直後に挿入する
-                        // これがCSVの並び順（線形）を最も忠実に再現する
-                        insertIndex = dictItemsOrder[currentBaseType].indexOf(lastSeenUniqueKey) + 1;
-                    } else if (parentKey && dictItemsOrder[currentBaseType].includes(parentKey)) {
-                        // 親が見つかり、かつ直前の項目がリストにない場合（セクションの最初の項目など）
-                        // 親要素の直後に挿入する
-                        insertIndex = dictItemsOrder[currentBaseType].indexOf(parentKey) + 1;
-                    } else if ((currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") && currentCFSubsection) {
-                        // 非階層データ等でセクションに属することがわかっていれば、そのセクションの末尾に挿入する
-                        const sectionPrefix = `${currentBaseType}|${currentCFSubsection}`;
-                        let lastSectionIndex = -1;
-                        for (let i = 0; i < dictItemsOrder[currentBaseType].length; i++) {
-                            if (dictItemsOrder[currentBaseType][i].startsWith(sectionPrefix)) {
-                                lastSectionIndex = i;
-                            }
-                        }
-                        if (lastSectionIndex !== -1) {
-                            insertIndex = lastSectionIndex + 1;
-                        } else {
-                            insertIndex = dictItemsOrder[currentBaseType].length;
-                        }
-                    } else {
-                        // いずれも見つからない場合のみ末尾に追加
-                        insertIndex = dictItemsOrder[currentBaseType].length;
-                    }
+                    // いずれも見つからない場合のみ末尾に追加
+                    insertIndex = dictItemsOrder[currentBaseType].length;
                 }
 
                 dictItemsOrder[currentBaseType].splice(insertIndex, 0, uniqueKey);
