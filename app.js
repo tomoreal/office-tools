@@ -552,17 +552,17 @@ function processFinancialCSV(csvText) {
 
                 if (currentBaseType === "連結貸借対照表") {
                     // 貸借対照表: 流動/非流動資産・負債の判定
-                    if (normalizedCol0.includes("非流動資産")) {
+                    if (nName.includes("非流動資産")) {
                         parentSections.push("非流動資産");
-                    } else if (normalizedCol0.includes("流動資産")) {
+                    } else if (nName.includes("流動資産")) {
                         parentSections.push("流動資産");
-                    } else if (normalizedCol0.includes("固定資産")) {
+                    } else if (nName.includes("固定資産")) {
                         parentSections.push("固定資産");
-                    } else if (normalizedCol0.includes("非流動負債")) {
+                    } else if (nName.includes("非流動負債")) {
                         parentSections.push("非流動負債");
-                    } else if (normalizedCol0.includes("流動負債")) {
+                    } else if (nName.includes("流動負債")) {
                         parentSections.push("流動負債");
-                    } else if (normalizedCol0.includes("固定負債")) {
+                    } else if (nName.includes("固定負債")) {
                         parentSections.push("固定負債");
                     } else if (currentLandmarks.sub) {
                         parentSections.push(currentLandmarks.sub);
@@ -575,26 +575,26 @@ function processFinancialCSV(csvText) {
                         parentSections.push("その他の包括利益");
                         // currentPLSubsectionを使用（事前に検出済み）
                         // ただし、「その他の包括利益合計」は中間セクションを追加しない（常に直接の子にする）
-                        if ((currentPLSubsection === "純損益に振り替えられることのない項目" || currentPLSubsection === "純損益に振り替えられる可能性のある項目") && !normalizedCol0.includes("税引後その他の包括利益") && normalizedCol0 !== "その他の包括利益合計") {
+                        if ((currentPLSubsection === "純損益に振り替えられることのない項目" || currentPLSubsection === "純損益に振り替えられる可能性のある項目") && !nName.includes("税引後その他の包括利益") && nName !== "その他の包括利益合計") {
                             parentSections.push(currentPLSubsection);
-                            console.log(`[パス構築] ${normalizedCol0} に中間セクション追加: ${currentPLSubsection}`);
+                            console.log(`[パス構築] ${nName} に中間セクション追加: ${currentPLSubsection}`);
                         }
-                    } else if (normalizedCol0 === "当期利益" && currentPLSubsection === "当期利益の帰属") {
+                    } else if (nName === "当期利益" && currentPLSubsection === "当期利益の帰属") {
                         parentSections.push("当期利益の帰属");
-                    } else if (normalizedCol0 === "当期包括利益" && currentPLSubsection === "当期包括利益の帰属") {
+                    } else if (nName === "当期包括利益" && currentPLSubsection === "当期包括利益の帰属") {
                         parentSections.push("当期包括利益の帰属");
-                    } else if (normalizedCol0.includes("当期包括利益の帰属") ||
-                        (normalizedCol0.includes("親会社") && normalizedCol0.includes("当期包括利益")) ||
-                        (normalizedCol0.includes("非支配") && normalizedCol0.includes("当期包括利益"))) {
+                    } else if (nName.includes("当期包括利益の帰属") ||
+                        (nName.includes("親会社") && nName.includes("当期包括利益")) ||
+                        (nName.includes("非支配") && nName.includes("当期包括利益"))) {
                         parentSections.push("当期包括利益の帰属");
-                    } else if (normalizedCol0 === "当期包括利益") {
+                    } else if (nName === "当期包括利益") {
                         // OCI などのセクション外、ルートに戻す
                     } else if (currentPLSubsection === "純損益に振り替えられることのない項目" || currentPLSubsection === "純損益に振り替えられる可能性のある項目") {
                         parentSections.push("その他の包括利益");
                         parentSections.push(currentPLSubsection);
-                    } else if (normalizedCol0.includes("当期利益の帰属") ||
-                        (normalizedCol0.includes("親会社") && normalizedCol0.includes("所有者")) ||
-                        (normalizedCol0.includes("非支配持分") && !normalizedCol0.includes("当期包括利益"))) {
+                    } else if (nName.includes("当期利益の帰属") ||
+                        (nName.includes("親会社") && nName.includes("所有者")) ||
+                        (nName.includes("非支配持分") && !nName.includes("当期包括利益"))) {
                         parentSections.push("当期利益の帰属");
                     } else if (currentLandmarks.sub) {
                         parentSections.push(currentLandmarks.sub);
