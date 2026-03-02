@@ -24,11 +24,17 @@ const SHEET_MAPPING = {
  */
 function normalizeKey(str) {
     if (!str) return "";
-    return str.normalize('NFKC')
+    const normalized = str.normalize('NFKC')
         .replace(/\s+/g, '') // 空白除去
         .replace(/[・\.．、，]/g, '') // 記号の揺れを除去
         .replace(/[（\(\[]?△は(?:損失|減少|増加|利益)[）\)\]]?/g, "") // (△は減少), (△は損失) などを除去
         .replace(/[（\(\)）]/g, (m) => ({ '（': '(', '）': ')', '(': '(', ')': ')' }[m]));
+
+    // 特殊: 税金等調整前当期純利益の揺れを統一
+    if (normalized.includes("税金等調整前当期純利益") || normalized.includes("税金等調整前当期純損失")) {
+        return "税金等調整前当期純利益";
+    }
+    return normalized;
 }
 
 function processFinancialCSV(csvText) {
@@ -523,6 +529,11 @@ function processFinancialCSV(csvText) {
             // 階層スタックの管理: インデントレベルに基づいて親子関係を管理
             // ヘッダー、データ行どちらもスタックを更新
             while (hierarchyStack.length > 0 && hierarchyStack[hierarchyStack.length - 1].level >= indentLevel) {
+                // 特殊処理: 金額があるデータ行（!isSectionHeader）で、スタックトップと同じ名前（かつ同じインデント）の場合はポップしない
+                // これにより、ヘッダーと同じインデントレベルの小計を親子に保ち、キーの衝突を防ぐ
+                if (!isSectionHeader && normalizeKey(hierarchyStack[hierarchyStack.length - 1].name) === nName) {
+                    break;
+                }
                 hierarchyStack.pop();
             }
 
@@ -530,7 +541,7 @@ function processFinancialCSV(csvText) {
             const pathParts = [];
 
             // 階層化されていない期間は、シンプルにランドマーク+正規化名のみで統一
-            const normalizedCol0 = normalizeKey(col0);
+            // (isNonHierarchical はループの最初の方で定義済み)
 
             if (isNonHierarchical) {
                 // 階層化なしの場合: ランドマークのみ使用（スタックは使わない）
@@ -558,9 +569,9 @@ function processFinancialCSV(csvText) {
                     }
                 } else if (currentBaseType === "連結損益計算書") {
                     // 損益計算書: セクションごとに親を推測
-                    if (normalizedCol0.includes("1株当たり") || normalizedCol0.includes("１株当たり")) {
+                    if (nName.includes("1株当たり") || nName.includes("１株当たり")) {
                         parentSections.push("1株当たり当期利益");
-                    } else if (normalizedCol0.includes("その他の包括利益")) {
+                    } else if (nName.includes("その他の包括利益")) {
                         parentSections.push("その他の包括利益");
                         // currentPLSubsectionを使用（事前に検出済み）
                         // ただし、「その他の包括利益合計」は中間セクションを追加しない（常に直接の子にする）
@@ -589,8 +600,11 @@ function processFinancialCSV(csvText) {
                         parentSections.push(currentLandmarks.sub);
                     }
                 } else if (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") {
-                    if (currentCFSubsection && !normalizedCol0.includes(currentCFSubsection.replace("フロー", ""))) {
-                        parentSections.push(currentCFSubsection);
+                    if (currentCFSubsection) {
+                        // データ行（!isSectionHeader）の場合は、たとえ名前が似ていてもセクションの下に入れることでキーの衝突を防ぐ
+                        if (!isSectionHeader || !nName.includes(currentCFSubsection.replace("フロー", ""))) {
+                            parentSections.push(currentCFSubsection);
+                        }
                     }
                 } else {
                     // その他の財務諸表
@@ -605,9 +619,10 @@ function processFinancialCSV(csvText) {
                 });
 
                 // 本人の名前を追加（ランドマークや親セクションと同じ場合は除外）
-                const isAlreadyInPath = pathParts.some(p => normalizeKey(p) === normalizedCol0);
-                if (normalizedCol0 !== currentLandmarks.major && !isAlreadyInPath) {
-                    pathParts.push(normalizedCol0);
+                // ただし、データ行（金額あり）の場合は必ず追加してキーの衝突を防ぐ
+                const isAlreadyInPath = pathParts.some(p => normalizeKey(p) === nName);
+                if (nName !== currentLandmarks.major && (!isAlreadyInPath || !isSectionHeader)) {
+                    pathParts.push(nName);
                 }
             } else {
                 // 階層化ありの場合: 従来通りスタックを使用
@@ -624,9 +639,11 @@ function processFinancialCSV(csvText) {
                     }
                 });
 
-                // 本人の名前がまだパスに含まれていない場合のみ追加 (ヘッダー自身の場合など)
-                if (pathParts.length === 0 || pathParts[pathParts.length - 1] !== normalizedCol0) {
-                    pathParts.push(normalizedCol0);
+                // 本人の名前がまだパスに含まれていない場合、またはデータ行（金額あり）の場合は追加
+                // これにより、セクションヘッダーと同じ名前の「小計/合計」行が衝突するのを防ぐ
+                const isAlreadyInPath = pathParts.length > 0 && pathParts[pathParts.length - 1] === nName;
+                if (!isAlreadyInPath || !isSectionHeader) {
+                    pathParts.push(nName);
                 }
             }
 
@@ -639,13 +656,13 @@ function processFinancialCSV(csvText) {
             // 特殊処理: CFの末尾項目（期首残高、期末残高、増減額、換算差額）は階層を無視してキーを統一する
             if (currentBaseType === "連結キャッシュ・フロー計算書" || currentBaseType === "連結キャッシュフロー計算書") {
                 const footerTerms = ["期首残高", "期末残高", "増減額", "換算差額"];
-                if (footerTerms.some(term => normalizedCol0.includes(term)) && normalizedCol0.includes("現金及び現金同等物")) {
-                    uniqueKey = `${currentBaseType}|${normalizedCol0}`;
+                if (footerTerms.some(term => nName.includes(term)) && nName.includes("現金及び現金同等物")) {
+                    uniqueKey = `${currentBaseType}|${nName}`;
                 }
             }
 
             // 特殊処理: 「その他の包括利益合計」は階層に関わらず統一キーにする
-            if (normalizedCol0 === "その他の包括利益合計") {
+            if (nName === "その他の包括利益合計") {
                 const oldKey = uniqueKey;
                 uniqueKey = `${currentBaseType}|その他の包括利益合計`;
                 if (currentYear && currentBaseType === "連結損益計算書") {
