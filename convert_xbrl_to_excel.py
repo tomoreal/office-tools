@@ -382,7 +382,7 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
         for m in members:
             # Handle QNames in member text (e.g., jppfs_cor:EnergySegmentMember)
             m_text = m.text or ""
-            # Try to look up the label using various common prefixes
+            # 1. Try to look up the label using various common prefixes
             # Since we removed the aggressive base-name mapping to fix IFRS labels,
             # we must be more explicit here.
             member_val = m_text.split(':')[-1]
@@ -392,6 +392,15 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
                 if p + member_val in labels_map:
                     label = labels_map[p + member_val]
                     break
+                    
+            # 2. Add fallback for company specific segment names found in _lab.xml 
+            # (e.g. jpcrp030000-asr_E00023-000_MineralResourcesReportableSegmentMember)
+            if not label:
+                suffix = '_' + member_val
+                for k, v in labels_map.items():
+                    if k.endswith(suffix):
+                        label = v
+                        break
             
             if label:
                 dimension_names.append(label)
@@ -558,6 +567,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         
     global_element_period_values = {} # {element: {col_key: value}}
     merged_trees = {} # {role_name: {(parent, child): order}}
+    seen_children_in_role = {} # {role_name: set(children)}
     labels_map = {} # {element: label_text}
     labels_map_priorities = {} # {element: priority}
     
@@ -668,10 +678,18 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
                 if role not in merged_trees:
                     merged_trees[role] = {}
+                    seen_children_in_role[role] = set()
                     
                 for arc in tree_arcs:
                     p, c, o = arc['parent'], arc['child'], arc['order']
+                    
+                    # Prevent duplicates in merged segment roles to avoid repeating 
+                    # basic elements (like Sales, Assets) under Impairment or Goodwill headers.
+                    if 'SegmentInformation' in role and c in seen_children_in_role[role]:
+                        continue
+                        
                     merged_trees[role][(p, c)] = float(o) + sub_role_idx
+                    seen_children_in_role[role].add(c)
 
     finally:
         shutil.rmtree(temp_base)
@@ -998,6 +1016,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'ProfitLossAttributableToNoncontrollingInterests': '非支配持分',
                 'BasicEarningsPerShare': '基本的１株当たり当期利益（円）',
                 'BasicEarningsLossPerShare': '基本的１株当たり当期利益（円）',
+                
+                # Segment specific keys are moved to segment_dict
+
                 # Priority IFRS items
                 'CostOfSalesIFRS': '売上原価',
                 'GrossProfitIFRS': '売上総利益',
@@ -1006,7 +1027,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'OperatingProfitLossIFRS': '営業利益',
                 'FinanceIncomeIFRS': '金融収益',
                 'FinanceCostsIFRS': '金融費用',
-                'ProfitLossBeforeTaxIFRS': '税引前利益',
+                'ProfitLossBeforeTaxIFRS': '（税引前当期損益）',
                 'IncomeTaxExpenseIFRS': '法人所得税費用',
                 'ProfitLossIFRS': '当期利益',
                 'ProfitLossAttributableToOwnersOfParentIFRS': '親会社の所有者',
@@ -1017,7 +1038,52 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             parts = el.split('_')
             base_name = parts[-1] if len(parts) > 1 else el
             
-            if base_name in common_dict:
+            segment_dict = {
+                # IFRS Specific Overrides for Segments
+                'NetSalesIFRS': '売上高', 
+                'IntersegmentSalesIFRS': 'セグメント間売上高',
+                'ProfitLossBeforeTaxIFRS': '（税引前当期損益）',
+                'AssetsIFRS': 'セグメント資産',
+                'DepreciationAndAmortizationOperatingExpensesIFRS': '減価償却費及び償却費',
+                'ImpairmentLossesOnNonFinancialAssetsPLIFRS': '非金融資産の減損損失',
+                'OtherIncomeAndExpensesNetIFRS': 'その他の損益',
+                'ShareOfProfitLossOfInvestmentsAccountedForUsingEquityMethodIFRS': '持分法による投資損益',
+                'CapitalExpendituresIFRS': '資本的支出',
+                'InvestmentsAccountedForUsingEquityMethodIFRS': '持分法で会計処理されている投資',
+                'FinanceIncomeIFRS': '金融収益',
+                'FinanceCostsIFRS': '金融費用',
+                'ExternalRevenueIFRS': '外部売上高',
+                'IntersegmentRevenueIFRS': 'セグメント間売上高',
+                'SegmentProfitLossIFRS': 'セグメント利益又は損失（△）',
+                'SegmentAssetsIFRS': 'セグメント資産',
+                'OtherInformationIFRS': 'その他の情報',
+                'DepreciationAndAmortisationIFRS': '減価償却費及び償却費',
+                'OtherProfitLossIFRS': 'その他の損益',
+                
+                # J-GAAP Specific Overrides for Segments
+                'NetSales': '計',
+                'OrdinaryIncome': 'セグメント利益又は損失（△）',
+                'OperatingIncome': 'セグメント利益又は損失（△）',
+                'Assets': 'セグメント資産',
+                'Liabilities': 'セグメント負債',
+                'SalesToExternalCustomers': '外部顧客への売上高',
+                'IntersegmentSalesOrTransfers': 'セグメント間の内部売上高又は振替高',
+                'SegmentProfitLoss': 'セグメント利益又は損失（△）',
+                'SegmentAssets': 'セグメント資産',
+                'SegmentLiabilities': 'セグメント負債',
+                'OtherItems': 'その他の項目',
+                'DepreciationAndAmortization': '減価償却費',
+                'AmortizationOfGoodwill': 'のれんの償却額',
+                'InterestIncome': '受取利息',
+                'InterestExpenses': '支払利息',
+                'ShareOfProfitLossOfEntitiesAccountedForUsingEquityMethod': '持分法投資利益又は損失（△）',
+                'InvestmentsInEntitiesAccountedForUsingEquityMethod': '持分法適用会社への投資額',
+                'IncreaseInPropertyPlantAndEquipmentAndIntangibleAssets': '有形固定資産及び無形固定資産の増加額'
+            }
+            
+            if is_segment and base_name in segment_dict:
+                label = segment_dict[base_name]
+            elif base_name in common_dict:
                 label = common_dict[base_name]
             else:
                 label = labels_map.get(el)

@@ -8,3 +8,4 @@ __pycache__/
 .gitignore
 .gitignore_global
 edinet_taxonomies/
+tmp_xbrl/
