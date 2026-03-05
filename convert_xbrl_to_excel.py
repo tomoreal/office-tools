@@ -36,6 +36,12 @@ IFRS_LABEL_MAPPING = {
     'jpigp_cor_CostOfSalesIFRS': '売上原価',
     'jpigp_cor_GrossProfitIFRS': '売上総利益',
     'jpigp_cor_SellingGeneralAndAdministrativeExpensesIFRS': '販売費及び一般管理費',
+    'jpigp_cor_InventoriesCAIFRS': '棚卸資産',
+    'jpigp_cor_PropertyPlantAndEquipmentIFRS': '有形固定資産',
+    'jpigp_cor_IntangibleAssetsIFRS': '無形資産',
+    'jpigp_cor_CurrentAssetsIFRS': '流動資産合計',
+    'jpigp_cor_NonCurrentAssetsIFRS': '非流動資産合計',
+    'jpigp_cor_LiabilitiesIFRS': '負債合計',
 }
 
 # Helper to find specific linkbase/instance files in the unzipped folder
@@ -186,7 +192,7 @@ def parse_labels_file(lab_file):
         "http://disclosure.edinet-fsa.go.jp/jpcrp/alt/role/totalLabel": 11, # EDINET alternate total
     }
 
-    GENERIC_LABELS = ('合計', '計', 'total', 'sum', 'subtotal', '金額')
+    GENERIC_LABELS = ('合計', '小計', '計', 'total', 'sum', 'subtotal', '金額')
 
     for res in tree.xpath("//link:label", namespaces=ns):
         lang = res.get("{http://www.w3.org/XML/1998/namespace}lang")
@@ -608,7 +614,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     # Support various standards like jppfs (J-GAAP), jpigp (IFRS), etc.
                     m = re.search(r'http://disclosure\.edinet-fsa\.go\.jp/taxonomy/[a-z]+(?:_[a-z]+)?/(\d{4})-\d{2}-\d{2}', content)
                     if m:
-                        taxonomy_year = m.group(1)
+                        year_str = m.group(1)
+                        if year_str == '2020':
+                            taxonomy_year = '2021'
+                        else:
+                            taxonomy_year = year_str
             
             if taxonomy_year:
                 std_labels, std_priorities = get_standard_labels(taxonomy_year)
@@ -824,32 +834,66 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             'StatementOfCashFlows-direct': 'キャッシュ・フロー計算書',
             'SummaryOfBusinessResults': '主要な経営指標等の推移',
             'BusinessResultsOfGroup': '主要な経営指標等の推移（連結）',
-            'BusinessResultsOfReportingCompany': '主要な経営指標等の推移（単体）'
+            'BusinessResultsOfReportingCompany': '主要な経営指標等の推移（単体）',
+            # IFRS Notes
+            'InventoriesConsolidatedFinancialStatementsIFRS': '棚卸資産',
+            'PropertyPlantAndEquipmentConsolidatedFinancialStatementsIFRS': '有形固定資産',
+            'GoodwillAndIntangibleAssetsConsolidatedFinancialStatementsIFRS': 'のれん及び無形資産',
+            'SellingGeneralAndAdministrativeExpensesConsolidatedFinancialStatementsIFRS': '販売費及び一般管理費',
+            'FinanceIncomeAndFinanceCostsConsolidatedFinancialStatementsIFRS': '金融収益及び金融費用',
+            'TradeAndOtherReceivablesConsolidatedFinancialStatementsIFRS': '営業債権及びその他の債権',
+            'TradeAndOtherPayablesConsolidatedFinancialStatementsIFRS': '営業債務及びその他の債務',
+            'OtherInvestmentsConsolidatedFinancialStatementsIFRS': 'その他の投資',
+            'ExpensesByNatureConsolidatedFinancialStatementsIFRS': '費用の性質別内訳'
         }
         
         japanese_name = sheet_mapping.get(base_name)
         if not japanese_name:
             if base_name.startswith('Notes'):
                 sub_name = base_name[5:] # remove 'Notes'
-                if sub_name.startswith('SegmentInformation'):
-                    m = re.search(r'-(\d+)$', sub_name)
-                    segment_dict = {
-                        '01': '報告セグメントの概要等',
-                        '02': 'セグメント情報',
-                        '03': '差異調整事項等',
-                        '04': '関連情報',
-                        '05': '減損損失',
-                        '06': 'のれん',
-                        '07': '負ののれん'
-                    }
-                    if m and m.group(1) in segment_dict:
-                        japanese_name = f'注記_{segment_dict[m.group(1)]}'
-                    elif m:
-                        japanese_name = f'注記_セグメント情報{int(m.group(1))}'
+                # Dynamic lookup in labels_map for element names based on base_name
+                # Try multiple prefixes for IFRS and J-GAAP
+                prefixes = ["jpigp_cor_", "jpcrp_cor_", "jppfs_cor_"]
+                # Possible variations: Prefix + role_name + suffix, or Prefix + sub_name + suffix
+                search_terms = []
+                for p in prefixes:
+                    for suffix in ["Heading", "TextBlock", ""]:
+                        search_terms.append(f"{p}{base_name}{suffix}")
+                        if base_name.startswith('Notes'):
+                            search_terms.append(f"{p}{base_name[5:]}{suffix}")
+                        else:
+                            search_terms.append(f"{p}Notes{base_name}{suffix}")
+                
+                for el in search_terms:
+                    if el in labels_map:
+                        raw_label = labels_map[el]
+                        # Clean up: remove prefixes and standardize
+                        # Example: "注記事項－..." or suffix phrases
+                        clean_label = raw_label.split('、')[0].split(' [')[0].replace('注記事項－', '').strip()
+                        if clean_label:
+                            japanese_name = '注記_' + clean_label
+                            break
+
+                if not japanese_name:
+                    if sub_name.startswith('SegmentInformation'):
+                        m = re.search(r'-(\d+)$', sub_name)
+                        segment_dict = {
+                            '01': '報告セグメントの概要等',
+                            '02': 'セグメント情報',
+                            '03': '差異調整事項等',
+                            '04': '関連情報',
+                            '05': '減損損失',
+                            '06': 'のれん',
+                            '07': '負ののれん'
+                        }
+                        if m and m.group(1) in segment_dict:
+                            japanese_name = f'注記_{segment_dict[m.group(1)]}'
+                        elif m:
+                            japanese_name = f'注記_セグメント情報{int(m.group(1))}'
+                        else:
+                            japanese_name = '注記_セグメント情報'
                     else:
-                        japanese_name = '注記_セグメント情報'
-                else:
-                    japanese_name = '注記_' + sheet_mapping.get(sub_name, sub_name)
+                        japanese_name = '注記_' + sheet_mapping.get(sub_name, sub_name)
             else:
                 japanese_name = base_name
                 
@@ -1138,11 +1182,54 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 ws.append(row_data)
 
         # Apply formatting and column widths
+        ratio_elements = {
+            # Standard & Japanese GAAP
+            'EquityToAssetRatioSummaryOfBusinessResults',
+            'RateOfReturnOnEquitySummaryOfBusinessResults',
+            'CapitalAdequacyRatioInternationalStandardSummaryOfBusinessResults',
+            'CapitalAdequacyRatioDomesticStandardSummaryOfBusinessResults',
+            'CapitalAdequacyRatioBISStandardSummaryOfBusinessResults',
+            'CapitalAdequacyRatioDomesticStandard2SummaryOfBusinessResults',
+            'PayoutRatioSummaryOfBusinessResults',
+            
+            # IFRS Variations
+            'RatioOfOwnersEquityToGrossAssetsIFRSSummaryOfBusinessResults',
+            'RateOfReturnOnEquityIFRSSummaryOfBusinessResults',
+            
+            # JMIS Variations
+            'RatioOfOwnersEquityToGrossAssetsJMISSummaryOfBusinessResults',
+            'RateOfReturnOnEquityJMISSummaryOfBusinessResults',
+            
+            # US GAAP Variations
+            'EquityToAssetRatioUSGAAPSummaryOfBusinessResults',
+            'RateOfReturnOnEquityUSGAAPSummaryOfBusinessResults',
+            
+            # Industry Specific (Insurance, etc.)
+            'NetLossRatioSummaryOfBusinessResultsINS',
+            'NetOperatingExpenseRatioSummaryOfBusinessResultsINS'
+        }
+
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            # Element name is in column B (index 1)
+            el_name = row[1].value if len(row) > 1 else None
+            is_ratio = False
+            if el_name:
+                el_str = str(el_name)
+                # Handle prefixes: Namespace:Element or Namespace_Element
+                # We check if the element name ends with our target ratio element name,
+                # ensuring it is either a perfect match or preceded by a separator.
+                for r in ratio_elements:
+                    if el_str == r or el_str.endswith(':' + r) or el_str.endswith('_' + r):
+                        is_ratio = True
+                        break
+
             for cell in row:
                 if isinstance(cell.value, (int, float)):
-                    # Format: #,##0_;[Red]-#,##0
-                    cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+                    if is_ratio:
+                        cell.number_format = '0.0%'
+                    else:
+                        # Format: #,##0_;[Red]-#,##0
+                        cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
                     
         # Auto-adjust column widths
     for out_ws in wb.worksheets:
