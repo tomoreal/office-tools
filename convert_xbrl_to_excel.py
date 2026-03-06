@@ -4,27 +4,90 @@ import zipfile
 import tempfile
 import shutil
 import glob
+import time
+import json
+import urllib.request
+import re
 from bs4 import BeautifulSoup
 try:
     from lxml import etree
+    HAS_LXML = True
 except ImportError:
     import xml.etree.ElementTree as etree
+    HAS_LXML = False
 
 import gc
 
+# Base directory for the script and caching
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Delay loading heavy libraries until needed (helps CGI performance)
 HAS_BS4 = True # bs4 is at the top but BeautifulSoup is imported there.
-HAS_LXML = True # Assume lxml for now as it's at the top.
 HAS_PANDAS = False
 HAS_OPENPYXL = False
 
-# Control verbose logging via environment variable (default: disabled for CGI safety)
-VERBOSE_LOGGING = os.environ.get('XBRL_VERBOSE', '0') == '1'
+# Control verbose logging via environment variable (default: enabled for debugging)
+VERBOSE_LOGGING = os.environ.get('XBRL_VERBOSE', '1') == '1'
+
+def debug_log(message):
+    """Write message to a persistent debug log file for user visibility."""
+    log_file = os.path.join(SCRIPT_DIR, 'convert_xbrl_debug.log')
+    try:
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"{timestamp} {message}\n")
+    except:
+        pass
+    # Also print to stderr for server log visibility
+    print(message, file=sys.stderr)
 
 def vprint(*args, **kwargs):
-    """Verbose print - only prints if VERBOSE_LOGGING is enabled"""
+    """Verbose print - only prints if VERBOSE_LOGGING is enabled."""
     if VERBOSE_LOGGING:
-        print(*args, **kwargs)
+       msg = " ".join(map(str, args))
+       debug_log(f"[VERBOSE] {msg}")
+
+def safe_xpath(tree_or_elem, query, namespaces=None):
+    """Safe XPath helper that works with both lxml and standard xml.etree.ElementTree.
+    Note: ElementTree supports only a subset of XPath.
+    """
+    if HAS_LXML:
+        return tree_or_elem.xpath(query, namespaces=namespaces)
+    else:
+        # Fallback for standard ElementTree (basic namespace handling)
+        # Note: ET uses {url}prefix syntax for namespaces in findall
+        # We try to convert basic queries but complex XPath might skip.
+        try:
+            # If it's a Tree object, get root first
+            root = tree_or_elem.getroot() if hasattr(tree_or_elem, 'getroot') else tree_or_elem
+            if namespaces:
+                # Basic conversion for link:loc -> {http://...}loc if query is simple
+                # For now, we return empty or try simple findall if query starts with //
+                if query.startswith('//'):
+                    tag = query.split(':')[-1]
+                    return root.findall(f'.//{{*}}{tag}')
+            return root.findall(query) 
+        except:
+            return []
+
+# Common dimension axis and member mapping for Japanese fallback
+COMMON_DIMENSION_MAPPING = {
+    'ConsolidatedOrNonConsolidatedAxis': '連結・非連結',
+    'ConsolidatedMember': '連結',
+    'NonConsolidatedMember': '単体',
+    'OperatingSegmentsAxis': '事業セグメント',
+    'OperatingSegmentsMember': '事業セグメント',
+    'BusinessSegmentsAxis': '事業セグメント',
+    'BusinessSegmentsMember': '事業セグメント',
+    'ReportableSegmentsAxis': '報告セグメント',
+    'ReportableSegmentsMember': '報告セグメント',
+    'EntityInformationAxis': '提出者情報',
+    # Business Segment Standard Members (2024 Taxonomy)
+    'OperatingSegmentsNotIncludedInReportableSegmentsAndOtherRevenueGeneratingBusinessActivitiesMember': '報告セグメント以外の全てのセグメント',
+    'TotalOfReportableSegmentsAndOthersMember': '報告セグメント及びその他の合計',
+    'UnallocatedAmountsAndEliminationMember': '全社・消去',
+    'ReconcilingItemsMember': '調整項目',
+}
 
 # IFRS account name mapping to match commercial tools
 IFRS_LABEL_MAPPING = {
@@ -71,10 +134,18 @@ import json
 import urllib.request
 import re
 
-def get_standard_labels(year, cache_dir='edinet_taxonomies'):
+def get_standard_labels(year, cache_dir=None):
     """Returns (all_labels, label_priorities) for the given taxonomy year.
     Uses cached standard_labels.json if it exists.
     """
+    if cache_dir is None:
+        cache_dir = os.path.join(SCRIPT_DIR, 'edinet_taxonomies')
+    
+    start_time = time.time()
+    tax_dir = os.path.join(cache_dir, str(year))
+    labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
+    
+    debug_log(f"Checking taxonomy cache: {labels_cache_file}")
     urls = {
         '2025': 'https://www.fsa.go.jp/search/20241112/1c_Taxonomy.zip',
         '2024': 'https://www.fsa.go.jp/search/20231211/1c_Taxonomy.zip',
@@ -87,33 +158,55 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
     }
     
     if year not in urls:
-        print(f"Taxonomy for year {year} not found in our known URL map.", file=sys.stderr)
+        vprint(f"Taxonomy for year {year} not found in our known URL map.")
         return {}, {}
         
     tax_dir = os.path.join(cache_dir, str(year))
     labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
     
+    # Try to load from cache
     if os.path.exists(labels_cache_file):
-        with open(labels_cache_file, 'r', encoding='utf-8') as f:
-            labels = json.load(f)
-            # Default priority for cached labels: 50 (middle ground)
-            priorities = {k: 50 for k in labels}
-            return labels, priorities
+        try:
+            with open(labels_cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict) and 'labels' in data:
+                    res = data['labels'], data.get('priorities', {})
+                    debug_log(f"SUCCESS: Loaded taxonomy cache for {year} in {time.time() - start_time:.2f}s")
+                    return res
+                else:
+                    # Legacy format compatibility
+                    priorities = {k: 50 for k in data}
+                    debug_log(f"SUCCESS: Loaded legacy taxonomy cache for {year} in {time.time() - start_time:.2f}s")
+                    return data, priorities
+        except Exception as e:
+            debug_log(f"ERROR: Cache read error for {year}: {e}")
             
     if not os.path.exists(tax_dir):
-        os.makedirs(tax_dir, exist_ok=True)
-        zip_path = os.path.join(tax_dir, 'taxonomy.zip')
-        print(f"Downloading EDINET taxonomy for {year} (takes a moment)...", file=sys.stderr)
         try:
-            urllib.request.urlretrieve(urls[year], zip_path)
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(tax_dir)
-            os.remove(zip_path)
+            os.makedirs(tax_dir, exist_ok=True)
+            debug_log(f"Created taxonomy directory: {tax_dir}")
         except Exception as e:
-            print(f"Failed to download/extract taxonomy for {year}: {e}", file=sys.stderr)
-            return {}, {}
+            debug_log(f"WARNING: Could not create tax_dir {tax_dir}, falling back to /tmp: {e}")
+            tax_dir = os.path.join('/tmp', 'edinet_taxonomies', str(year))
+            try:
+                os.makedirs(tax_dir, exist_ok=True)
+            except: pass
+            labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
+
+    if not os.path.exists(labels_cache_file):
+        zip_path = os.path.join(tax_dir, 'taxonomy.zip')
+        if not os.path.exists(os.path.join(tax_dir, 'taxonomy')): # rudimentary check for extracted data
+            vprint(f"Downloading EDINET taxonomy for {year} (takes a moment)...")
+            try:
+                urllib.request.urlretrieve(urls[year], zip_path)
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(tax_dir)
+                os.remove(zip_path)
+            except Exception as e:
+                vprint(f"Failed to download/extract taxonomy for {year}: {e}")
+                return {}, {}
             
-    print(f"Parsing EDINET taxonomy labels for {year}...")
+    vprint(f"Parsing EDINET taxonomy labels for {year}... (First run only)")
     lab_files = glob.glob(os.path.join(tax_dir, '**', '*_lab.xml'), recursive=True)
     all_labels = {}
     label_priorities = {} # {element_name: priority}
@@ -135,6 +228,10 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
             parsed_labels, parsed_priorities = parse_labels_file(lf)
             for el, text in parsed_labels.items():
                 prio = parsed_priorities.get(el, 99)
+                # Phase 1: Logging when a verboseLabel is about to be adopted
+                if VERBOSE_LOGGING and prio == 1 and (el not in all_labels or prio < label_priorities.get(el, 100)):
+                    vprint(f"  [Taxonomy] Adopting verboseLabel for {el}: {text}")
+                
                 if (el not in all_labels) or (prio < label_priorities.get(el, 100)):
                     all_labels[el] = text
                     label_priorities[el] = prio
@@ -145,13 +242,16 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
     if taxonomy_types:
         vprint(f"  Loaded taxonomies: {', '.join(sorted(taxonomy_types))}")
 
-    # Count IFRS labels specifically
     ifrs_count = sum(1 for k in all_labels if 'IFRS' in k)
     vprint(f"  Total labels: {len(all_labels)}, IFRS labels: {ifrs_count}")
             
     if all_labels:
-        with open(labels_cache_file, 'w', encoding='utf-8') as f:
-            json.dump(all_labels, f, ensure_ascii=False, indent=2)
+        try:
+            with open(labels_cache_file, 'w', encoding='utf-8') as f:
+                json.dump({'labels': all_labels, 'priorities': label_priorities}, f, ensure_ascii=False, indent=2)
+            debug_log(f"SUCCESS: Saved taxonomy cache to {labels_cache_file} in {time.time() - start_time:.2f}s")
+        except Exception as e:
+            debug_log(f"WARNING: Could not cache labels to {labels_cache_file}: {e}")
             
     return all_labels, label_priorities
 
@@ -164,11 +264,15 @@ def parse_labels_file(lab_file):
     labels = {}
     priorities = {}
     try:
-        # Parse XML with lxml to respect namespaces and recover from minor errors
-        parser = etree.XMLParser(recover=True)
-        tree = etree.parse(lab_file, parser)
+        # Parse XML with lxml if available (ElementTree.XMLParser doesn't support 'recover')
+        if HAS_LXML:
+            parser = etree.XMLParser(recover=True)
+            tree = etree.parse(lab_file, parser)
+        else:
+            tree = etree.parse(lab_file)
     except Exception as e:
         # If parsing fails, return empty mappings
+        vprint(f"Error parsing {lab_file}: {e}")
         return labels, priorities
 
     # Namespace map for XBRL linkbase
@@ -180,7 +284,7 @@ def parse_labels_file(lab_file):
 
     # 1. Locate all <link:loc> elements to map label IDs to element QNames
     href_to_label_id = {}
-    for loc in tree.xpath("//link:loc", namespaces=ns):
+    for loc in safe_xpath(tree, "//link:loc", namespaces=ns):
         href = loc.get("{http://www.w3.org/1999/xlink}href")
         label_id = loc.get("{http://www.w3.org/1999/xlink}label")
         if href and label_id:
@@ -191,7 +295,7 @@ def parse_labels_file(lab_file):
     # 2. Filter arcs to only concept‑label relationships (collect ALL associated resource IDs)
     label_id_to_res_ids = {}
     arc_xpath = "//link:labelArc[@xlink:arcrole='http://www.xbrl.org/2003/arcrole/concept-label']"
-    for arc in tree.xpath(arc_xpath, namespaces=ns):
+    for arc in safe_xpath(tree, arc_xpath, namespaces=ns):
         from_id = arc.get("{http://www.w3.org/1999/xlink}from")
         to_id = arc.get("{http://www.w3.org/1999/xlink}to")
         if from_id and to_id:
@@ -216,7 +320,7 @@ def parse_labels_file(lab_file):
 
     GENERIC_LABELS = ('合計', '小計', '計', 'total', 'sum', 'subtotal', '金額')
 
-    for res in tree.xpath("//link:label", namespaces=ns):
+    for res in safe_xpath(tree, "//link:label", namespaces=ns):
         lang = res.get("{http://www.w3.org/XML/1998/namespace}lang")
         if not lang or not lang.startswith('ja'):
             continue
@@ -231,8 +335,8 @@ def parse_labels_file(lab_file):
             
         priority = role_priority.get(role, 99)
         # Penalize generic labels to avoid "Total" appearing everywhere if a better name exists
-        # 【修正】ペナルティを強化 (20 -> 50)
-        if any(g in text.lower() for g in GENERIC_LABELS):
+        # Phase 1: Skip penalty if it's the high-priority verboseLabel (priority 1)
+        if priority > 1 and any(g in text.lower() for g in GENERIC_LABELS):
             priority += 50
             
         if (res_id not in res_id_to_text) or (priority < res_id_to_priority.get(res_id, 100)):
@@ -266,13 +370,16 @@ def convert_camel_case_to_title(name):
     return re.sub('([a-z0-9])([A-Z])', r'\1 \2', s1).title()
 
 def parse_presentation_linkbase(pre_file):
-    print("Parsing presentation linkbase...", pre_file, file=sys.stderr)
+    vprint(f"Parsing presentation linkbase... {os.path.basename(pre_file)}")
     try:
-        # Use lxml for robust namespace handling and performance
-        parser = etree.XMLParser(recover=True)
-        tree = etree.parse(pre_file, parser)
+        # Use lxml for robust namespace handling if available
+        if HAS_LXML:
+            parser = etree.XMLParser(recover=True)
+            tree = etree.parse(pre_file, parser)
+        else:
+            tree = etree.parse(pre_file)
     except Exception as e:
-        print(f"Error parsing presentation linkbase: {e}", file=sys.stderr)
+        vprint(f"Error parsing presentation linkbase: {e}")
         return {}
 
     ns = {
@@ -283,7 +390,7 @@ def parse_presentation_linkbase(pre_file):
     # 1. Group by role URI first
     role_to_content = {} # {role_uri: {'locs': {label: element}, 'arcs': [arc_dicts]}}
     
-    links = tree.xpath("//link:presentationLink", namespaces=ns)
+    links = safe_xpath(tree, "//link:presentationLink", namespaces=ns)
     for link in links:
         role_uri = link.get("{http://www.w3.org/1999/xlink}role")
         if not role_uri:
@@ -293,7 +400,7 @@ def parse_presentation_linkbase(pre_file):
             role_to_content[role_uri] = {'locs': {}, 'arcs': []}
             
         # Map locators in this link
-        locs = link.xpath("link:loc", namespaces=ns)
+        locs = safe_xpath(link, "link:loc", namespaces=ns)
         for loc in locs:
             href = loc.get("{http://www.w3.org/1999/xlink}href")
             label = loc.get("{http://www.w3.org/1999/xlink}label")
@@ -303,7 +410,7 @@ def parse_presentation_linkbase(pre_file):
                 role_to_content[role_uri]['locs'][label] = element_name
                 
         # Map arcs in this link
-        arcs = link.xpath("link:presentationArc", namespaces=ns)
+        arcs = safe_xpath(link, "link:presentationArc", namespaces=ns)
         for arc in arcs:
             from_id = arc.get("{http://www.w3.org/1999/xlink}from")
             to_id = arc.get("{http://www.w3.org/1999/xlink}to")
@@ -382,13 +489,16 @@ def parse_presentation_linkbase(pre_file):
     return statement_trees
 
 def parse_instance_contexts_and_units(xbrl_file, labels_map):
-    print("Parsing XBRL contexts and units...", xbrl_file, file=sys.stderr)
+    vprint(f"Parsing XBRL contexts and units... {os.path.basename(xbrl_file)}")
     try:
-        # Use lxml for robust namespace handling
-        parser = etree.XMLParser(recover=True)
-        tree = etree.parse(xbrl_file, parser)
+        # Use lxml for robust namespace handling if available
+        if HAS_LXML:
+            parser = etree.XMLParser(recover=True)
+            tree = etree.parse(xbrl_file, parser)
+        else:
+            tree = etree.parse(xbrl_file)
     except Exception as e:
-        print(f"Error parsing XBRL instance: {e}", file=sys.stderr)
+        vprint(f"Error parsing XBRL instance: {e}")
         return {}, {}
 
     # Standard namespaces for XBRL instance and dimensions
@@ -400,12 +510,12 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
     contexts = {}
     
     # 1. Parse contexts
-    for ctx in tree.xpath("//xbrli:context", namespaces=ns):
+    for ctx in safe_xpath(tree, "//xbrli:context", namespaces=ns):
         ctx_id = ctx.get('id')
         if not ctx_id:
             continue
             
-        members = ctx.xpath(".//xbrldi:explicitMember", namespaces=ns)
+        members = safe_xpath(ctx, ".//xbrldi:explicitMember", namespaces=ns)
         dim_vals = []
         for m in members:
             # Handle QNames in member text (e.g., jppfs_cor:EnergySegmentMember)
@@ -418,20 +528,36 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
             # Resolve Axis Label
             prefixes = ['jpcrp_cor_', 'jppfs_cor_', 'jpigp_cor_', 'jpdei_cor_', '']
             axis_label = None
-            for p in prefixes:
-                if p + dim_val in labels_map:
-                    axis_label = labels_map[p + dim_val].replace(' [軸]', '').replace(' [項目]', '').replace(' [区分]', '').strip()
-                    break
-            if not axis_label:
-                axis_label = convert_camel_case_to_title(dim_val.replace('Axis', '')) if dim_val else ''
+            if dim_val in COMMON_DIMENSION_MAPPING:
+                axis_label = COMMON_DIMENSION_MAPPING[dim_val]
+            else:
+                for p in prefixes:
+                    if p + dim_val in labels_map:
+                        axis_label = labels_map[p + dim_val].replace(' [軸]', '').replace(' [項目]', '').replace(' [区分]', '').strip()
+                        break
+                if not axis_label:
+                    axis_label = convert_camel_case_to_title(dim_val.replace('Axis', '')) if dim_val else ''
 
             # --- Member Name Resolution ---
             member_val = m_text.split(':')[-1]
             label = None
-            for p in prefixes:
-                if p + member_val in labels_map:
-                    label = labels_map[p + member_val]
-                    break
+            if member_val in COMMON_DIMENSION_MAPPING:
+                label = COMMON_DIMENSION_MAPPING[member_val]
+            else:
+                # Try with standard prefixes first
+                for p in prefixes:
+                    if p + member_val in labels_map:
+                        label = labels_map[p + member_val]
+                        break
+                
+                # If not found, try searching for any element ending with this member name in labels_map
+                # (to catch standard elements from any taxonomy namespace)
+                if not label:
+                    suffix = '_' + member_val
+                    for k, v in labels_map.items():
+                        if k.endswith(suffix):
+                            label = v
+                            break
                     
             # Fallback for company specific segment names found in _lab.xml 
             if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
@@ -450,21 +576,26 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
                     label = member_val
             
             # Combine Axis and Member if useful
-            skip_axes = ('報告セグメント', 'セグメント情報', '事業セグメント', '会計基準', '連結・単体', 'ConsolidatedOrNonConsolidated')
-            if axis_label and not any(sa in axis_label for sa in skip_axes):
+            skip_axes = ('報告セグメント', 'セグメント情報', '事業セグメント', '会計基準', '連結・単体', '連結・非連結', 
+                         'ConsolidatedOrNonConsolidated', 'OperatingSegments', 'BusinessSegments', 'ReportableSegments')
+            if axis_label and not any(sa in axis_label.replace(' ', '') for sa in skip_axes):
                 dim_vals.append(f"{axis_label}：{label}")
             else:
                 dim_vals.append(label)
                 
         dim_str = "、".join(dim_vals) if dim_vals else "全体"
         # Clean up verbose XBRL labels
-        dim_str = dim_str.replace(' [メンバー]', '').replace('、報告セグメント', '').replace('非連結又は個別', '単体')
+        dim_str = dim_str.replace(' [メンバー]', '').replace('、報告セグメント', '').replace('非連結又は個別', '単体').replace('非連結', '単体')
+        if dim_str == 'NonConsolidated' or dim_str == 'Non Consolidated':
+            dim_str = '単体'
+        if dim_str == 'Consolidated':
+            dim_str = '連結'
             
-        period_elem = ctx.xpath("xbrli:period", namespaces=ns)
+        period_elem = safe_xpath(ctx, "xbrli:period", namespaces=ns)
         if period_elem:
             period_elem = period_elem[0]
-            instant = period_elem.xpath("xbrli:instant", namespaces=ns)
-            end_date = period_elem.xpath("xbrli:endDate", namespaces=ns)
+            instant = safe_xpath(period_elem, "xbrli:instant", namespaces=ns)
+            end_date = safe_xpath(period_elem, "xbrli:endDate", namespaces=ns)
             
             p_val = None
             if instant:
@@ -477,15 +608,15 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
                 
     units = {}
     # 2. Parse units
-    for unit in tree.xpath("//xbrli:unit", namespaces=ns):
+    for unit in safe_xpath(tree, "//xbrli:unit", namespaces=ns):
         unit_id = unit.get('id')
         if not unit_id:
             continue
         
         is_jpy = False
         # Only consider simple units (non‑divide) for JPY amount identification
-        if not unit.xpath("xbrli:divide", namespaces=ns):
-            measure = unit.xpath(".//xbrli:measure", namespaces=ns)
+        if not safe_xpath(unit, "xbrli:divide", namespaces=ns):
+            measure = safe_xpath(unit, ".//xbrli:measure", namespaces=ns)
             if measure and 'JPY' in (measure[0].text or ""):
                 is_jpy = True
                 
@@ -494,88 +625,138 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
     return contexts, units
 
 def parse_ixbrl_facts(ixbrl_files, contexts, units):
+    t_start = time.time()
+    parser_info = 'lxml' if HAS_LXML else 'html.parser'
+    debug_log(f"Starting Inline XBRL parsing using {parser_info} for {len(ixbrl_files)} files")
     facts = []
     
-    def get_attr(tag, attr_name):
-        for k, v in tag.attrs.items():
-            if k.lower() == attr_name.lower():
-                return v
-        return None
-
     for f in ixbrl_files:
-        print(f"Parsing Inline XBRL... {os.path.basename(f)}", file=sys.stderr)
+        size_mb = os.path.getsize(f) / (1024 * 1024)
+        debug_log(f"  Parsing {os.path.basename(f)} ({size_mb:.2f} MB)...")
         try:
             with open(f, 'r', encoding='utf-8', errors='replace') as file:
                 content = file.read()
-                # Try lxml first, fallback to html.parser
-                try:
-                    soup = BeautifulSoup(content, 'lxml')
-                except:
-                    soup = BeautifulSoup(content, 'html.parser')
-                
-            def is_ix_tag(tag):
-                if not tag.name: return False
-                local = tag.name.split(':')[-1].lower()
-                return local in ('nonfraction', 'nonnumeric')
-                
-            tags = soup.find_all(is_ix_tag)
-            print(f"  Found {len(tags)} tags", file=sys.stderr)
             
-            elem_order = 0
+            if HAS_LXML:
+                try:
+                    from lxml import html
+                    tree = html.fromstring(content)
+                    # Use a more robust way to find tags that works with or without namespace awareness
+                    tags = [t for t in tree.iter() if any(x in (t.tag if isinstance(t.tag, str) else "").lower() for x in ('nonfraction', 'nonnumeric'))]
+                except Exception as e:
+                    debug_log(f"  LXML fast-path failed: {e}. Falling back to BS4.")
+                    HAS_LXML_LOCAL = False
+                else:
+                    HAS_LXML_LOCAL = True
+            else:
+                HAS_LXML_LOCAL = False
+
+            if not HAS_LXML_LOCAL:
+                soup = BeautifulSoup(content, 'html.parser')
+                def is_ix_tag(tag):
+                    if not tag.name: return False
+                    local = tag.name.split(':')[-1].lower()
+                    return local in ('nonfraction', 'nonnumeric')
+                tags = soup.find_all(is_ix_tag)
+
+            elem_order_in_file = 0
             for tag in tags:
-                ctx_ref = get_attr(tag, 'contextRef')
-                if ctx_ref and ctx_ref in contexts:
-                    element_name = get_attr(tag, 'name')
+                if HAS_LXML_LOCAL:
+                    # Access attributes robustly (handle namespaced keys like ix:name)
+                    attrs = {k.split(':')[-1].lower(): v for k, v in tag.attrib.items()}
+                    ctx_ref = attrs.get('contextref')
+                    if not ctx_ref or ctx_ref not in contexts: continue
+                    
+                    element_name = attrs.get('name')
                     if not element_name: continue
                     if ':' in element_name:
                         element_name = element_name.replace(':', '_')
-                        
-                    value = tag.text.strip()
+                    
+                    value = tag.text_content().strip() if hasattr(tag, 'text_content') else (tag.text or "").strip()
+                    local_name = tag.tag.split('}')[-1].lower() if isinstance(tag.tag, str) and '}' in tag.tag else (tag.tag.split(':')[-1].lower() if isinstance(tag.tag, str) else "")
+                    
+                    unit_ref = attrs.get('unitref')
+                    scale = attrs.get('scale', '0')
+                    sign = attrs.get('sign', '')
+                else:
+                    # BS4 path
+                    ctx_ref = None
+                    for k, v in tag.attrs.items():
+                        if k.lower() == 'contextref':
+                            ctx_ref = v
+                            break
+                    if not ctx_ref or ctx_ref not in contexts: continue
+                    
+                    element_name = None
+                    for k, v in tag.attrs.items():
+                        if k.lower() == 'name':
+                            element_name = v
+                            break
+                    if not element_name: continue
+                    if ':' in element_name:
+                        element_name = element_name.replace(':', '_')
+                    
+                    value = tag.get_text().strip()
                     local_name = tag.name.split(':')[-1].lower()
+
+                if local_name == 'nonnumeric':
+                    # Skip massive text blocks only if it's explicitly a TextBlock element
+                    if 'TextBlock' in element_name:
+                        continue
+                
+                valStr = ""
+                if local_name == 'nonfraction':
+                    if not HAS_LXML_LOCAL:
+                        unit_ref = None
+                        for k, v in tag.attrs.items():
+                            if k.lower() == 'unitref':
+                                unit_ref = v
+                                break
+                        scale = '0'
+                        sign = ''
+                        for k, v in tag.attrs.items():
+                            if k.lower() == 'scale': scale = v
+                            if k.lower() == 'sign': sign = v
+
+                    is_jpy = units.get(unit_ref, False) if unit_ref else False
+                    clean_val = value.replace(',', '').replace('△', '-').replace('▲', '-').replace('(', '-').replace(')', '').strip()
                     
-                    if local_name == 'nonnumeric':
-                        if 'TextBlock' in element_name or len(value) > 200 or '。' in value or '\n' in value:
-                            continue
-                    
-                    valStr = ""
-                    if local_name == 'nonfraction':
-                        unit_ref = get_attr(tag, 'unitRef')
-                        is_jpy = units.get(unit_ref, False) if unit_ref else False
-                        sign = get_attr(tag, 'sign')
-                        scale = get_attr(tag, 'scale') or '0'
-                        
-                        clean_val = value.replace(',', '').replace('△', '-').replace('▲', '-').replace('(', '-').replace(')', '').strip()
-                        
-                        try:
-                            amt = float(clean_val)
-                            if sign == '-': amt *= -1
-                            amt *= (10 ** int(scale))
-                            if is_jpy: amt /= 1000000.0
-                            valStr = str(int(amt)) if amt.is_integer() else str(amt)
-                        except:
-                            valStr = value
-                    else:
+                    try:
+                        amt = float(clean_val)
+                        if sign == '-': amt *= -1
+                        amt *= (10 ** int(scale or 0))
+                        if is_jpy: amt /= 1000000.0
+                        valStr = str(int(amt)) if amt.is_integer() else str(amt)
+                    except:
                         valStr = value
-                        
-                    facts.append({
-                        'element': element_name,
-                        'context': ctx_ref,
-                        'period': contexts[ctx_ref][0],
-                        'dimension': contexts[ctx_ref][1],
-                        'value': valStr,
-                        'source_file': f,
-                        'elem_order': elem_order
-                    })
-                    elem_order += 1
+                else:
+                    valStr = value
+                    
+                facts.append({
+                    'element': element_name,
+                    'context': ctx_ref,
+                    'period': contexts[ctx_ref][0],
+                    'dimension': contexts[ctx_ref][1],
+                    'value': valStr,
+                    'source_file': f,
+                    'elem_order': elem_order_in_file
+                })
+                elem_order_in_file += 1
             
-            # Explicitly clear soup to save memory
-            soup.decompose()
-            del soup
+            if elem_order_in_file > 0:
+                vprint(f"  Extracted {elem_order_in_file} facts from {os.path.basename(f)}")
+            
+            if not HAS_LXML_LOCAL:
+                soup.decompose()
+                del soup
+            else:
+                del tree
             gc.collect()
 
         except Exception as e:
-            print(f"Error parsing file {f}: {e}", file=sys.stderr)
+            debug_log(f"ERROR: Error parsing file {f}: {e}")
                 
+    debug_log(f"COMPLETED: Parsed all Inline XBRL facts in {time.time() - t_start:.2f}s")
     return facts
 
 
@@ -618,6 +799,7 @@ def create_hierarchy(parent_child_arcs):
     return ordered_items
 
 def process_xbrl_zips(zip_paths, output_dir=None):
+    overall_start = time.time()
     if not zip_paths:
         return None
         
@@ -656,105 +838,135 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     temp_base = tempfile.mkdtemp(dir=parent_temp_dir)
     
     try:
-        # Process each zip file
-        for zip_idx, zip_path in enumerate(zip_paths):
-            print(f"Processing {zip_path}...", file=sys.stderr)
+        # Phase 3.5: Parallel processing of ZIP files
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def process_single_zip(zip_idx, zip_path):
+            thread_labels = {}
+            thread_priorities = {}
+            thread_facts = []
+            thread_periods = set()
+            thread_values = {} # {el: {col: val}}
+            
+            debug_log(f"Starting worker for {os.path.basename(zip_path)}")
             if not os.path.exists(zip_path):
-                print(f"File not found: {zip_path}", file=sys.stderr)
-                continue
+                return None
                 
             extract_dir = os.path.join(temp_base, f"zip_{zip_idx}")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
                 
-            # EDINET zips have a subdirectory (e.g., S100W178) along with XbrlSearchDlInfo.csv
             subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
             if len(subdirs) == 1:
                 extract_dir = os.path.join(extract_dir, subdirs[0])
                 
             xbrl_files = find_xbrl_files(extract_dir)
             if not xbrl_files:
-                print(f"Could not find XBRL files in {zip_path}", file=sys.stderr)
-                continue
+                return None
                 
-            # Extract taxonomy year from _pre.xml to fetch standard labels
             taxonomy_year = None
             if xbrl_files['pre']:
                 with open(xbrl_files['pre'], 'r', encoding='utf-8') as f:
-                    content = f.read(4000) # Read start of file
-                    # Support various standards like jppfs (J-GAAP), jpigp (IFRS), etc.
+                    content = f.read(4000)
                     m = re.search(r'http://disclosure\.edinet-fsa\.go\.jp/taxonomy/[a-z]+(?:_[a-z]+)?/(\d{4})-\d{2}-\d{2}', content)
                     if m:
                         year_str = m.group(1)
-                        if year_str == '2020':
-                            taxonomy_year = '2021'
-                        else:
-                            taxonomy_year = year_str
+                        taxonomy_year = '2021' if year_str == '2020' else year_str
             
             if taxonomy_year:
                 std_labels, std_priorities = get_standard_labels(taxonomy_year)
-                labels_map.update(std_labels)
-                labels_map_priorities.update(std_priorities)
+                thread_labels.update(std_labels)
+                thread_priorities.update(std_priorities)
 
-            # Extract local report labels
             for lf in xbrl_files.get('lab', []):
-                print(f"Parsing local labels... {lf}", file=sys.stderr)
                 local_labels, local_priorities = parse_labels_file(lf)
-                # Apply priority logic for local labels too
-                # Give local labels a slight boost (subtract 1 from priority) to prefer them over standard
                 for k, v in local_labels.items():
                     p = local_priorities.get(k, 99) - 1
-                    if k not in labels_map or p < labels_map_priorities.get(k, 100):
-                        labels_map[k] = v
-                        labels_map_priorities[k] = p
+                    if k not in thread_labels or p < thread_priorities.get(k, 100):
+                        thread_labels[k] = v
+                        thread_priorities[k] = p
             
-            # Apply IFRS label mapping overrides
+            # Phase 2: Demote IFRS mapping priority
             for el_name, alias in IFRS_LABEL_MAPPING.items():
-                labels_map[el_name] = alias
-                labels_map_priorities[el_name] = 0 # Highest priority
+                if el_name not in thread_labels or 20 < thread_priorities.get(el_name, 100):
+                    thread_labels[el_name] = alias
+                    thread_priorities[el_name] = 20
             
-            trees = parse_presentation_linkbase(xbrl_files['pre'])
+            contexts, units = parse_instance_contexts_and_units(xbrl_files['xbrl'], thread_labels)
             
-            contexts, units = parse_instance_contexts_and_units(xbrl_files['xbrl'], labels_map)
+            # Phase 3: Selective Parsing (DISABLED for completeness)
+            all_ix_files = glob.glob(os.path.join(extract_dir, 'XBRL', 'PublicDoc', '*_ixbrl.htm'))
+            ix_files = all_ix_files
+
+            facts = parse_ixbrl_facts(ix_files, contexts, units) # Corrected: pass units, not labels
+            thread_facts.extend(facts)
+            debug_log(f"Worker for {os.path.basename(zip_path)} found {len(facts)} facts in {len(ix_files)} files")
             
-            # Find all inline xbrl files for facts
-            ix_files = glob.glob(os.path.join(extract_dir, 'XBRL', 'PublicDoc', '*_ixbrl.htm'))
-            facts = parse_ixbrl_facts(ix_files, contexts, units)
-            all_facts.extend(facts)
-            
-            # Map facts to elements
             for f in facts:
                 el = f['element']
                 period = f['period']
                 dim = f.get('dimension', '')
                 val = f['value']
-                
-                # Consolidate non-segmented items into ''
-                if 'NonConsolidatedMember' in f['context'] or 'NonConsolidated' in dim:
-                    pass # We typically want consolidated facts if present
-                
                 dim_label = dim if dim else "全体"
                 col_key = (dim_label, period)
+                if el not in thread_values: thread_values[el] = {}
+                thread_values[el][col_key] = val
+                thread_periods.add(col_key)
                 
+            trees = parse_presentation_linkbase(xbrl_files['pre'])
+            
+            return {
+                'labels': thread_labels,
+                'priorities': thread_priorities,
+                'facts': thread_facts,
+                'periods': thread_periods,
+                'values': thread_values,
+                'trees': trees
+            }
+
+        # Multi-threading for performance (I/O and C-based lxml parsing)
+        # Use a maximum of 4 workers to avoid memory exhaustion in CGI
+        with ThreadPoolExecutor(max_workers=min(len(zip_paths), 4)) as executor:
+            def process_single_zip_wrapper(p):
+                try:
+                    return process_single_zip(p[0], p[1])
+                except Exception as e:
+                    debug_log(f"Worker failed for {p[1]}: {e}")
+                    return None
+            results = list(executor.map(process_single_zip_wrapper, enumerate(zip_paths)))
+            
+        for res in results:
+            if not res: continue
+            # Merge labels with priorities
+            for k, v in res['labels'].items():
+                p = res['priorities'].get(k, 100)
+                if k not in labels_map or p < labels_map_priorities.get(k, 101):
+                    labels_map[k] = v
+                    labels_map_priorities[k] = p
+            
+            # Merge facts, periods, and values
+            all_facts.extend(res['facts'])
+            periods_seen.update(res['periods'])
+            for el, vals in res['values'].items():
                 if el not in global_element_period_values:
                     global_element_period_values[el] = {}
-                
-                # If there are duplicates (e.g. CurrentYearInstant vs CurrentYearDuration with same end date)
-                # We overwrite
-                global_element_period_values[el][col_key] = val
-                periods_seen.add(col_key)
-                
+                global_element_period_values[el].update(vals)
+            
             # Merge presentation trees
-            for role, tree_arcs in trees.items():
+            for role, tree_arcs in res['trees'].items():
                 base_name = role.split('_')[-1]
-                # Merge SegmentInformation variants (like Related Info, Goodwill) into a single role
+                # Merge SegmentInformation variants into a single role
                 sub_role_idx = 0
                 if 'SegmentInformation' in base_name and '-' in base_name:
                     parts = base_name.rsplit('-', 1)
                     if parts[1].isdigit():
                         sub_role_idx = int(parts[1]) * 1000
                     role = parts[0]
-                if not (base_name.startswith('Consolidated') or base_name.startswith('Statement') or base_name.startswith('BalanceSheet') or base_name.startswith('Notes') or 'BusinessResults' in base_name):
+                
+                # Filter relevant roles
+                if not (base_name.startswith('Consolidated') or base_name.startswith('Statement') or 
+                        base_name.startswith('BalanceSheet') or base_name.startswith('Notes') or 
+                        'BusinessResults' in base_name):
                     continue
                 
                 if role not in merged_trees:
@@ -763,15 +975,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     
                 for arc in tree_arcs:
                     p, c, o = arc['parent'], arc['child'], arc['order']
-                    
-                    # Prevent duplicates in merged segment roles to avoid repeating 
-                    # basic elements (like Sales, Assets) under Impairment or Goodwill headers.
                     if 'SegmentInformation' in role and c in seen_children_in_role[role]:
                         continue
-                        
                     merged_trees[role][(p, c)] = float(o) + sub_role_idx
                     seen_children_in_role[role].add(c)
-
+        
+        debug_log(f"Merged total: {len(all_facts)} facts, {len(periods_seen)} periods, {len(merged_trees)} tree roles")
+    except Exception as e:
+        debug_log(f"ERROR: Overall processing failure: {e}")
+        import traceback
+        debug_log(traceback.format_exc())
     finally:
         shutil.rmtree(temp_base)
 
@@ -887,16 +1100,23 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
     # Try to find company name for filename
     company_name = "企業名不明"
-    name_elements = ['jpcrp_cor_CompanyNameCoverPage', 'jpdei_cor_EntityNameCompanyName']
-    for ne in name_elements:
-        if ne in global_element_period_values:
-            # Get the most recent value if possible
-            vals = global_element_period_values[ne]
-            if vals:
-                # Pick the latest one
-                sorted_keys = sorted(vals.keys(), key=lambda x: x[1] if isinstance(x, tuple) else x, reverse=True)
-                company_name = vals[sorted_keys[0]]
-                break
+    name_suffixes = ['CompanyNameCoverPage', 'EntityNameCompanyName', 'EntityNameEntityReportingName']
+    for suffix in name_suffixes:
+        found = False
+        for el_name, vals in global_element_period_values.items():
+            if el_name.endswith(suffix):
+                if vals:
+                    # Pick a value (latest period if possible)
+                    sorted_keys = sorted(vals.keys(), key=lambda x: x[1] if isinstance(x, tuple) else x, reverse=True)
+                    company_name = vals[sorted_keys[0]]
+                    found = True
+                    break
+        if found: break
+    
+    # Debug: log top elements to see what was captured
+    if VERBOSE_LOGGING or company_name == "企業名不明":
+        top_el = sorted(list(global_element_period_values.keys()))[:30]
+        debug_log(f"DEBUG: Company discovery failed. Top 30 elements: {top_el}")
 
     # Now generate Excel
     print(f"Generating Excel for {company_name}...", file=sys.stderr)
@@ -1396,7 +1616,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     out_file = f'XBRL_横展開_{company_name}.xlsx'
     if output_dir:
         out_file = os.path.join(output_dir, out_file)
+    t_save = time.time()
     wb.save(out_file)
+    debug_log(f"SUCCESS: Excel saved to {out_file} in {time.time() - t_save:.2f}s")
+    debug_log(f"TOTAL: process_xbrl_zips completed in {time.time() - overall_start:.2f}s")
     return out_file
 
 def main():
