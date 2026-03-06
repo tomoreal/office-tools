@@ -10,16 +10,21 @@ try:
 except ImportError:
     import xml.etree.ElementTree as etree
 
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
+import gc
 
-try:
-    from openpyxl import Workbook
-    from openpyxl.utils.dataframe import dataframe_to_rows
-except ImportError:
-    Workbook = None
+# Delay loading heavy libraries until needed (helps CGI performance)
+HAS_BS4 = True # bs4 is at the top but BeautifulSoup is imported there.
+HAS_LXML = True # Assume lxml for now as it's at the top.
+HAS_PANDAS = False
+HAS_OPENPYXL = False
+
+# Control verbose logging via environment variable (default: disabled for CGI safety)
+VERBOSE_LOGGING = os.environ.get('XBRL_VERBOSE', '0') == '1'
+
+def vprint(*args, **kwargs):
+    """Verbose print - only prints if VERBOSE_LOGGING is enabled"""
+    if VERBOSE_LOGGING:
+        print(*args, **kwargs)
 
 # IFRS account name mapping to match commercial tools
 IFRS_LABEL_MAPPING = {
@@ -108,23 +113,41 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
             print(f"Failed to download/extract taxonomy for {year}: {e}", file=sys.stderr)
             return {}, {}
             
-    print(f"Parsing EDINET taxonomy labels for {year}...", file=sys.stderr)
+    print(f"Parsing EDINET taxonomy labels for {year}...")
     lab_files = glob.glob(os.path.join(tax_dir, '**', '*_lab.xml'), recursive=True)
     all_labels = {}
     label_priorities = {} # {element_name: priority}
-    
+
+    # Track which taxonomy types we're loading
+    taxonomy_types = set()
+
     for lf in lab_files:
         if 'deprecated' in lf or 'dep' in lf or '-en.xml' in lf:
             continue
+
+        # Extract taxonomy type (jpigp, jppfs, jpcrp, etc.)
+        basename = os.path.basename(lf)
+        if '_lab.xml' in basename:
+            tax_type = basename.split('_')[0]
+            taxonomy_types.add(tax_type)
+
         try:
             parsed_labels, parsed_priorities = parse_labels_file(lf)
             for el, text in parsed_labels.items():
                 prio = parsed_priorities.get(el, 99)
-                if el not in all_labels or prio < label_priorities.get(el, 100):
+                if (el not in all_labels) or (prio < label_priorities.get(el, 100)):
                     all_labels[el] = text
                     label_priorities[el] = prio
         except:
             pass
+
+    # Report which taxonomies were loaded
+    if taxonomy_types:
+        vprint(f"  Loaded taxonomies: {', '.join(sorted(taxonomy_types))}")
+
+    # Count IFRS labels specifically
+    ifrs_count = sum(1 for k in all_labels if 'IFRS' in k)
+    vprint(f"  Total labels: {len(all_labels)}, IFRS labels: {ifrs_count}")
             
     if all_labels:
         with open(labels_cache_file, 'w', encoding='utf-8') as f:
@@ -383,23 +406,35 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
             continue
             
         members = ctx.xpath(".//xbrldi:explicitMember", namespaces=ns)
-        dimension_names = []
+        dim_vals = []
         for m in members:
             # Handle QNames in member text (e.g., jppfs_cor:EnergySegmentMember)
             m_text = m.text or ""
-            # 1. Try to look up the label using various common prefixes
-            # Since we removed the aggressive base-name mapping to fix IFRS labels,
-            # we must be more explicit here.
+            
+            # --- Axis Name Resolution ---
+            dim_qname = m.get("dimension")
+            dim_val = dim_qname.split(':')[-1] if dim_qname else ''
+            
+            # Resolve Axis Label
+            prefixes = ['jpcrp_cor_', 'jppfs_cor_', 'jpigp_cor_', 'jpdei_cor_', '']
+            axis_label = None
+            for p in prefixes:
+                if p + dim_val in labels_map:
+                    axis_label = labels_map[p + dim_val].replace(' [軸]', '').replace(' [項目]', '').replace(' [区分]', '').strip()
+                    break
+            if not axis_label:
+                axis_label = convert_camel_case_to_title(dim_val.replace('Axis', '')) if dim_val else ''
+
+            # --- Member Name Resolution ---
             member_val = m_text.split(':')[-1]
-            prefixes = ['jppfs_cor_', 'jpigp_cor_', 'jpcrp_cor_', 'jpdei_cor_', '']
             label = None
             for p in prefixes:
                 if p + member_val in labels_map:
                     label = labels_map[p + member_val]
                     break
                     
-            # 2. Add fallback for company specific segment names found in _lab.xml 
-            # (e.g. jpcrp030000-asr_E00023-000_MineralResourcesReportableSegmentMember)
+            # Fallback for company specific segment names found in _lab.xml 
+            if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
             if not label:
                 suffix = '_' + member_val
                 for k, v in labels_map.items():
@@ -407,15 +442,21 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
                         label = v
                         break
             
-            if label:
-                dimension_names.append(label)
-            elif member_val.endswith('Member'):
-                # Fallback: EnergySegmentMember -> Energy Segment
-                dimension_names.append(convert_camel_case_to_title(member_val.replace('Member', '')))
+            if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
+            if not label:
+                if member_val.endswith('Member'):
+                    label = convert_camel_case_to_title(member_val.replace('Member', ''))
+                else:
+                    label = member_val
+            
+            # Combine Axis and Member if useful
+            skip_axes = ('報告セグメント', 'セグメント情報', '事業セグメント', '会計基準', '連結・単体', 'ConsolidatedOrNonConsolidated')
+            if axis_label and not any(sa in axis_label for sa in skip_axes):
+                dim_vals.append(f"{axis_label}：{label}")
             else:
-                dimension_names.append(member_val)
+                dim_vals.append(label)
                 
-        dim_str = "、".join(dimension_names)
+        dim_str = "、".join(dim_vals) if dim_vals else "全体"
         # Clean up verbose XBRL labels
         dim_str = dim_str.replace(' [メンバー]', '').replace('、報告セグメント', '').replace('非連結又は個別', '単体')
             
@@ -463,68 +504,78 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
 
     for f in ixbrl_files:
         print(f"Parsing Inline XBRL... {os.path.basename(f)}", file=sys.stderr)
-        with open(f, 'r', encoding='utf-8', errors='replace') as file:
-            content = file.read()
-            # Try lxml first, fallback to html.parser
-            try:
-                soup = BeautifulSoup(content, 'lxml')
-            except:
-                soup = BeautifulSoup(content, 'html.parser')
-            
-        def is_ix_tag(tag):
-            if not tag.name: return False
-            local = tag.name.split(':')[-1].lower()
-            return local in ('nonfraction', 'nonnumeric')
-            
-        tags = soup.find_all(is_ix_tag)
-        print(f"  Found {len(tags)} tags", file=sys.stderr)
-        
-        elem_order = 0
-        for tag in tags:
-            ctx_ref = get_attr(tag, 'contextRef')
-            if ctx_ref and ctx_ref in contexts:
-                element_name = get_attr(tag, 'name')
-                if not element_name: continue
-                if ':' in element_name:
-                    element_name = element_name.replace(':', '_')
-                    
-                value = tag.text.strip()
-                local_name = tag.name.split(':')[-1].lower()
+        try:
+            with open(f, 'r', encoding='utf-8', errors='replace') as file:
+                content = file.read()
+                # Try lxml first, fallback to html.parser
+                try:
+                    soup = BeautifulSoup(content, 'lxml')
+                except:
+                    soup = BeautifulSoup(content, 'html.parser')
                 
-                if local_name == 'nonnumeric':
-                    if 'TextBlock' in element_name or len(value) > 200 or '。' in value or '\n' in value:
-                        continue
+            def is_ix_tag(tag):
+                if not tag.name: return False
+                local = tag.name.split(':')[-1].lower()
+                return local in ('nonfraction', 'nonnumeric')
                 
-                valStr = ""
-                if local_name == 'nonfraction':
-                    unit_ref = get_attr(tag, 'unitRef')
-                    is_jpy = units.get(unit_ref, False) if unit_ref else False
-                    sign = get_attr(tag, 'sign')
-                    scale = get_attr(tag, 'scale') or '0'
+            tags = soup.find_all(is_ix_tag)
+            print(f"  Found {len(tags)} tags", file=sys.stderr)
+            
+            elem_order = 0
+            for tag in tags:
+                ctx_ref = get_attr(tag, 'contextRef')
+                if ctx_ref and ctx_ref in contexts:
+                    element_name = get_attr(tag, 'name')
+                    if not element_name: continue
+                    if ':' in element_name:
+                        element_name = element_name.replace(':', '_')
+                        
+                    value = tag.text.strip()
+                    local_name = tag.name.split(':')[-1].lower()
                     
-                    clean_val = value.replace(',', '').replace('△', '-').replace('▲', '-').replace('(', '-').replace(')', '').strip()
+                    if local_name == 'nonnumeric':
+                        if 'TextBlock' in element_name or len(value) > 200 or '。' in value or '\n' in value:
+                            continue
                     
-                    try:
-                        amt = float(clean_val)
-                        if sign == '-': amt *= -1
-                        amt *= (10 ** int(scale))
-                        if is_jpy: amt /= 1000000.0
-                        valStr = str(int(amt)) if amt.is_integer() else str(amt)
-                    except:
+                    valStr = ""
+                    if local_name == 'nonfraction':
+                        unit_ref = get_attr(tag, 'unitRef')
+                        is_jpy = units.get(unit_ref, False) if unit_ref else False
+                        sign = get_attr(tag, 'sign')
+                        scale = get_attr(tag, 'scale') or '0'
+                        
+                        clean_val = value.replace(',', '').replace('△', '-').replace('▲', '-').replace('(', '-').replace(')', '').strip()
+                        
+                        try:
+                            amt = float(clean_val)
+                            if sign == '-': amt *= -1
+                            amt *= (10 ** int(scale))
+                            if is_jpy: amt /= 1000000.0
+                            valStr = str(int(amt)) if amt.is_integer() else str(amt)
+                        except:
+                            valStr = value
+                    else:
                         valStr = value
-                else:
-                    valStr = value
-                    
-                facts.append({
-                    'element': element_name,
-                    'context': ctx_ref,
-                    'period': contexts[ctx_ref][0],
-                    'dimension': contexts[ctx_ref][1],
-                    'value': valStr,
-                    'source_file': f,
-                    'elem_order': elem_order
-                })
-                elem_order += 1
+                        
+                    facts.append({
+                        'element': element_name,
+                        'context': ctx_ref,
+                        'period': contexts[ctx_ref][0],
+                        'dimension': contexts[ctx_ref][1],
+                        'value': valStr,
+                        'source_file': f,
+                        'elem_order': elem_order
+                    })
+                    elem_order += 1
+            
+            # Explicitly clear soup to save memory
+            soup.decompose()
+            del soup
+            gc.collect()
+
+        except Exception as e:
+            print(f"Error parsing file {f}: {e}", file=sys.stderr)
+                
     return facts
 
 
@@ -568,6 +619,27 @@ def create_hierarchy(parent_child_arcs):
 
 def process_xbrl_zips(zip_paths, output_dir=None):
     if not zip_paths:
+        return None
+        
+    global HAS_PANDAS, HAS_OPENPYXL
+    # Delay loading heavy libraries inside the function
+    try:
+        import pandas as pd
+        HAS_PANDAS = True
+    except ImportError:
+        pd = None
+        HAS_PANDAS = False
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.utils.dataframe import dataframe_to_rows
+        HAS_OPENPYXL = True
+    except ImportError:
+        Workbook = None
+        HAS_OPENPYXL = False
+
+    if not HAS_OPENPYXL:
+        print("Error: openpyxl is not installed. Excel generation is impossible.", file=sys.stderr)
         return None
         
     global_element_period_values = {} # {element: {col_key: value}}
@@ -1168,7 +1240,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 label = common_dict[base_name]
             else:
                 label = labels_map.get(el)
-                if not label:
+                if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
+            if not label:
                     label = convert_camel_case_to_title(base_name)
                     
             # Insert Separator rows for Segment Notes subsets
