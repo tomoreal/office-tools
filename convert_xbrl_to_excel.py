@@ -415,11 +415,13 @@ def parse_presentation_linkbase(pre_file):
             from_id = arc.get("{http://www.w3.org/1999/xlink}from")
             to_id = arc.get("{http://www.w3.org/1999/xlink}to")
             order = arc.get("order")
+            pref_label = arc.get("preferredLabel")
             if from_id and to_id:
                 role_to_content[role_uri]['arcs'].append({
                     'from': from_id,
                     'to': to_id,
-                    'order': float(order) if order else 0.0
+                    'order': float(order) if order else 0.0,
+                    'preferredLabel': pref_label
                 })
 
     statement_trees = {} # {role_name: [arc_dicts]}
@@ -436,7 +438,8 @@ def parse_presentation_linkbase(pre_file):
                 parent_child.append({
                     'parent': p,
                     'child': c,
-                    'order': arc['order']
+                    'order': arc['order'],
+                    'preferredLabel': arc.get('preferredLabel')
                 })
                 
         if not parent_child:
@@ -598,13 +601,17 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
             end_date = safe_xpath(period_elem, "xbrli:endDate", namespaces=ns)
             
             p_val = None
+            start_val = None
             if instant:
                 p_val = instant[0].text
             elif end_date:
                 p_val = end_date[0].text
+                start_elem = safe_xpath(period_elem, "xbrli:startDate", namespaces=ns)
+                if start_elem:
+                    start_val = start_elem[0].text
                 
             if p_val:
-                contexts[ctx_id] = (p_val, dim_str)
+                contexts[ctx_id] = (p_val, dim_str, start_val)
                 
     units = {}
     # 2. Parse units
@@ -732,7 +739,7 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
                 else:
                     valStr = value
                     
-                facts.append({
+                f_data = {
                     'element': element_name,
                     'context': ctx_ref,
                     'period': contexts[ctx_ref][0],
@@ -740,7 +747,10 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
                     'value': valStr,
                     'source_file': f,
                     'elem_order': elem_order_in_file
-                })
+                }
+                if contexts[ctx_ref][2]: # start_date
+                    f_data['start_date'] = contexts[ctx_ref][2]
+                facts.append(f_data)
                 elem_order_in_file += 1
             
             if elem_order_in_file > 0:
@@ -763,38 +773,49 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
 
 
 def create_hierarchy(parent_child_arcs):
-    # parent_child_arcs: list of dicts {'parent': p, 'child': c, 'order': o}
-    children_map = {}
-    roots = set()
-    all_children = set()
-    
+    """Create a flattened list representing the hierarchy traversal."""
+    # Group by parent to easily find children
+    adj = {}
     for arc in parent_child_arcs:
         p = arc['parent']
-        c = arc['child']
-        if p not in children_map:
-            children_map[p] = []
-        children_map[p].append((arc['order'], c))
-        all_children.add(c)
-        roots.add(p)
-        
-    # True roots are those not in all_children
-    true_roots = roots - all_children
+        if p not in adj: adj[p] = []
+        adj[p].append(arc)
     
-    for p in children_map:
-        children_map[p].sort() # sort by order
+    # Sort children by order
+    for p in adj:
+        adj[p].sort(key=lambda x: x['order'])
+        
+    roots = set(arc['parent'] for arc in parent_child_arcs)
+    children = set(arc['child'] for arc in parent_child_arcs)
+    top_roots = sorted(list(roots - children))
+    
+    if not top_roots and parent_child_arcs:
+        # If circular or no clear root, pick the parent of the first arc
+        top_roots = [parent_child_arcs[0]['parent']]
         
     ordered_items = []
+    seen = set()
     
-    def traverse(node, path):
-        # We store path like A::B::C to handle duplicates
-        full_path = "::".join(path + [node])
-        ordered_items.append((node, full_path, len(path)))
-        if node in children_map:
-            for _, child in children_map[node]:
-                traverse(child, path + [node])
+    def traverse(node_name, path, depth, pref_label=None):
+        # Use a tuple of (node_name, pref_label) to allow the same element 
+        # to appear multiple times if it has different preferred labels 
+        # (common in Cash Flow for beginning/ending balance)
+        node_id = (node_name, pref_label, depth)
+        if node_id in seen: return
+        seen.add(node_id)
+        
+        full_path = path + "::" + node_name
+        if pref_label:
+            full_path += f"|{pref_label}"
+            
+        ordered_items.append((node_name, full_path, depth, pref_label))
+        
+        if node_name in adj:
+            for arc in adj[node_name]:
+                traverse(arc['child'], full_path, depth + 1, arc.get('preferredLabel'))
                 
-    for r in sorted(list(true_roots)): # sorting roots just in case
-        traverse(r, [])
+    for root in top_roots:
+        traverse(root, "", 0)
         
     return ordered_items
 
@@ -912,6 +933,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if el not in thread_values: thread_values[el] = {}
                 thread_values[el][col_key] = val
                 thread_periods.add(col_key)
+                # Store extra metadata (startDate) for periodStartLabel lookup
+                if 'start_date' in f:
+                    if '_metadata' not in thread_values: thread_values['_metadata'] = {}
+                    thread_values['_metadata'][col_key] = f['start_date']
                 
             trees = parse_presentation_linkbase(xbrl_files['pre'])
             
@@ -974,11 +999,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     seen_children_in_role[role] = set()
                     
                 for arc in tree_arcs:
-                    p, c, o = arc['parent'], arc['child'], arc['order']
-                    if 'SegmentInformation' in role and c in seen_children_in_role[role]:
-                        continue
-                    merged_trees[role][(p, c)] = float(o) + sub_role_idx
-                    seen_children_in_role[role].add(c)
+                    p, c, o, pl = arc['parent'], arc['child'], arc['order'], arc.get('preferredLabel')
+                    # Unique key including preferredLabel to allow duplicates in CF statements
+                    arc_key = (p, c, pl)
+                    merged_trees[role][arc_key] = float(o) + sub_role_idx
         
         debug_log(f"Merged total: {len(all_facts)} facts, {len(periods_seen)} periods, {len(merged_trees)} tree roles")
     except Exception as e:
@@ -1063,36 +1087,36 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         new_role = headings_to_roles[base]
                         if new_role != curr_role:
                             if curr_arcs:
-                                merged_trees[curr_role] = {(a['parent'], a['child']): a['order'] for a in curr_arcs}
+                                merged_trees[curr_role] = {(a['parent'], a['child'], a['preferredLabel']): a['order'] for a in curr_arcs}
                                 print(f"[Fallback-Split] Created synthetic role {curr_role} (Phase 1)", file=sys.stderr)
                                 roles_created.add(curr_role)
                             curr_role = new_role
                             curr_arcs = []
-                    curr_arcs.append({'parent': curr_role, 'child': elem, 'order': float(_order)})
+                    curr_arcs.append({'parent': curr_role, 'child': elem, 'order': float(_order), 'preferredLabel': None})
                 if curr_arcs:
-                    merged_trees[curr_role] = {(a['parent'], a['child']): a['order'] for a in curr_arcs}
+                    merged_trees[curr_role] = {(a['parent'], a['child'], a['preferredLabel']): a['order'] for a in curr_arcs}
                     print(f"[Fallback-Split] Created synthetic role {curr_role} (Phase 1)", file=sys.stderr)
             else:
                 virtual_root = role_name
                 arcs = []
                 for elem, _order in sorted_elems:
-                    arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order)})
-
+                    arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order), 'preferredLabel': None})
+                
                 if arcs:
-                    merged_trees[role_name] = {(a['parent'], a['child']): a['order'] for a in arcs}
+                    merged_trees[role_name] = {(a['parent'], a['child'], a['preferredLabel']): a['order'] for a in arcs}
                     print(f"[Fallback] Created synthetic role {role_name} from {doc_code} (Phase 1)", file=sys.stderr)
 
     all_years_data = {} # {role_name: {hierarchical_key: {period: value}}}
     role_to_order = {} # {role_name: [hierarchical_key1, ...]}
     
     for role, pd_dict in merged_trees.items():
-        tree_arcs = [{'parent': p, 'child': c, 'order': o} for (p, c), o in pd_dict.items()]
+        tree_arcs = [{'parent': p, 'child': c, 'order': o, 'preferredLabel': pl} for (p, c, pl), o in pd_dict.items()]
         ordered_items = create_hierarchy(tree_arcs)
         
         all_years_data[role] = {}
         role_to_order[role] = []
-        for el, full_path, depth in ordered_items:
-            role_to_order[role].append(full_path)
+        for el, full_path, depth, pref_label in ordered_items:
+            role_to_order[role].append((full_path, pref_label))
             all_years_data[role][full_path] = {}
             if el in global_element_period_values:
                 for period, val in global_element_period_values[el].items():
@@ -1244,7 +1268,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         is_non_consolidated = not is_consolidated and not is_segment and '注記' not in sheet_name
         
         role_columns = set()
-        for full_path in ordered_keys:
+        for full_path_data in ordered_keys:
+            full_path, pref_label = full_path_data
             if full_path in all_years_data[role]:
                 for c in all_years_data[role][full_path].keys():
                     dim, period = c if isinstance(c, tuple) else ("全体", c)
@@ -1320,9 +1345,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             headers = ["勘定科目", "項目（英名）"] + [c[1] if isinstance(c, tuple) else c for c in sorted_role_cols]
             ws.append(headers)
         
-        for full_path in ordered_keys:
+        for full_path_data in ordered_keys:
+            full_path, pref_label = full_path_data
             # Extract element name to get label
             el = full_path.split('::')[-1]
+            if '|' in el: el = el.split('|')[0]
             
             # Common terminology translations as a fallback
             common_dict = {
@@ -1363,10 +1390,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'OtherOperatingIncome': 'その他の営業収益',
                 'OtherOperatingExpenses': 'その他の営業費用',
                 'OtherOperatingExpense': 'その他の営業費用',
-                # 【追加】IFRSの「その他の収益」「その他の費用」
                 'OtherIncomeIFRS': 'その他の収益', 
                 'OtherExpensesIFRS': 'その他の費用',
-                # ついでに営業収益/費用も念のため追加
                 'OtherOperatingIncomeIFRS': 'その他の営業収益',
                 'OtherOperatingExpensesIFRS': 'その他の営業費用',
                 'ShareOfProfitLossOfAssociatesAndJointVenturesAccountedForUsingEquityMethod': '持分法による投資利益',
@@ -1390,8 +1415,6 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'BasicEarningsPerShare': '基本的１株当たり当期利益（円）',
                 'BasicEarningsLossPerShare': '基本的１株当たり当期利益（円）',
                 
-                # Segment specific keys are moved to segment_dict
-
                 # Priority IFRS items
                 'CostOfSalesIFRS': '売上原価',
                 'GrossProfitIFRS': '売上総利益',
@@ -1463,6 +1486,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
             if not label:
                     label = convert_camel_case_to_title(base_name)
+            
+            # Append suffix for Cash Flow balances
+            is_cf_sheet = 'キャッシュ・フロー' in sheet_name
+            if is_cf_sheet:
+                if pref_label == 'http://www.xbrl.org/2003/role/periodStartLabel':
+                    label += "（期首残高）"
+                elif pref_label in ('http://www.xbrl.org/2003/role/periodEndLabel', 'http://www.xbrl.org/2003/role/totalLabel'):
+                    # Only append (期末残高) if the element is likely a balance element
+                    if 'CashAndCashEquivalents' in el:
+                        label += "（期末残高）"
                     
             # Insert Separator rows for Segment Notes subsets
             if 'SegmentInformation' in role:
@@ -1484,7 +1517,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     ws.append(["【 注記：減損損失 】"])
                     seen_impairment = True
                     
-            # Indent based on depth? Depth is full_path count
+            # Indent based on depth
             depth = len(full_path.split('::')) - 1
             indent_prefix = "　" * depth
             
@@ -1492,14 +1525,58 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
             has_data = False
             for col_key in sorted_role_cols:
-                val = all_years_data[role][full_path].get(col_key, "")
+                # SPECIAL HANDLING for Cash Flow Beginning Balance
+                # If this row is a periodStartLabel in a Cash Flow sheet, we pull data from the prior period's instant.
+                val = ""
+                is_cf_sheet = 'キャッシュ・フロー' in sheet_name
+                is_start_row = pref_label == 'http://www.xbrl.org/2003/role/periodStartLabel'
+                
+                if is_cf_sheet and is_start_row:
+                    # Find the startDate of the current column
+                    current_start_date = global_element_period_values.get('_metadata', {}).get(col_key)
+                    if current_start_date:
+                        # Find the corresponding instant
+                        # Cases:
+                        # 1. Instant is exactly at current_start_date (e.g. 2024-04-01)
+                        # 2. Instant is at the end of the previous day (e.g. 2024-03-31)
+                        dates_to_try = [current_start_date]
+                        try:
+                            from datetime import datetime, timedelta
+                            dt = datetime.strptime(current_start_date, '%Y-%m-%d')
+                            prev_day = (dt - timedelta(days=1)).strftime('%Y-%m-%d')
+                            dates_to_try.append(prev_day)
+                        except:
+                            pass
+                        
+                        found_val = False
+                        for t_date in dates_to_try:
+                            target_col_key = (col_key[0], t_date)
+                            if el in global_element_period_values and target_col_key in global_element_period_values[el]:
+                                val = global_element_period_values[el][target_col_key]
+                                found_val = True
+                                break
+                        
+                        if not found_val:
+                            # Search for any dimension matching if exact dim fails
+                            for t_date in dates_to_try:
+                                for k, v in global_element_period_values.get(el, {}).items():
+                                    if k[1] == t_date: # Match date, ignore dimension if needed? 
+                                        # (Actually dimension should match, but sometimes it's "全体" vs "連結")
+                                        val = v
+                                        found_val = True
+                                        break
+                                if found_val: break
+                
+                # Only use fallback if this isn't a CF start row (to avoid pulling ending balance)
+                if val == "" and not (is_cf_sheet and is_start_row):
+                    val = all_years_data[role][full_path].get(col_key, "")
+                
                 # Clean numeric values
                 if val:
                     # Handle full-width characters and commas
                     import unicodedata
                     val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
                     try:
-                        # Only convert if it looks numeric (don't convert plain text names)
                         if val_clean and not any(c.isalpha() for c in val_clean):
                             val = float(val_clean)
                     except:
