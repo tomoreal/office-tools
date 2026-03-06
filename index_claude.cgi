@@ -1,4 +1,4 @@
-#!/virtual/tomo/public_html/makoto.xtomo.com/xbrl2excel/venv/bin/python3
+#!/virtual/tomo/public_html/makoto.xtomo.com/xbrl2excel/venv/bin/python3.10
 # s217用: #!/virtual/tomo/public_html/xbrl.xtomo.com/venv/bin/python3.9
 
 # -*- coding: utf-8 -*-
@@ -6,7 +6,10 @@
 
 import sys
 import os
-import traceback
+import cgitb
+
+# Enable detailed CGI error reporting to browser (only for debugging)
+cgitb.enable()
 
 # LiteSpeedサーバー（コアサーバー等）でのマルチスレッド問題を回避
 os.environ['OPENBLAS_NUM_THREADS'] = "1"
@@ -25,9 +28,16 @@ try:
     from app import app
     from wsgiref.handlers import CGIHandler
 except Exception:
-    print("Content-Type: text/plain; charset=utf-8\n")
-    print("--- Diagnostic Info: Error during CGI Initialization (Import Phase) ---")
+    import traceback
+    print("Content-Type: text/html; charset=utf-8\n")
+    print("<html><head><title>Error</title></head><body>")
+    print("<h1>Error during CGI Initialization (Import Phase)</h1>")
+    print("<pre>")
     print(traceback.format_exc())
+    print("</pre>")
+    print("<h2>Environment Info</h2>")
+    print(f"<pre>Python: {sys.version}\nPath: {sys.executable}\nCWD: {os.getcwd()}</pre>")
+    print("</body></html>")
     sys.exit(0)
 
 # CGIとして実行
@@ -35,6 +45,11 @@ if __name__ == '__main__':
     try:
         CGIHandler().run(app)
     except Exception:
-        print("Content-Type: text/plain; charset=utf-8\n")
-        print("--- Diagnostic Info: Error during CGI Execution ---")
+        import traceback
+        print("Content-Type: text/html; charset=utf-8\n")
+        print("<html><head><title>Error</title></head><body>")
+        print("<h1>Error during CGI Execution</h1>")
+        print("<pre>")
         print(traceback.format_exc())
+        print("</pre>")
+        print("</body></html>")

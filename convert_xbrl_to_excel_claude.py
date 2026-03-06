@@ -21,6 +21,14 @@ try:
 except ImportError:
     Workbook = None
 
+# Control verbose logging via environment variable (default: disabled for CGI safety)
+VERBOSE_LOGGING = os.environ.get('XBRL_VERBOSE', '0') == '1'
+
+def vprint(*args, **kwargs):
+    """Verbose print - only prints if VERBOSE_LOGGING is enabled"""
+    if VERBOSE_LOGGING:
+        print(*args, **kwargs)
+
 # IFRS account name mapping to match commercial tools
 IFRS_LABEL_MAPPING = {
     'jpigp_cor_RevenueIFRS': '売上高',
@@ -82,7 +90,7 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
     }
     
     if year not in urls:
-        print(f"Taxonomy for year {year} not found in our known URL map.", file=sys.stderr)
+        print(f"Taxonomy for year {year} not found in our known URL map.")
         return {}, {}
         
     tax_dir = os.path.join(cache_dir, str(year))
@@ -98,24 +106,34 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
     if not os.path.exists(tax_dir):
         os.makedirs(tax_dir, exist_ok=True)
         zip_path = os.path.join(tax_dir, 'taxonomy.zip')
-        print(f"Downloading EDINET taxonomy for {year} (takes a moment)...", file=sys.stderr)
+        print(f"Downloading EDINET taxonomy for {year} (takes a moment)...")
         try:
             urllib.request.urlretrieve(urls[year], zip_path)
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(tax_dir)
             os.remove(zip_path)
         except Exception as e:
-            print(f"Failed to download/extract taxonomy for {year}: {e}", file=sys.stderr)
+            print(f"Failed to download/extract taxonomy for {year}: {e}")
             return {}, {}
             
-    print(f"Parsing EDINET taxonomy labels for {year}...", file=sys.stderr)
+    print(f"Parsing EDINET taxonomy labels for {year}...")
     lab_files = glob.glob(os.path.join(tax_dir, '**', '*_lab.xml'), recursive=True)
     all_labels = {}
     label_priorities = {} # {element_name: priority}
-    
+
+    # Track which taxonomy types we're loading
+    taxonomy_types = set()
+
     for lf in lab_files:
         if 'deprecated' in lf or 'dep' in lf or '-en.xml' in lf:
             continue
+
+        # Extract taxonomy type (jpigp, jppfs, jpcrp, etc.)
+        basename = os.path.basename(lf)
+        if '_lab.xml' in basename:
+            tax_type = basename.split('_')[0]
+            taxonomy_types.add(tax_type)
+
         try:
             parsed_labels, parsed_priorities = parse_labels_file(lf)
             for el, text in parsed_labels.items():
@@ -125,6 +143,14 @@ def get_standard_labels(year, cache_dir='edinet_taxonomies'):
                     label_priorities[el] = prio
         except:
             pass
+
+    # Report which taxonomies were loaded
+    if taxonomy_types:
+        vprint(f"  Loaded taxonomies: {', '.join(sorted(taxonomy_types))}")
+
+    # Count IFRS labels specifically
+    ifrs_count = sum(1 for k in all_labels if 'IFRS' in k)
+    vprint(f"  Total labels: {len(all_labels)}, IFRS labels: {ifrs_count}")
             
     if all_labels:
         with open(labels_cache_file, 'w', encoding='utf-8') as f:
@@ -180,7 +206,8 @@ def parse_labels_file(lab_file):
     res_id_to_text = {}
     res_id_to_priority = {}
     
-    # Role priority: verboseLabel is standard for EDINET CSV output
+    # Role priority: verboseLabel is usually best for Excel reports.
+    # We explicitly lower priority for generic labels like "合計" or "計".
     # XBRL Label Roles and their associated priority (lower is better)
     role_priority = {
         "http://www.xbrl.org/2003/role/verboseLabel": 1,
@@ -243,13 +270,13 @@ def convert_camel_case_to_title(name):
     return re.sub('([a-z0-9])([A-Z])', r'\1 \2', s1).title()
 
 def parse_presentation_linkbase(pre_file):
-    print("Parsing presentation linkbase...", pre_file, file=sys.stderr)
+    print("Parsing presentation linkbase...", pre_file)
     try:
         # Use lxml for robust namespace handling and performance
         parser = etree.XMLParser(recover=True)
         tree = etree.parse(pre_file, parser)
     except Exception as e:
-        print(f"Error parsing presentation linkbase: {e}", file=sys.stderr)
+        print(f"Error parsing presentation linkbase: {e}")
         return {}
 
     ns = {
@@ -359,13 +386,13 @@ def parse_presentation_linkbase(pre_file):
     return statement_trees
 
 def parse_instance_contexts_and_units(xbrl_file, labels_map):
-    print("Parsing XBRL contexts and units...", xbrl_file, file=sys.stderr)
+    print("Parsing XBRL contexts and units...", xbrl_file)
     try:
         # Use lxml for robust namespace handling
         parser = etree.XMLParser(recover=True)
         tree = etree.parse(xbrl_file, parser)
     except Exception as e:
-        print(f"Error parsing XBRL instance: {e}", file=sys.stderr)
+        print(f"Error parsing XBRL instance: {e}")
         return {}, {}
 
     # Standard namespaces for XBRL instance and dimensions
@@ -462,7 +489,7 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
         return None
 
     for f in ixbrl_files:
-        print(f"Parsing Inline XBRL... {os.path.basename(f)}", file=sys.stderr)
+        print(f"Parsing Inline XBRL... {os.path.basename(f)}")
         with open(f, 'r', encoding='utf-8', errors='replace') as file:
             content = file.read()
             # Try lxml first, fallback to html.parser
@@ -477,7 +504,7 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
             return local in ('nonfraction', 'nonnumeric')
             
         tags = soup.find_all(is_ix_tag)
-        print(f"  Found {len(tags)} tags", file=sys.stderr)
+        print(f"  Found {len(tags)} tags")
         
         elem_order = 0
         for tag in tags:
@@ -586,9 +613,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     try:
         # Process each zip file
         for zip_idx, zip_path in enumerate(zip_paths):
-            print(f"Processing {zip_path}...", file=sys.stderr)
+            print(f"Processing {zip_path}...")
             if not os.path.exists(zip_path):
-                print(f"File not found: {zip_path}", file=sys.stderr)
+                print(f"File not found: {zip_path}")
                 continue
                 
             extract_dir = os.path.join(temp_base, f"zip_{zip_idx}")
@@ -602,7 +629,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
             xbrl_files = find_xbrl_files(extract_dir)
             if not xbrl_files:
-                print(f"Could not find XBRL files in {zip_path}", file=sys.stderr)
+                print(f"Could not find XBRL files in {zip_path}")
                 continue
                 
             # Extract taxonomy year from _pre.xml to fetch standard labels
@@ -621,12 +648,19 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
             if taxonomy_year:
                 std_labels, std_priorities = get_standard_labels(taxonomy_year)
+                vprint(f"Loaded {len(std_labels)} standard labels from EDINET taxonomy {taxonomy_year}")
+
+                # Count how many IFRS labels are available
+                ifrs_std_labels = {k: v for k, v in std_labels.items() if 'IFRS' in k}
+                if ifrs_std_labels:
+                    vprint(f"  Including {len(ifrs_std_labels)} IFRS standard labels")
+
                 labels_map.update(std_labels)
                 labels_map_priorities.update(std_priorities)
 
             # Extract local report labels
             for lf in xbrl_files.get('lab', []):
-                print(f"Parsing local labels... {lf}", file=sys.stderr)
+                print(f"Parsing local labels... {lf}")
                 local_labels, local_priorities = parse_labels_file(lf)
                 # Apply priority logic for local labels too
                 # Give local labels a slight boost (subtract 1 from priority) to prefer them over standard
@@ -727,7 +761,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     }
 
     if roles_to_fill:
-        print(f"Applying fallback for missing roles: {list(roles_to_fill.values())}", file=sys.stderr)
+        print(f"Applying fallback for missing roles: {list(roles_to_fill.values())}")
         facts_by_doc = {}  # {doc_code: {element: min_order}}
         for f in all_facts:
             src = f.get('source_file', '')
@@ -750,52 +784,14 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 continue
 
             sorted_elems = sorted(elem_order_map.items(), key=lambda x: x[1])
-            
-            # For IFRS combined filings (typically 0105010), split into separate statements
-            if doc_code == '0105010':
-                headings_to_roles = {
-                    'ConsolidatedStatementOfFinancialPositionIFRSHeading': 'rol_ConsolidatedStatementOfFinancialPositionIFRS',
-                    'ConsolidatedStatementOfProfitOrLossIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    'ConsolidatedStatementOfProfitOrLossAndOtherComprehensiveIncomeIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    'ConsolidatedStatementOfCashFlowsIFRSHeading': 'rol_ConsolidatedStatementOfCashFlowsIFRS',
-                    'ConsolidatedStatementOfChangesInEquityIFRSHeading': 'rol_ConsolidatedStatementOfChangesInEquityIFRS',
-                    'StatementOfFinancialPositionIFRSHeading': 'rol_ConsolidatedStatementOfFinancialPositionIFRS',
-                    'StatementOfProfitOrLossIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    # Backup markers
-                    'RevenueIFRS': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    'NetSalesIFRS': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    'NetCashProvidedByUsedInOperatingActivitiesIFRS': 'rol_ConsolidatedStatementOfCashFlowsIFRS',
-                    'RetainedEarningsIFRS': 'rol_ConsolidatedStatementOfChangesInEquityIFRS',
-                }
-                
-                curr_role = 'rol_ConsolidatedStatementOfFinancialPositionIFRS'
-                curr_arcs = []
-                roles_created = set()
-                
-                for elem, _order in sorted_elems:
-                    base = elem.split('_')[-1]
-                    if base in headings_to_roles:
-                        new_role = headings_to_roles[base]
-                        if new_role != curr_role:
-                            if curr_arcs:
-                                merged_trees[curr_role] = {(a['parent'], a['child']): a['order'] for a in curr_arcs}
-                                print(f"[Fallback-Split] Created synthetic role {curr_role} (Phase 1)", file=sys.stderr)
-                                roles_created.add(curr_role)
-                            curr_role = new_role
-                            curr_arcs = []
-                    curr_arcs.append({'parent': curr_role, 'child': elem, 'order': float(_order)})
-                if curr_arcs:
-                    merged_trees[curr_role] = {(a['parent'], a['child']): a['order'] for a in curr_arcs}
-                    print(f"[Fallback-Split] Created synthetic role {curr_role} (Phase 1)", file=sys.stderr)
-            else:
-                virtual_root = role_name
-                arcs = []
-                for elem, _order in sorted_elems:
-                    arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order)})
+            virtual_root = role_name
+            arcs = []
+            for elem, _order in sorted_elems:
+                arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order)})
 
-                if arcs:
-                    merged_trees[role_name] = {(a['parent'], a['child']): a['order'] for a in arcs}
-                    print(f"[Fallback] Created synthetic role {role_name} from {doc_code} (Phase 1)", file=sys.stderr)
+            if arcs:
+                merged_trees[role_name] = {(a['parent'], a['child']): a['order'] for a in arcs}
+                print(f"[Fallback] Created synthetic role {role_name} from {doc_code} with {len(arcs)} elements")
 
     all_years_data = {} # {role_name: {hierarchical_key: {period: value}}}
     role_to_order = {} # {role_name: [hierarchical_key1, ...]}
@@ -826,8 +822,35 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 company_name = vals[sorted_keys[0]]
                 break
 
+    # Report on IFRS label usage
+    ifrs_elements_used = set()
+    for el in global_element_period_values.keys():
+        if 'IFRS' in el:
+            ifrs_elements_used.add(el)
+
+    if ifrs_elements_used:
+        vprint(f"\n=== IFRS Element Usage Report ===")
+        vprint(f"Total IFRS elements in data: {len(ifrs_elements_used)}")
+
+        # Show sample of IFRS labels being used
+        sample_count = min(10, len(ifrs_elements_used))
+        vprint(f"\nSample IFRS elements and their labels ({sample_count}/{len(ifrs_elements_used)}):")
+        for el in sorted(list(ifrs_elements_used))[:sample_count]:
+            label = labels_map.get(el, '(ラベルなし)')
+            vprint(f"  {el} -> {label}")
+
+        # Check if we have labels for all IFRS elements
+        ifrs_without_labels = [el for el in ifrs_elements_used if el not in labels_map]
+        if ifrs_without_labels:
+            vprint(f"\nWarning: {len(ifrs_without_labels)} IFRS elements without labels:")
+            for el in sorted(ifrs_without_labels)[:5]:
+                vprint(f"  {el}")
+        else:
+            vprint(f"\n✓ All {len(ifrs_elements_used)} IFRS elements have labels!")
+        vprint("=" * 35)
+
     # Now generate Excel
-    print(f"Generating Excel for {company_name}...", file=sys.stderr)
+    print(f"\nGenerating Excel for {company_name}...")
     wb = Workbook()
     default_sheet_removed = False
     
@@ -1328,7 +1351,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python convert_xbrl_to_excel.py <path_to_zip1> [<path_to_zip2> ...]", file=sys.stderr)
+        print("Usage: python convert_xbrl_to_excel.py <path_to_zip1> [<path_to_zip2> ...]")
         sys.exit(1)
     process_xbrl_zips(sys.argv[1:])
 
