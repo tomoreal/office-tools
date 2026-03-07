@@ -47,6 +47,7 @@ def vprint(*args, **kwargs):
        msg = " ".join(map(str, args))
        debug_log(f"[VERBOSE] {msg}")
 
+
 def safe_xpath(tree_or_elem, query, namespaces=None):
     """Safe XPath helper that works with both lxml and standard xml.etree.ElementTree.
     Note: ElementTree supports only a subset of XPath.
@@ -200,14 +201,40 @@ def get_standard_labels(year, cache_dir=None):
             try:
                 urllib.request.urlretrieve(urls[year], zip_path)
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(tax_dir)
+                    # Robust extraction: manually decode filenames using CP932 (shift_jis)
+                    # to avoid Mojibake on Linux/Unix systems that default to UTF-8
+                    for info in zip_ref.infolist():
+                        try:
+                            # infolist().filename is often bytes or interpreted as CP437
+                            # We re-encode and decode correctly
+                            filename_raw = info.filename.encode('cp437')
+                            filename = filename_raw.decode('cp932')
+                        except:
+                            filename = info.filename
+                        
+                        target_path = os.path.join(tax_dir, filename)
+                        if info.is_dir():
+                            os.makedirs(target_path, exist_ok=True)
+                        else:
+                            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                            with zip_ref.open(info) as source, open(target_path, 'wb') as target:
+                                shutil.copyfileobj(source, target)
                 os.remove(zip_path)
+                
+                # Canonical normalization: Rename any Mojibake "タクソノミ" folder to "taxonomy"
+                for entry in os.listdir(tax_dir):
+                    full_p = os.path.join(tax_dir, entry)
+                    if os.path.isdir(full_p) and ('â^' in entry or 'タクソノミ' in entry):
+                        new_p = os.path.join(tax_dir, 'taxonomy')
+                        if not os.path.exists(new_p):
+                            os.rename(full_p, new_p)
+                            vprint(f"Normalized taxonomy directory: {entry} -> taxonomy")
             except Exception as e:
                 vprint(f"Failed to download/extract taxonomy for {year}: {e}")
                 return {}, {}
             
     vprint(f"Parsing EDINET taxonomy labels for {year}... (First run only)")
-    lab_files = glob.glob(os.path.join(tax_dir, '**', '*_lab.xml'), recursive=True)
+    lab_files = sorted(glob.glob(os.path.join(tax_dir, '**', '*_lab.xml'), recursive=True))
     all_labels = {}
     label_priorities = {} # {element_name: priority}
 
@@ -225,14 +252,21 @@ def get_standard_labels(year, cache_dir=None):
             taxonomy_types.add(tax_type)
 
         try:
+            # Determine taxonomy type from filename for domain-specific weighting
+            tax_type = os.path.basename(lf).split('_')[0]
             parsed_labels, parsed_priorities = parse_labels_file(lf)
+            
             for el, text in parsed_labels.items():
                 prio = parsed_priorities.get(el, 99)
-                # Phase 1: Logging when a verboseLabel is about to be adopted
-                if VERBOSE_LOGGING and prio == 1 and (el not in all_labels or prio < label_priorities.get(el, 100)):
-                    vprint(f"  [Taxonomy] Adopting verboseLabel for {el}: {text}")
                 
-                if (el not in all_labels) or (prio < label_priorities.get(el, 100)):
+                # Element-Prefix Awareness: Boost priority if the taxonomy file matches the element's prefix
+                # e.g. jppfs label for jppfs element is better than general label
+                el_prefix = el.split('_')[0] if '_' in el else ""
+                if el_prefix and el_prefix == tax_type:
+                    prio -= 0.5 # Slight boost for domain-exact match
+                
+                current_prio = label_priorities.get(el, 100)
+                if (el not in all_labels) or (prio < current_prio) or (prio == current_prio and text < all_labels.get(el, "")):
                     all_labels[el] = text
                     label_priorities[el] = prio
         except:
@@ -311,11 +345,16 @@ def parse_labels_file(lab_file):
     # XBRL Label Roles and their associated priority (lower is better)
     role_priority = {
         "http://www.xbrl.org/2003/role/verboseLabel": 1,
-        "http://www.xbrl.org/2003/role/label": 2,
-        "http://disclosure.edinet-fsa.go.jp/jpcrp/alt/role/label": 3, # EDINET alternate label
+        "http://disclosure.edinet-fsa.go.jp/jpcrp/alt/role/label": 2, # EDINET industry-specific alternate
+        "http://www.xbrl.org/2003/role/label": 3,
+        "http://disclosure.edinet-fsa.go.jp/jppfs/ele/role/label": 4, # Electric Power
+        "http://disclosure.edinet-fsa.go.jp/jppfs/gas/role/label": 4, # Gas
+        "http://disclosure.edinet-fsa.go.jp/jppfs/sec/role/label": 4, # Securities
+        "http://disclosure.edinet-fsa.go.jp/jppfs/ins/role/label": 4, # Insurance
+        "http://disclosure.edinet-fsa.go.jp/jppfs/bnk/role/label": 4, # Banking
         "http://www.xbrl.org/2003/role/terseLabel": 5,
-        "http://www.xbrl.org/2003/role/totalLabel": 10, # Standard total
-        "http://disclosure.edinet-fsa.go.jp/jpcrp/alt/role/totalLabel": 11, # EDINET alternate total
+        "http://www.xbrl.org/2003/role/totalLabel": 10,
+        "http://disclosure.edinet-fsa.go.jp/jpcrp/alt/role/totalLabel": 11,
     }
 
     GENERIC_LABELS = ('合計', '小計', '計', 'total', 'sum', 'subtotal', '金額')
@@ -339,7 +378,7 @@ def parse_labels_file(lab_file):
         if priority > 1 and any(g in text.lower() for g in GENERIC_LABELS):
             priority += 50
             
-        if (res_id not in res_id_to_text) or (priority < res_id_to_priority.get(res_id, 100)):
+        if (res_id not in res_id_to_text) or (priority < res_id_to_priority.get(res_id, 100)) or (priority == res_id_to_priority.get(res_id, 100) and text < res_id_to_text[res_id]):
             res_id_to_text[res_id] = text
             res_id_to_priority[res_id] = priority
 
@@ -669,8 +708,17 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
             elem_order_in_file = 0
             for tag in tags:
                 if HAS_LXML_LOCAL:
-                    # Access attributes robustly (handle namespaced keys like ix:name)
-                    attrs = {k.split(':')[-1].lower(): v for k, v in tag.attrib.items()}
+                    # Access attributes robustly (handle namespaced keys like {uri}name or ix:name)
+                    # LXML uses {uri}attribute_name format for namespaced attributes
+                    attrs = {}
+                    for k, v in tag.attrib.items():
+                        # Extract local name: handle {uri}name and prefix:name
+                        local_k = k
+                        if '}' in local_k:
+                            local_k = local_k.split('}')[-1]
+                        if ':' in local_k:
+                            local_k = local_k.split(':')[-1]
+                        attrs[local_k.lower()] = v
                     ctx_ref = attrs.get('contextref')
                     if not ctx_ref or ctx_ref not in contexts: continue
                     
@@ -781,9 +829,9 @@ def create_hierarchy(parent_child_arcs):
         if p not in adj: adj[p] = []
         adj[p].append(arc)
     
-    # Sort children by order
+    # Sort children by order, with stable tie-breaking on child name
     for p in adj:
-        adj[p].sort(key=lambda x: x['order'])
+        adj[p].sort(key=lambda x: (x['order'], x['child']))
         
     roots = set(arc['parent'] for arc in parent_child_arcs)
     children = set(arc['child'] for arc in parent_child_arcs)
@@ -823,6 +871,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     overall_start = time.time()
     if not zip_paths:
         return None
+    zip_paths = sorted(zip_paths)
         
     global HAS_PANDAS, HAS_OPENPYXL
     # Delay loading heavy libraries inside the function
@@ -917,7 +966,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
             # Phase 3: Selective Parsing (DISABLED for completeness)
             all_ix_files = glob.glob(os.path.join(extract_dir, 'XBRL', 'PublicDoc', '*_ixbrl.htm'))
-            ix_files = all_ix_files
+            ix_files = sorted(all_ix_files)
 
             facts = parse_ixbrl_facts(ix_files, contexts, units) # Corrected: pass units, not labels
             thread_facts.extend(facts)
@@ -975,7 +1024,19 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             for el, vals in res['values'].items():
                 if el not in global_element_period_values:
                     global_element_period_values[el] = {}
-                global_element_period_values[el].update(vals)
+                for col_key, new_val in vals.items():
+                    old_val = global_element_period_values[el].get(col_key)
+                    if old_val is None:
+                        global_element_period_values[el][col_key] = new_val
+                    else:
+                        # Tie-breaking: prefer values that look more precise (more decimals)
+                        # This happens when the same fact appears in a table (precise) and a note (rounded)
+                        # Or just be deterministic based on zip file order (already sorted)
+                        def get_precision(s):
+                            if not s or '.' not in s: return 0
+                            return len(s.split('.')[-1])
+                        if get_precision(new_val) > get_precision(old_val):
+                            global_element_period_values[el][col_key] = new_val
             
             # Merge presentation trees
             for role, tree_arcs in res['trees'].items():
@@ -1310,6 +1371,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         seen_goodwill = False
         seen_negative_goodwill = False
         seen_impairment = False
+        seen_labels = set() # Track labels for deduplication in each worksheet
         
         # Sort columns logically (Segment first: 全体->各セグメント->調整額->合計, then dates)
         def sort_col(c):
@@ -1516,6 +1578,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     ws.append([])
                     ws.append(["【 注記：減損損失 】"])
                     seen_impairment = True
+            
+            # --- セグメント情報の場合の重複排除 ---
+            if is_segment:
+                if label in seen_labels:
+                    continue
+                seen_labels.add(label)
                     
             # Indent based on depth
             depth = len(full_path.split('::')) - 1
@@ -1523,6 +1591,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
             row_data = [indent_prefix + label, el]
             
+            has_numeric_data = False
             has_data = False
             for col_key in sorted_role_cols:
                 # SPECIAL HANDLING for Cash Flow Beginning Balance
@@ -1579,6 +1648,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     try:
                         if val_clean and not any(c.isalpha() for c in val_clean):
                             val = float(val_clean)
+                            has_numeric_data = True
                     except:
                         pass
                 row_data.append(val)
@@ -1586,6 +1656,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     has_data = True
                     
             if has_data: # Only append rows that have at least one value across columns
+                # --- セグメント情報の場合の文字情報の除外 ---
+                if is_segment:
+                    if not has_numeric_data:
+                        continue
                 ws.append(row_data)
 
         # Apply formatting and column widths
