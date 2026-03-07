@@ -77,6 +77,10 @@ def index():
             
     return render_template('index.html')
     
+@app.route('/bookmarklets')
+def bookmarklets():
+    return render_template('bookmarklets.html')
+
 @app.route('/clear', methods=['POST'])
 def clear_temp():
     try:

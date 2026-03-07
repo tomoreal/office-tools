@@ -177,14 +177,20 @@
 <body>
     <div class="page-wrapper">
         <div class="container">
-            <div style="display: flex; justify-content: flex-end; margin-bottom: 1.5rem;">
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 1.5rem;">
+                <a href="./bookmarklets"
+                    style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
+                    <i class="fas fa-bookmark" style="margin-right: 8px;"></i>ブックマークレットの追加
+                </a>
                 <a href="./index.html"
                     style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
                     <i class="fas fa-exchange-alt" style="margin-right: 8px;"></i>CSV変換ツールへ
                 </a>
             </div>
             <h1>XBRL・Excel 変換ツール</h1>
-            <p>EDINETからダウンロードしたXBRLのZIPファイルをアップロードすると、自動でExcel形式に変換してダウンロードします。</p>
+            <p>EDINET（<a href="https://disclosure2.edinet-fsa.go.jp/weee0050.aspx" target="_blank"
+                    style="color: var(--primary-color);">https://disclosure2.edinet-fsa.go.jp/weee0050.aspx</a>）で、ダウンロードしたXBRLファイル(zip)をアップロードしてください。
+            </p>
 
             {% with messages = get_flashed_messages() %}
             {% if messages %}
