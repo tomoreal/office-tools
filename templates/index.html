@@ -25,10 +25,14 @@
             color: var(--text-main);
             margin: 0;
             padding: 0;
+        }
+
+        .page-wrapper {
             display: flex;
             align-items: center;
             justify-content: center;
             min-height: 100vh;
+            padding: 20px;
         }
 
         .container {
@@ -171,46 +175,48 @@
 </head>
 
 <body>
-    <div class="container">
-        <div style="display: flex; justify-content: flex-end; margin-bottom: 1.5rem;">
-            <a href="./index.html"
-                style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
-                <i class="fas fa-exchange-alt" style="margin-right: 8px;"></i>CSV変換ツールへ
-            </a>
-        </div>
-        <h1>XBRL・Excel 変換ツール</h1>
-        <p>EDINETからダウンロードしたXBRLのZIPファイルをアップロードすると、自動でExcel形式に変換してダウンロードします。</p>
-
-        {% with messages = get_flashed_messages() %}
-        {% if messages %}
-        {% for message in messages %}
-        <div class="flash">{{ message }}</div>
-        {% endfor %}
-        {% endif %}
-        {% endwith %}
-
-        <form method="POST" enctype="multipart/form-data" id="uploadForm">
-            <div class="upload-area" id="dropZone">
-                <i class="fas fa-file-archive upload-icon"></i>
-                <div style="margin-bottom: 0.5rem;">ZIPファイルをドラッグ＆ドロップ</div>
-                <div style="font-size: 0.85rem; color: var(--text-muted);">または、クリックしてファイルを選択</div>
-                <input type="file" name="files" id="fileInput" class="file-input" accept=".zip" multiple required>
+    <div class="page-wrapper">
+        <div class="container">
+            <div style="display: flex; justify-content: flex-end; margin-bottom: 1.5rem;">
+                <a href="./index.html"
+                    style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
+                    <i class="fas fa-exchange-alt" style="margin-right: 8px;"></i>CSV変換ツールへ
+                </a>
             </div>
+            <h1>XBRL・Excel 変換ツール</h1>
+            <p>EDINETからダウンロードしたXBRLのZIPファイルをアップロードすると、自動でExcel形式に変換してダウンロードします。</p>
 
-            <div class="file-list" id="fileList"></div>
+            {% with messages = get_flashed_messages() %}
+            {% if messages %}
+            {% for message in messages %}
+            <div class="flash">{{ message }}</div>
+            {% endfor %}
+            {% endif %}
+            {% endwith %}
 
-            <button type="submit" class="btn" id="submitBtn">
-                <span id="btnText">Excelに変換してダウンロード</span>
-                <div class="loader" id="loader"></div>
-            </button>
-        </form>
+            <form method="POST" enctype="multipart/form-data" id="uploadForm">
+                <div class="upload-area" id="dropZone">
+                    <i class="fas fa-file-archive upload-icon"></i>
+                    <div style="margin-bottom: 0.5rem;">ZIPファイルをドラッグ＆ドロップ</div>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">または、クリックしてファイルを選択</div>
+                    <input type="file" name="files" id="fileInput" class="file-input" accept=".zip" multiple required>
+                </div>
 
-        <form action="{{ url_for('clear_temp') }}" method="POST" id="clearForm"
-            onsubmit="return confirm('サーバー上の一次ファイルをすべて削除しますか？');">
-            <button type="submit" class="btn btn-secondary">
-                <i class="fas fa-trash-alt" style="margin-right: 8px;"></i>サーバー上のファイルをクリア
-            </button>
-        </form>
+                <div class="file-list" id="fileList"></div>
+
+                <button type="submit" class="btn" id="submitBtn">
+                    <span id="btnText">Excelに変換してダウンロード</span>
+                    <div class="loader" id="loader"></div>
+                </button>
+            </form>
+
+            <form action="{{ url_for('clear_temp') }}" method="POST" id="clearForm"
+                onsubmit="return confirm('サーバー上の一次ファイルをすべて削除しますか？');">
+                <button type="submit" class="btn btn-secondary">
+                    <i class="fas fa-trash-alt" style="margin-right: 8px;"></i>サーバー上のファイルをクリア
+                </button>
+            </form>
+        </div>
     </div>
 
     <script>

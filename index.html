@@ -12,31 +12,32 @@
 </head>
 
 <body>
+    <div class="page-wrapper">
+        <div class="container">
+            <div style="display: flex; justify-content: flex-end; margin-bottom: 25px;">
+                <a href="./index.cgi"
+                    style="color: var(--accent); text-decoration: none; border: 1px solid var(--accent); padding: 6px 18px; border-radius: 25px; font-size: 13px; display: flex; align-items: center; transition: all 0.2s;">
+                    <i class="fas fa-exchange-alt" style="margin-right: 10px;"></i>XBRL変換ツールへ
+                </a>
+            </div>
+            <div class="header">
+                <h1>財務データ変換ツール</h1>
+                <p>CSVファイルをアップロードすると、<br>ブラウザ上で安全にExcelファイルに変換します。<br>(サーバーには送信されません)</p>
+            </div>
 
-    <div class="container">
-        <div style="display: flex; justify-content: flex-end; margin-bottom: 25px;">
-            <a href="./index.cgi"
-                style="color: var(--accent); text-decoration: none; border: 1px solid var(--accent); padding: 6px 18px; border-radius: 25px; font-size: 13px; display: flex; align-items: center; transition: all 0.2s;">
-                <i class="fas fa-exchange-alt" style="margin-right: 10px;"></i>XBRL変換ツールへ
-            </a>
-        </div>
-        <div class="header">
-            <h1>財務データ変換ツール</h1>
-            <p>CSVファイルをアップロードすると、<br>ブラウザ上で安全にExcelファイルに変換します。<br>(サーバーには送信されません)</p>
-        </div>
+            <div class="upload-area" id="dropZone">
+                <i class="fas fa-cloud-upload-alt upload-icon"></i>
+                <div class="upload-text">CSVファイルをドラッグ＆ドロップ</div>
+                <div class="upload-hint">または、クリックしてファイルを選択</div>
+                <input type="file" name="file" id="fileInput" accept=".csv" required>
+                <div class="file-name" id="fileName"></div>
+            </div>
 
-        <div class="upload-area" id="dropZone">
-            <i class="fas fa-cloud-upload-alt upload-icon"></i>
-            <div class="upload-text">CSVファイルをドラッグ＆ドロップ</div>
-            <div class="upload-hint">または、クリックしてファイルを選択</div>
-            <input type="file" name="file" id="fileInput" accept=".csv" required>
-            <div class="file-name" id="fileName"></div>
+            <button type="button" class="btn-submit" id="submitBtn" disabled>
+                <span class="btn-text">ブラウザで変換してダウンロード</span>
+                <div class="loader"></div>
+            </button>
         </div>
-
-        <button type="button" class="btn-submit" id="submitBtn" disabled>
-            <span class="btn-text">ブラウザで変換してダウンロード</span>
-            <div class="loader"></div>
-        </button>
     </div>
 
     <!-- Application Logic -->

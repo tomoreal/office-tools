@@ -22,10 +22,15 @@
 body {
     font-family: 'Inter', sans-serif;
     background-color: var(--bg-color);
-    background-image: 
+    background-image:
         radial-gradient(circle at 15% 50%, rgba(88, 166, 255, 0.15), transparent 25%),
         radial-gradient(circle at 85% 30%, rgba(163, 113, 247, 0.15), transparent 25%);
     color: var(--text-primary);
+    margin: 0;
+    padding: 0;
+}
+
+.page-wrapper {
     display: flex;
     justify-content: center;
     align-items: center;
@@ -51,6 +56,7 @@ body {
         opacity: 0;
         transform: translateY(20px);
     }
+
     100% {
         opacity: 1;
         transform: translateY(0);
@@ -68,6 +74,7 @@ body {
     margin-bottom: 8px;
     background: linear-gradient(135deg, #58a6ff, #a371f7);
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
@@ -89,7 +96,8 @@ body {
     margin-bottom: 24px;
 }
 
-.upload-area:hover, .upload-area.dragover {
+.upload-area:hover,
+.upload-area.dragover {
     border-color: var(--accent);
     background: rgba(88, 166, 255, 0.05);
     box-shadow: 0 0 20px var(--accent-glow);
@@ -174,8 +182,13 @@ input[type="file"] {
 }
 
 @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
 }
 
 .flash.error {
@@ -194,7 +207,7 @@ input[type="file"] {
     display: none;
     width: 20px;
     height: 20px;
-    border: 3px solid rgba(255,255,255,0.3);
+    border: 3px solid rgba(255, 255, 255, 0.3);
     border-radius: 50%;
     border-top-color: white;
     animation: spin 1s ease-in-out infinite;
@@ -202,7 +215,9 @@ input[type="file"] {
 }
 
 @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .btn-submit.loading .btn-text {
