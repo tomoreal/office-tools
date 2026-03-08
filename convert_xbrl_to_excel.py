@@ -67,8 +67,11 @@ def safe_xpath(tree_or_elem, query, namespaces=None):
                 if query.startswith('//'):
                     tag = query.split(':')[-1]
                     return root.findall(f'.//{{*}}{tag}')
-            return root.findall(query) 
-        except:
+            if namespaces:
+                return root.findall(query, namespaces=namespaces)
+            return root.findall(query)
+        except Exception as e:
+            vprint(f"safe_xpath error: {e}")
             return []
 
 # Common dimension axis and member mapping for Japanese fallback
@@ -373,6 +376,13 @@ def parse_labels_file(lab_file):
             continue
             
         priority = role_priority.get(role, 99)
+        # Demote verboseLabel if it contains structural markers like "、報告セグメント"
+        # to prefer cleaner standard labels for segment names.
+        if priority == 1:
+            structural_markers = ['、報告セグメント', '、セグメント情報', '、事業セグメント', '、セグメント別情報']
+            if any(s in text for s in structural_markers):
+                priority = 4  # Standard label (priority 3) will take precedence
+
         # Penalize generic labels to avoid "Total" appearing everywhere if a better name exists
         # Phase 1: Skip penalty if it's the high-priority verboseLabel (priority 1)
         if priority > 1 and any(g in text.lower() for g in GENERIC_LABELS):
@@ -401,6 +411,30 @@ def parse_labels_file(lab_file):
                 priorities[element_name] = best_priority
             # [REMOVED] mapping base name to labels[base] as it causes collisions
     return labels, priorities
+
+def clean_label(text):
+    """Clean structural markers and suffixes from labels to ensure consistency."""
+    if not text:
+        return ""
+    import unicodedata
+    # Normalize full-width/half-width characters (e.g. 0-9, A-Z)
+    text = unicodedata.normalize('NFKC', text)
+    # Remove standard structural markers
+    text = text.replace(' [メンバー]', '').replace(' [軸]', '').replace(' [項目]', '').replace(' [区分]', '').replace(' [要素]', '').strip()
+    
+    # Remove common verbose suffixes that differentiate presentation labels from factual dimensions
+    # especially for segments
+    suffixes_to_remove = ['、報告セグメント', '、セグメント情報', '、事業セグメント', '、セグメント別情報', '、セグメント情報別']
+    for s in suffixes_to_remove:
+        if text.endswith(s):
+            text = text[:-len(s)]
+    
+    # Also handle the variant without '、' just in case
+    for s in [s.replace('、', '') for s in suffixes_to_remove if '、' in s]:
+        if text.endswith(s):
+            text = text[:-len(s)]
+            
+    return text.strip()
 
 def convert_camel_case_to_title(name):
     # e.g. CashAndDeposits -> Cash And Deposits
@@ -575,7 +609,7 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
             else:
                 for p in prefixes:
                     if p + dim_val in labels_map:
-                        axis_label = labels_map[p + dim_val].replace(' [軸]', '').replace(' [項目]', '').replace(' [区分]', '').strip()
+                        axis_label = clean_label(labels_map[p + dim_val])
                         break
                 if not axis_label:
                     axis_label = convert_camel_case_to_title(dim_val.replace('Axis', '')) if dim_val else ''
@@ -589,7 +623,7 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
                 # Try with standard prefixes first
                 for p in prefixes:
                     if p + member_val in labels_map:
-                        label = labels_map[p + member_val]
+                        label = clean_label(labels_map[p + member_val])
                         break
                 
                 # If not found, try searching for any element ending with this member name in labels_map
@@ -598,7 +632,7 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
                     suffix = '_' + member_val
                     for k, v in labels_map.items():
                         if k.endswith(suffix):
-                            label = v
+                            label = clean_label(v)
                             break
                     
             # Fallback for company specific segment names found in _lab.xml 
@@ -627,7 +661,7 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
                 
         dim_str = "、".join(dim_vals) if dim_vals else "全体"
         # Clean up verbose XBRL labels
-        dim_str = dim_str.replace(' [メンバー]', '').replace('、報告セグメント', '').replace('非連結又は個別', '単体').replace('非連結', '単体')
+        dim_str = dim_str.replace('、報告セグメント', '').replace('非連結又は個別', '単体').replace('非連結', '単体')
         if dim_str == 'NonConsolidated' or dim_str == 'Non Consolidated':
             dim_str = '単体'
         if dim_str == 'Consolidated':
@@ -867,6 +901,26 @@ def create_hierarchy(parent_child_arcs):
         
     return ordered_items
 
+def merge_sequences(master, new_seq):
+    """Merge new_seq into master using 'insert before first match' logic."""
+    if not master: return new_seq
+    res = list(master)
+    for i, item in enumerate(new_seq):
+        if item in res:
+            continue
+        # Find where to insert 'item' (look ahead in new_seq for a match in res)
+        found_match = False
+        for j in range(i + 1, len(new_seq)):
+            next_item = new_seq[j]
+            if next_item in res:
+                idx = res.index(next_item)
+                res.insert(idx, item)
+                found_match = True
+                break
+        if not found_match:
+            res.append(item)
+    return res
+
 def process_xbrl_zips(zip_paths, output_dir=None):
     overall_start = time.time()
     if not zip_paths:
@@ -899,6 +953,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     seen_children_in_role = {} # {role_name: set(children)}
     labels_map = {} # {element: label_text}
     labels_map_priorities = {} # {element: priority}
+    master_member_seq = []
     
     periods_seen = set()
     all_facts = []  # Accumulate facts across all zips for fallback logic
@@ -995,7 +1050,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'facts': thread_facts,
                 'periods': thread_periods,
                 'values': thread_values,
-                'trees': trees
+                'trees': trees,
+                'member_seq': [], # Will fill below
+                'year': taxonomy_year
             }
 
         # Multi-threading for performance (I/O and C-based lxml parsing)
@@ -1003,14 +1060,55 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         with ThreadPoolExecutor(max_workers=min(len(zip_paths), 4)) as executor:
             def process_single_zip_wrapper(p):
                 try:
-                    return process_single_zip(p[0], p[1])
+                    res = process_single_zip(p[0], p[1])
+                    if res:
+                        # Identify segment members in order from trees
+                        local_seq = []
+                        for role_name, arcs in res['trees'].items():
+                            rn_lower = role_name.lower()
+                            # Broaden detection to include Japanese terms and variants
+                            if 'segment' in rn_lower or 'セグメント' in role_name or '事業' in role_name:
+                                items = create_hierarchy(arcs)
+                                for el, path, depth, pref in items:
+                                    parts = el.split('_')
+                                    base = parts[-1]
+                                    label = None
+                                    if base in COMMON_DIMENSION_MAPPING:
+                                        label = COMMON_DIMENSION_MAPPING[base]
+                                    else:
+                                        for pr in ['', 'jpcrp_cor_', 'jppfs_cor_', 'jpigp_cor_', 'jpcrp030000-asr_']:
+                                            if pr + base in res['labels']:
+                                                label = res['labels'][pr + base]
+                                                break
+                                        
+                                        if not label:
+                                            # Try suffix search for company-specific members (e.g. E00032-000_...)
+                                            suffix = '_' + base
+                                            for k, v in res['labels'].items():
+                                                if k.endswith(suffix):
+                                                    label = v
+                                                    break
+                                    if label:
+                                        label = clean_label(label)
+                                        # Skip '全体' and headings that are likely just grouping nodes
+                                        if label not in local_seq and label != '全体' and not el.endswith('Abstract') and not el.endswith('Heading'):
+                                            local_seq.append(label)
+                        res['member_seq'] = local_seq
+                    return res
                 except Exception as e:
                     debug_log(f"Worker failed for {p[1]}: {e}")
                     return None
             results = list(executor.map(process_single_zip_wrapper, enumerate(zip_paths)))
             
+        # Sort results by taxonomy year DESCENDING to ensure latest structure is prioritized
+        results = [r for r in results if r]
+        results.sort(key=lambda x: str(x.get('year') or '0000'), reverse=True)
+
         for res in results:
-            if not res: continue
+            # Merge member sequences
+            master_member_seq = merge_sequences(master_member_seq, res['member_seq'])
+
+        for res in results:
             # Merge labels with priorities
             for k, v in res['labels'].items():
                 p = res['priorities'].get(k, 100)
@@ -1283,9 +1381,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         raw_label = labels_map[el]
                         # Clean up: remove prefixes and standardize
                         # Example: "注記事項－..." or suffix phrases
-                        clean_label = raw_label.split('、')[0].split(' [')[0].replace('注記事項－', '').strip()
-                        if clean_label:
-                            japanese_name = '注記_' + clean_label
+                        cl_label = raw_label.split('、')[0].split(' [')[0].replace('注記事項－', '').strip()
+                        if cl_label:
+                            japanese_name = '注記_' + cl_label
                             break
 
                 if not japanese_name:
@@ -1379,18 +1477,35 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 return (0, "", c)
             dim, period = c
             
-            order = 10
-            if dim in ('全体', '連結', '全社'):
-                order = 0
-            elif dim == '単体':
-                order = 1
-            elif '報告セグメント以外' in dim or 'その他' in dim:
-                order = 90
-            elif dim in ('調整額', '全社・消去', '消去又は全社'):
-                order = 98
-            elif dim in ('合計', '連結財務諸表計上額'):
-                order = 99
+            # Specific fixed orders for standard structural members
+            order = 500
+            if dim == '単体':
+                return (1, dim, period)
+            
+            # 1. Broad totals like 'Overall' or 'Consolidated'
+            if any(s == dim for s in ('全体', '連結', '合計', '連結財務諸表計上額')):
+                return (1000, dim, period)
+            
+            # 2. Adjustments and Eliminations
+            if any(s in dim for s in ('調整', '調整額', '全社・消去', '消去又は全社', '調整項目')):
+                return (980, dim, period)
                 
+            # 3. Intermediate totals (e.g. Total of Reportable Segments and Others)
+            if any(s in dim for s in ('報告セグメント及びその他の合計', '報告セグメント合計', '内部売上高又は振替高')):
+                return (950, dim, period)
+                
+            if dim == '報告セグメント':
+                return (940, dim, period)
+                
+            # 4. 'Others' category
+            if any(s in dim for s in ('報告セグメント以外の全てのセグメント', '報告セグメント以外', 'その他')):
+                return (900, dim, period)
+            
+            # 5. Members found in hierarchy (actual segments)
+            if dim in master_member_seq:
+                return (10 + master_member_seq.index(dim), dim, period)
+                
+            # 6. Fallback for everything else
             return (order, dim, period)
             
         sorted_role_cols = sorted(list(role_columns), key=sort_col)

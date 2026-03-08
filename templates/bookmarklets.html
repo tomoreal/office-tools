@@ -164,7 +164,7 @@
                 <div class="bookmarklet-name">有報xbrlDL</div>
                 <div class="bookmarklet-desc">リストにある有価証券報告書のXBRLファイルを一括で順次ダウンロードします。</div>
                 <a class="btn-bookmarklet"
-                    href='javascript:(function(){var rows=[...document.querySelectorAll("table tr")];var targets=[];rows.forEach(r=>{var t=r.innerText;if(t.includes("%E6%9C%89%E4%BE%A1%E8%A8%BC%E5%88%B8%E5%A0%B1%E5%91%8A%E6%9B%B8")&&!t.includes("%E8%A8%82%E6%AD%A3")){var a=[...r.querySelectorAll("a")].find(x=>x.innerText.trim()=="XBRL");if(a)targets.push(a);}});if(!targets.length){alert("%E6%9C%89%E4%BE%A1%E8%A8%BC%E5%88%B8%E5%A0%B1%E5%91%8A%E6%9B%B8%E3%81%AEXBRL%E3%81%8C%E8%A6%8B%E3%81%A4%E3%81%8B%E3%82%8I%E3%81%BE%E3%81%9B%E3%82%93");return;}let i=0;function next(){if(i>=targets.length)return;targets[i].click();i++;setTimeout(next,1500);}next();})();'>有報xbrlDL</a>
+                    href='javascript:(function(){var rows=[...document.querySelectorAll("table tr")];var targets=[];rows.forEach(r=>{var t=r.innerText;if(t.includes("有価証券報告書")&&!t.includes("訂正")){var a=[...r.querySelectorAll("a")].find(x=>x.innerText.trim()=="XBRL");if(a)targets.push(a);}});if(!targets.length){alert("有価証券報告書のXBRLが見つかりません");return;}let i=0;function next(){if(i>=targets.length)return;targets[i].click();i++;setTimeout(next,1500);}next();})();'>有報xbrlDL</a>
             </div>
 
             <div style="text-align: center;">
