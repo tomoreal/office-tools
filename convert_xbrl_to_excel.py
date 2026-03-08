@@ -1461,7 +1461,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         seen_goodwill = False
         seen_negative_goodwill = False
         seen_impairment = False
-        seen_labels = set() # Track labels for deduplication in each worksheet
+        seen_rows = set() # Track (label, values) for deduplication in each worksheet
         
         # Sort columns logically (Segment first: 全体->各セグメント->調整額->合計, then dates)
         def sort_col(c):
@@ -1686,11 +1686,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     ws.append(["【 注記：減損損失 】"])
                     seen_impairment = True
             
-            # --- セグメント情報の場合の重複排除 ---
-            if is_segment:
-                if label in seen_labels:
-                    continue
-                seen_labels.add(label)
+            # --- 重複排除用のキー作成 (勘定科目名) ---
+            # ここでは一旦スキップせず、データ収集後に判定する。
                     
             # Indent based on depth
             depth = len(full_path.split('::')) - 1
@@ -1767,6 +1764,13 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if is_segment:
                     if not has_numeric_data:
                         continue
+                # --- 重複排除 (勘定科目名と数値が完全に一致する行をスキップ) ---
+                row_values_tuple = tuple(row_data[2:])
+                row_key = (label, row_values_tuple)
+                if row_key in seen_rows:
+                    continue
+                seen_rows.add(row_key)
+                
                 ws.append(row_data)
 
         # Apply formatting and column widths
