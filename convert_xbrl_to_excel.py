@@ -902,22 +902,13 @@ def create_hierarchy(parent_child_arcs):
     return ordered_items
 
 def merge_sequences(master, new_seq):
-    """Merge new_seq into master using 'insert before first match' logic."""
+    """Merge new_seq into master using 'append unknown items' logic.
+    Since reports are processed newest to oldest, this ensures the latest order is at the front.
+    """
     if not master: return new_seq
     res = list(master)
-    for i, item in enumerate(new_seq):
-        if item in res:
-            continue
-        # Find where to insert 'item' (look ahead in new_seq for a match in res)
-        found_match = False
-        for j in range(i + 1, len(new_seq)):
-            next_item = new_seq[j]
-            if next_item in res:
-                idx = res.index(next_item)
-                res.insert(idx, item)
-                found_match = True
-                break
-        if not found_match:
+    for item in new_seq:
+        if item and item not in res:
             res.append(item)
     return res
 
