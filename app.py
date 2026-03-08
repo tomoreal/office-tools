@@ -82,6 +82,10 @@ def index():
 def bookmarklets():
     return render_template('bookmarklets.html')
 
+@app.route('/csv_bookmarklets')
+def csv_bookmarklets():
+    return render_template('csv_bookmarklets.html')
+
 @app.route('/clear', methods=['POST'])
 def clear_temp():
     try:

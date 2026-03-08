@@ -23,26 +23,9 @@
             <div class="header">
                 <h1>財務データ変換ツール</h1>
                 <p>CSVファイルをアップロードすると、<br>ブラウザ上で安全にExcelファイルに変換します。<br>(サーバーには送信されません)</p>
-                <div
-                    style="text-align: left; background: rgba(88, 166, 255, 0.05); padding: 18px; border-radius: 16px; margin-top: 20px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); border: 1px solid var(--border-color); animation: fadeIn 0.8s ease;">
-                    <p style="margin-bottom: 10px; font-weight: 600; color: var(--accent); font-size: 14px;">
-                        【CSVデータの取得方法】</p>
-                    <ol style="padding-left: 20px; margin: 0;">
-                        <li style="margin-bottom: 6px;"><a href="https://ssl.eoldb.jp/EolDb/UserLogin.php"
-                                target="_blank"
-                                style="color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(88, 166, 255, 0.3);">EOL</a>にアクセスしてください。
-                        </li>
-                        <li style="margin-bottom: 6px;">企業名で検索後、「財務データ（有報）」→「原文（財務データCSV）」の画面を開いてください。</li>
-                        <li style="margin-bottom: 6px;">
-                            「連結貸借対照表」、「連結損益（及び包括利益）計算書（四半期）」、「連結キャッシュ・フロー計算書」の「通期」にチェックボックスを付けてください。期間は任意です。</li>
-                        <li style="margin-bottom: 6px;">
-                            「非圧縮・1表化ダウンロード（.csv）」ボタンの左の「縦形式」を選択し、当該ボタンを押してcsvファイルをダウンロードしてください。</li>
-                        <li>そのcsvファイルを下のエリアにアップロードしてください。</li>
-                    </ol>
-                </div>
             </div>
 
-            <div class="upload-area" id="dropZone">
+            <div class="upload-area" id="dropZone" style="margin-top: 20px;">
                 <i class="fas fa-cloud-upload-alt upload-icon"></i>
                 <div class="upload-text">CSVファイルをドラッグ＆ドロップ</div>
                 <div class="upload-hint">または、クリックしてファイルを選択</div>
@@ -54,6 +37,26 @@
                 <span class="btn-text">ブラウザで変換してダウンロード</span>
                 <div class="loader"></div>
             </button>
+
+            <div class="header" style="margin-top: 30px;">
+                <div
+                    style="text-align: left; background: rgba(88, 166, 255, 0.05); padding: 18px; border-radius: 16px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); border: 1px solid var(--border-color); animation: fadeIn 0.8s ease;">
+                    <p style="margin-bottom: 10px; font-weight: 600; color: var(--accent); font-size: 14px;">
+                        【CSVデータの取得方法】（<a href="./csv_bookmarklets" style="color: var(--accent); text-decoration: underline;">EOLブックマークレット</a>）</p>
+                    <ol style="padding-left: 20px; margin: 0;">
+                        <li style="margin-bottom: 6px;"><a href="https://ssl.eoldb.jp/EolDb/UserLogin.php"
+                                target="_blank"
+                                style="color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(88, 166, 255, 0.3);">EOL</a>にアクセスしてください。
+                        </li>
+                        <li style="margin-bottom: 6px;">企業名で検索後、「財務データ（有報）」→「原文（財務データCSV）」の画面を開いてください。</li>
+                        <li style="margin-bottom: 6px;">
+                            「連結貸借対照表」、「連結損益（及び包括利益）計算書（四半期）」、「連結キャッシュ・フロー計算書」の「通期」にチェックボックスを付けてください。期間は任意です。</li>
+                        <li style="margin-bottom: 6px;">
+                            「非圧縮・1表化ダウンロード（.csv）」ボタンの左の「縦形式」を選択し、当該ボタンを押してcsvファイルをダウンロードしてください。</li>
+                        <li>そのcsvファイルを上のエリアにアップロードしてください。</li>
+                    </ol>
+                </div>
+            </div>
 
             <div class="footer">
                 (c) Makoto Tomo, 2026
