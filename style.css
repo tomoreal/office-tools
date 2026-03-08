@@ -233,6 +233,13 @@ input[type="file"] {
     display: block;
 }
 
+.footer {
+    margin-top: 2rem;
+    text-align: left;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
 /* XREA Ad Alignment Fixes */
 body>div:first-child,
 body>center:first-child,
