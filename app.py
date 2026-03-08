@@ -7,15 +7,16 @@ import shutil
 os.environ['OPENBLAS_NUM_THREADS'] = "1"
 from flask import Flask, render_template, request, send_file, flash, redirect, url_for
 
-import convert_xbrl_to_excel
-from werkzeug.utils import secure_filename
-
 app = Flask(__name__)
 app.secret_key = 'xbrl_to_excel_secret'
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
+        # Lazy imports to speed up CGI startup on GET requests
+        from werkzeug.utils import secure_filename
+        import convert_xbrl_to_excel
+        
         if 'files' not in request.files:
             flash('ファイルがアップロードされていません。')
             return redirect(request.url)

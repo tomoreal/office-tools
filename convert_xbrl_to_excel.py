@@ -8,7 +8,7 @@ import time
 import json
 import urllib.request
 import re
-from bs4 import BeautifulSoup
+
 try:
     from lxml import etree
     HAS_LXML = True
@@ -732,6 +732,7 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
                 HAS_LXML_LOCAL = False
 
             if not HAS_LXML_LOCAL:
+                from bs4 import BeautifulSoup
                 soup = BeautifulSoup(content, 'html.parser')
                 def is_ix_tag(tag):
                     if not tag.name: return False
