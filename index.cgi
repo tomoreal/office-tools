@@ -1,5 +1,5 @@
-#!/virtual/tomo/public_html/makoto.xtomo.com/xbrl2excel/venv/bin/python3
-# s217用: #!/virtual/tomo/public_html/xbrl.xtomo.com/venv/bin/python3.9
+#!/virtual/tomo/public_html/xbrl.xtomo.com/venv/bin/python3.9
+# makoto用: #!/virtual/tomo/public_html/makoto.xtomo.com/xbrl2excel/venv/bin/python3
 
 # -*- coding: utf-8 -*-
 # 注意: サーバー環境（s217等）に合わせて、1行目または2行目のシバンを調整してください。

@@ -29,10 +29,13 @@
 
         .page-wrapper {
             display: flex;
-            align-items: center;
-            justify-content: center;
+            align-items: flex-start;
+            /* Changed from center to top */
+            justify-content: flex-start;
+            /* Changed from center to left */
             min-height: 100vh;
-            padding: 20px;
+            padding: 60px 40px;
+            /* Increased padding */
         }
 
         .container {
@@ -42,7 +45,8 @@
             box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
             width: 100%;
             max-width: 500px;
-            text-align: center;
+            text-align: left;
+            /* Changed from center to left */
         }
 
         h1 {
@@ -171,6 +175,35 @@
                 transform: rotate(360deg);
             }
         }
+
+        /* XREA Ad Alignment Fixes */
+        body>div:first-child,
+        body>center:first-child,
+        body>div[align="center"]:first-child,
+        center,
+        div[align="center"],
+        div[style*="text-align: center"] {
+            text-align: left !important;
+            margin-left: 0 !important;
+            margin-right: auto !important;
+        }
+
+        /* Specifically align the very first elements (often XREA ads) */
+        body>div:first-child,
+        body>center:first-child {
+            padding-left: 40px !important;
+            /* Match page padding */
+        }
+
+        /* Ensure images and iframes inside ads are also left-aligned */
+        body>div:first-child img,
+        body>center:first-child img,
+        iframe[id^="google_ads"],
+        div[id^="xrea-ad"] {
+            margin-left: 0 !important;
+            margin-right: auto !important;
+            display: inline-block !important;
+        }
     </style>
 </head>
 
@@ -281,6 +314,37 @@
                 btn.disabled = false;
             }, 5000);
         });
+    </script>
+
+    <!-- XREA Ad Alignment Enforcement -->
+    <script>
+        (function () {
+            function forceLeftAlign() {
+                const bodyChildren = document.body.children;
+                for (let i = 0; i < Math.min(bodyChildren.length, 5); i++) {
+                    const el = bodyChildren[i];
+                    if (el.classList.contains('page-wrapper')) continue;
+                    if (el.tagName === 'CENTER' || el.tagName === 'DIV' || el.getAttribute('align') === 'center') {
+                        el.style.textAlign = 'left';
+                        el.style.marginLeft = '0';
+                        el.style.marginRight = 'auto';
+                        el.style.paddingLeft = '40px';
+                        el.style.display = 'block';
+                        const sub = el.querySelectorAll('img, iframe, div');
+                        sub.forEach(s => {
+                            s.style.marginLeft = '0';
+                            s.style.marginRight = 'auto';
+                            s.style.display = 'inline-block';
+                        });
+                    }
+                }
+            }
+            forceLeftAlign();
+            setTimeout(forceLeftAlign, 1000);
+            setTimeout(forceLeftAlign, 3000);
+            const observer = new MutationObserver(forceLeftAlign);
+            observer.observe(document.body, { childList: true });
+        })();
     </script>
 </body>
 
