@@ -449,7 +449,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!fileInput.files || fileInput.files.length === 0) return;
 
         const file = fileInput.files[0];
-        const outFileName = file.name.replace(/\.[^/.]+$/, "") + '_横展開.xlsx';
 
         submitBtn.classList.add('loading');
         submitBtn.disabled = true;
@@ -459,6 +458,29 @@ document.addEventListener('DOMContentLoaded', () => {
             const buffer = await file.arrayBuffer();
             const decoder = new TextDecoder('shift-jis');
             const csvText = decoder.decode(buffer);
+
+            // 企業名の取得（行を走査して「企業名」を探す）
+            let companyName = "";
+            const lines = csvText.split(/\r?\n/);
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                const row = parseCSVLine(line);
+                if (row.length > 1 && row[0].trim() === "企業名") {
+                    companyName = row[1].trim()
+                        .replace(/株式会社/g, "")
+                        .replace(/（株）/g, "")
+                        .replace(/\(株\)/g, "");
+                    break;
+                }
+            }
+
+            // 出力ファイル名の決定
+            let baseName = file.name.replace(/\.[^/.]+$/, "");
+            let outFileName = baseName + '_横展開';
+            if (companyName) {
+                outFileName += '_' + companyName;
+            }
+            outFileName += '.xlsx';
 
             // 1. 各年度ごとの会計基準判定
             const standards = processFinancialCSV(csvText);
