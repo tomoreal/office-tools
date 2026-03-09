@@ -119,18 +119,45 @@ IFRS_LABEL_MAPPING = {
 # Helper to find specific linkbase/instance files in the unzipped folder
 def find_xbrl_files(extract_dir):
     files = {'lab': []}
-    base_path = os.path.join(extract_dir, 'XBRL', 'PublicDoc')
-    if not os.path.exists(base_path):
-        return None
-        
-    for f in os.listdir(base_path):
-        full_path = os.path.join(base_path, f)
-        if f.endswith('_pre.xml'):
-            files['pre'] = full_path
-        elif f.endswith('_lab.xml') and not f.endswith('_lab-en.xml'):
-            files['lab'].append(full_path)
-        elif f.endswith('.xbrl'):
-            files['xbrl'] = full_path
+    
+    # 1. Global Label Collection (Resilient to structure)
+    # Collect ALL Japanese label linkbases from the entire package
+    for root, _, filenames in os.walk(extract_dir):
+        for f in filenames:
+            fl = f.lower()
+            if fl.endswith('_lab.xml') and not fl.endswith('_lab-en.xml'):
+                files['lab'].append(os.path.join(root, f))
+    
+    # 2. Instance and Presentation Lookup
+    # Prefer PublicDoc but fallback to any identified file
+    base_path = None
+    for root, dirs, _ in os.walk(extract_dir):
+        if 'PublicDoc' in dirs:
+            base_path = os.path.join(root, 'PublicDoc')
+            break
+    
+    # Priority 1: Files in PublicDoc
+    if base_path and os.path.exists(base_path):
+        for f in os.listdir(base_path):
+            fl = f.lower()
+            full_path = os.path.join(base_path, f)
+            if 'pre' not in files and fl.endswith('_pre.xml'):
+                files['pre'] = full_path
+            elif 'xbrl' not in files and fl.endswith('.xbrl'):
+                files['xbrl'] = full_path
+    
+    # Priority 2: Fallback to global search if missing
+    if 'pre' not in files or 'xbrl' not in files:
+        for root, _, filenames in os.walk(extract_dir):
+            # Skip AuditDoc for fallback instance search to avoid wrong facts
+            if 'AuditDoc' in root: continue 
+            for f in filenames:
+                fl = f.lower()
+                full_path = os.path.join(root, f)
+                if 'pre' not in files and fl.endswith('_pre.xml'):
+                    files['pre'] = full_path
+                elif 'xbrl' not in files and fl.endswith('.xbrl'):
+                    files['xbrl'] = full_path
     
     return files if 'pre' in files and 'xbrl' in files else None
 
@@ -971,7 +998,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
             extract_dir = os.path.join(temp_base, f"zip_{zip_idx}")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
+                for info in zip_ref.infolist():
+                    # Normalize Windows backslashes in paths
+                    info.filename = info.filename.replace('\\', '/')
+                    zip_ref.extract(info, extract_dir)
                 
             subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
             if len(subdirs) == 1:
@@ -1011,9 +1041,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
             contexts, units = parse_instance_contexts_and_units(xbrl_files['xbrl'], thread_labels)
             
-            # Phase 3: Selective Parsing (DISABLED for completeness)
-            all_ix_files = glob.glob(os.path.join(extract_dir, 'XBRL', 'PublicDoc', '*_ixbrl.htm'))
-            ix_files = sorted(all_ix_files)
+            # Phase 3: Selective Parsing (Case-insensitive extension and dual format support)
+            public_doc_dir = os.path.dirname(xbrl_files['xbrl'])
+            all_files = os.listdir(public_doc_dir)
+            ix_files = []
+            for f in all_files:
+                fl = f.lower()
+                if '_ixbrl' in fl and (fl.endswith('.htm') or fl.endswith('.html')):
+                    ix_files.append(os.path.join(public_doc_dir, f))
+            ix_files = sorted(ix_files)
 
             facts = parse_ixbrl_facts(ix_files, contexts, units) # Corrected: pass units, not labels
             thread_facts.extend(facts)
