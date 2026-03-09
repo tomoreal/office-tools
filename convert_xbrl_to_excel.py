@@ -1288,6 +1288,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     break
         if found: break
     
+    # Clean company name for filename (remove "株式会社", "（株）", "(株)")
+    company_name = company_name.replace("株式会社", "").replace("（株）", "").replace("(株)", "").strip()
+    
     # Debug: log top elements to see what was captured
     if VERBOSE_LOGGING or company_name == "企業名不明":
         top_el = sorted(list(global_element_period_values.keys()))[:30]
