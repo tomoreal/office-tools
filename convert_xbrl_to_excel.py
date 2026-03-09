@@ -1307,6 +1307,32 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if dim == '単体':
                     periods_with_standalone.add(period)
                     
+    # Identify accounting standards for each period using major indicators (Latest to Oldest)
+    period_standards = {} # {period: 'IFRS'|'JMIS'|'US'|'JP'}
+    for el_name, vals in global_element_period_values.items():
+        if 'IFRS' in el_name and 'SummaryOfBusinessResults' in el_name:
+            for c in vals:
+                p = c[1] if isinstance(c, tuple) else c
+                period_standards[p] = 'IFRS'
+        elif 'JMIS' in el_name and 'SummaryOfBusinessResults' in el_name:
+            for c in vals:
+                p = c[1] if isinstance(c, tuple) else c
+                if p not in period_standards: period_standards[p] = 'JMIS'
+        elif 'USGAAP' in el_name and 'SummaryOfBusinessResults' in el_name:
+            for c in vals:
+                p = c[1] if isinstance(c, tuple) else c
+                if p not in period_standards: period_standards[p] = 'US'
+    
+    # For others, if they have J-GAAP specific summary items, mark as JP
+    jp_indicators = ['EquityToAssetRatioSummaryOfBusinessResults', 'RateOfReturnOnEquitySummaryOfBusinessResults']
+    for ind in jp_indicators:
+        for el_name, vals in global_element_period_values.items():
+            if el_name.endswith(ind):
+                for c in vals:
+                    p = c[1] if isinstance(c, tuple) else c
+                    if p not in period_standards:
+                        period_standards[p] = 'JP'
+
     sorted_periods = sorted(list(periods_seen))
     
     used_sheet_names = set()
@@ -1438,6 +1464,19 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         if period in periods_with_standalone:
                             if dim == '単体': continue
                             
+                    # Filtering by accounting standard per period
+                    standard = period_standards.get(period)
+                    is_sheet_ifrs = '(IFRS)' in sheet_name
+                    is_sheet_jmis = '(JMIS)' in sheet_name
+                    is_sheet_us = '(US GAAP)' in sheet_name # Optional, for future use
+                    is_sheet_jp = not is_sheet_ifrs and not is_sheet_jmis and not is_sheet_us
+                    
+                    if standard:
+                        if is_sheet_ifrs and standard != 'IFRS': continue
+                        if is_sheet_jmis and standard != 'JMIS': continue
+                        if is_sheet_us and standard != 'US': continue
+                        if is_sheet_jp and standard not in ('JP', None): continue
+
                     role_columns.add(c)
                     
         if not role_columns:
