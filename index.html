@@ -14,16 +14,20 @@
 <body>
     <div class="page-wrapper">
         <div class="container">
-            <div style="display: flex; justify-content: flex-end; margin-bottom: 25px;">
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 1.5rem;">
+                <a href="./csv_bookmarklets"
+                    style="color: var(--accent); text-decoration: none; border: 1px solid var(--accent); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
+                    <i class="fas fa-bookmark" style="margin-right: 8px;"></i>EOL用ブックマークレットの追加
+                </a>
                 <a href="./index.cgi"
-                    style="color: var(--accent); text-decoration: none; border: 1px solid var(--accent); padding: 6px 18px; border-radius: 25px; font-size: 13px; display: flex; align-items: center; transition: all 0.2s;">
-                    <i class="fas fa-exchange-alt" style="margin-right: 10px;"></i>XBRL変換ツールへ
+                    style="color: var(--accent); text-decoration: none; border: 1px solid var(--accent); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
+                    <i class="fas fa-exchange-alt" style="margin-right: 8px;"></i>XBRL変換ツールへ
                 </a>
             </div>
-            <div class="header">
-                <h1>財務データ変換ツール</h1>
-                <p>CSVファイルをアップロードすると、<br>ブラウザ上で安全にExcelファイルに変換します。<br>(サーバーには送信されません)</p>
-            </div>
+            <h1>財務データCSV 横展開ツール</h1>
+            <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 2rem; line-height: 1.5;">
+                CSVファイルをアップロードすると、ブラウザ上で安全にExcelファイルに変換します。(サーバーには送信されません)
+            </p>
 
             <button type="button" class="btn-submit" id="submitBtn" disabled style="margin-bottom: 20px;">
                 <span class="btn-text">ブラウザで変換してダウンロード</span>
@@ -42,7 +46,7 @@
                 <div
                     style="text-align: left; background: rgba(88, 166, 255, 0.05); padding: 18px; border-radius: 16px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); border: 1px solid var(--border-color); animation: fadeIn 0.8s ease;">
                     <p style="margin-bottom: 10px; font-weight: 600; color: var(--accent); font-size: 14px;">
-                        【CSVデータの取得方法】（<a href="./csv_bookmarklets" style="color: var(--accent); text-decoration: underline;">EOLブックマークレット</a>）</p>
+                        【CSVデータの取得方法】</p>
                     <ol style="padding-left: 20px; margin: 0;">
                         <li style="margin-bottom: 6px;"><a href="https://ssl.eoldb.jp/EolDb/UserLogin.php"
                                 target="_blank"

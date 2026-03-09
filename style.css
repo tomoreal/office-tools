@@ -43,7 +43,7 @@ body {
 
 .container {
     width: 100%;
-    max-width: 500px;
+    max-width: 580px;
     background: var(--card-bg);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
@@ -74,7 +74,7 @@ body {
 
 .header h1 {
     font-size: 24px;
-    font-weight: 700;
+    font-weight: 600;
     margin-bottom: 8px;
     background: linear-gradient(135deg, #58a6ff, #a371f7);
     -webkit-background-clip: text;
@@ -92,7 +92,7 @@ body {
     position: relative;
     border: 2px dashed var(--border-color);
     border-radius: 16px;
-    padding: 40px;
+    padding: 2rem;
     text-align: left;
     /* Changed from center to left */
     transition: all 0.3s ease;
