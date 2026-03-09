@@ -25,18 +25,18 @@
                 <p>CSVファイルをアップロードすると、<br>ブラウザ上で安全にExcelファイルに変換します。<br>(サーバーには送信されません)</p>
             </div>
 
-            <div class="upload-area" id="dropZone" style="margin-top: 20px;">
+            <button type="button" class="btn-submit" id="submitBtn" disabled style="margin-bottom: 20px;">
+                <span class="btn-text">ブラウザで変換してダウンロード</span>
+                <div class="loader"></div>
+            </button>
+
+            <div class="upload-area" id="dropZone">
                 <i class="fas fa-cloud-upload-alt upload-icon"></i>
                 <div class="upload-text">CSVファイルをドラッグ＆ドロップ</div>
                 <div class="upload-hint">または、クリックしてファイルを選択</div>
                 <input type="file" name="file" id="fileInput" accept=".csv" required>
                 <div class="file-name" id="fileName"></div>
             </div>
-
-            <button type="button" class="btn-submit" id="submitBtn" disabled>
-                <span class="btn-text">ブラウザで変換してダウンロード</span>
-                <div class="loader"></div>
-            </button>
 
             <div class="header" style="margin-top: 30px;">
                 <div

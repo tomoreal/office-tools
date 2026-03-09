@@ -259,6 +259,11 @@
             {% endwith %}
 
             <form method="POST" enctype="multipart/form-data" id="uploadForm">
+                <button type="submit" class="btn" id="submitBtn" style="margin-bottom: 1rem;">
+                    <span id="btnText">Excelに変換してダウンロード</span>
+                    <div class="loader" id="loader"></div>
+                </button>
+
                 <div class="upload-area" id="dropZone">
                     <i class="fas fa-file-archive upload-icon"></i>
                     <div style="margin-bottom: 0.5rem;">ZIPファイルをドラッグ＆ドロップ</div>
@@ -267,11 +272,6 @@
                 </div>
 
                 <div class="file-list" id="fileList"></div>
-
-                <button type="submit" class="btn" id="submitBtn">
-                    <span id="btnText">Excelに変換してダウンロード</span>
-                    <div class="loader" id="loader"></div>
-                </button>
             </form>
 
             <form action="{{ url_for('clear_temp') }}" method="POST" id="clearForm"
