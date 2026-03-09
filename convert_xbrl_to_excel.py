@@ -1463,11 +1463,13 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         seen_impairment = False
         seen_rows = set() # Track (label, values) for deduplication in each worksheet
         
-        # Sort columns logically (Segment first: 全体->各セグメント->調整額->合計, then dates)
+        # Sort columns logically (Segment first: 各セグメント->調整額->合計->全体, then dates)
         def sort_col(c):
             if isinstance(c, str):
-                return (0, "", c)
-            dim, period = c
+                # If it's just a period string (no dimension), treat as 'Overall'
+                dim, period = "全体", c
+            else:
+                dim, period = c
             
             # Specific fixed orders for standard structural members
             order = 500
@@ -1823,6 +1825,102 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         # Format: #,##0_;[Red]-#,##0
                         cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
                     
+        # --- NEW: Formatted Segment Analysis Sheet ---
+        if is_segment:
+            analysis_sheet_name = sheet_name + "_分析"
+            if len(analysis_sheet_name) > 31:
+                # Ensure it doesn't exceed 31 chars
+                analysis_sheet_name = sheet_name[:28] + "_分析"
+            
+            aws = wb.create_sheet(title=analysis_sheet_name)
+            used_sheet_names.add(analysis_sheet_name)
+            
+            # Segments as horizontal axis (unique dimensions)
+            unique_dims = []
+            for c in sorted_role_cols:
+                if isinstance(c, tuple):
+                    d = c[0]
+                    if d not in unique_dims:
+                        unique_dims.append(d)
+                else:
+                    if "全体" not in unique_dims:
+                        unique_dims.append("全体")
+            
+            # Dims are already in sorted order from sorted_role_cols
+            
+            # All available years for this role (ascending)
+            unique_periods = sorted(list(set(c[1] if isinstance(c, tuple) else c for c in role_columns)))
+            
+            # Header
+            aws.append(["勘定科目", "年度"] + unique_dims)
+            
+            seen_rows_analysis = set()
+            
+            for full_path_data in ordered_keys:
+                full_path, pref_label = full_path_data
+                el = full_path.split('::')[-1]
+                if '|' in el: el = el.split('|')[0]
+                
+                parts = el.split('_')
+                base_name = parts[-1] if len(parts) > 1 else el
+                
+                if base_name in segment_dict:
+                    label = segment_dict[base_name]
+                elif base_name in common_dict:
+                    label = common_dict[base_name]
+                else:
+                    label = labels_map.get(el)
+                    if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
+                if not label:
+                    label = convert_camel_case_to_title(base_name)
+                
+                depth = len(full_path.split('::')) - 1
+                indent_prefix = "　" * depth
+                
+                # For each year, create a row
+                for period in unique_periods:
+                    row_data_analysis = [indent_prefix + label, period]
+                    has_numeric_data_analysis = False
+                    has_data_analysis = False
+                    
+                    for dim in unique_dims:
+                        # Find the value for (dim, period)
+                        col_key = (dim, period) if dim != "全体" else (period)
+                        # Fallback check because sometimes "全体" is a tuple ("全体", period) or just period
+                        val = all_years_data[role][full_path].get(col_key, "")
+                        if val == "" and dim == "全体":
+                            val = all_years_data[role][full_path].get(("全体", period), "")
+                        
+                        if val:
+                            import unicodedata
+                            val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
+                            try:
+                                if val_clean and not any(c.isalpha() for c in val_clean):
+                                    val = float(val_clean)
+                                    has_numeric_data_analysis = True
+                            except:
+                                pass
+                        row_data_analysis.append(val)
+                        if val != "":
+                            has_data_analysis = True
+                    
+                    if has_data_analysis:
+                        if not has_numeric_data_analysis:
+                            continue
+                        # Deduplication
+                        row_values_tuple = tuple(row_data_analysis[2:])
+                        row_key = (label, period, row_values_tuple)
+                        if row_key in seen_rows_analysis:
+                            continue
+                        seen_rows_analysis.add(row_key)
+                        aws.append(row_data_analysis)
+
+            # Apply formatting to analysis sheet
+            for row in aws.iter_rows(min_row=2, max_row=aws.max_row, min_col=3, max_col=aws.max_column):
+                for cell in row:
+                    if isinstance(cell.value, (int, float)):
+                        cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+
         # Auto-adjust column widths
     for out_ws in wb.worksheets:
         for col in out_ws.columns:
@@ -1857,7 +1955,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
         # 財務諸表の種別による並び順
         stmt_order = 99
-        if '貸借対照表' in title or '財政状態' in title:
+        if 'セグメント' in title:
+            stmt_order = 0
+        elif '貸借対照表' in title or '財政状態' in title:
             stmt_order = 1
         elif '損益' in title or ('利益' in title and '包括' not in title):
             stmt_order = 2
@@ -1870,8 +1970,18 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
         # 基準ごとの並び順 (日本基準が先)
         std_order = 2 if '(IFRS)' in title else 1
-        
-        return (group, stmt_order, std_order)
+
+        # セグメント情報の場合の特殊な並び順
+        # 日本基準セグメント -> IFRSセグメント -> 日本基準分析 -> IFRS分析
+        if 'セグメント' in title:
+            is_analysis = '_分析' in title
+            # (group, stmt_order, is_analysis, std_order)
+            # is_analysis: 0 (Original), 1 (Analysis)
+            # std_order: 1 (JP), 2 (IFRS)
+            # Result: (2, 0, 0, 1) -> (2, 0, 0, 2) -> (2, 0, 1, 1) -> (2, 0, 1, 2)
+            return (group, stmt_order, 1 if is_analysis else 0, std_order)
+
+        return (group, stmt_order, 0, std_order)
                 
     wb._sheets.sort(key=lambda s: get_sheet_order(s.title))
 
