@@ -2208,37 +2208,63 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
                 ws.append(row_data)
 
-                # --- USER SUGGESTION: Stop Cash Flow statement at the end balance ---
-                is_cf_sheet = 'キャッシュ・フロー' in sheet_name
-                # IFRS often uses CashAndCashEquivalentsIFRS with periodEndLabel, 
-                # but we'll check for the requested base_name and also a variant including PeriodEnd
-                if is_cf_sheet and (base_name == "CashAndCashEquivalentsEndOfPeriod" or 
-                                    (base_name == "CashAndCashEquivalentsIFRS" and pref_label.endswith('periodEndLabel'))):
-                    break
+                # --- TAXONOMY STRUCTURE-BASED: Stop at appropriate end items ---
+                # Use hierarchy depth and preferredLabel to determine natural end points
 
-                # --- USER SUGGESTION: Stop IFRS Profit or Loss statement ---
+                is_cf_sheet = 'キャッシュ・フロー' in sheet_name
                 is_pl_sheet = '損益計算書' in sheet_name
+
+                # Helper: Check if this is the last significant item at current depth
+                def is_end_of_statement(current_idx, ordered_keys_list):
+                    """Check if next items are shallower (returning to parent level) or end of list"""
+                    if current_idx >= len(ordered_keys_list) - 1:
+                        return True
+
+                    current_depth = len(full_path.split('::')) - 1
+
+                    # Look ahead to see if we're returning to parent level
+                    for next_idx in range(current_idx + 1, len(ordered_keys_list)):
+                        next_fp, _ = ordered_keys_list[next_idx]
+                        next_el_name = next_fp.split('::')[-1]
+                        if '|' in next_el_name:
+                            next_el_name = next_el_name.split('|')[0]
+
+                        # Skip Abstract, TextBlock, Table, Axis, Member
+                        if next_el_name.endswith(("Abstract", "TextBlock", "Table", "Axis", "Member")):
+                            continue
+
+                        next_depth = len(next_fp.split('::')) - 1
+
+                        # If next real item is at same or shallower depth, we've reached end
+                        if next_depth <= current_depth:
+                            return True
+                        # If deeper, there are more substantive items to come
+                        return False
+
+                    return True
+
+                current_idx = ordered_keys.index(full_path_data)
+
+                # Cash Flow: Stop at CashAndCashEquivalents with periodEndLabel/totalLabel
+                if is_cf_sheet and 'CashAndCashEquivalents' in el:
+                    if pref_label and pref_label.endswith(('periodEndLabel', 'totalLabel')):
+                        # This is an ending balance - check if it's the natural end
+                        if is_end_of_statement(current_idx, ordered_keys):
+                            break
+
+                # Profit/Loss Statement: Stop at final profit or EPS items
                 if is_pl_sheet:
-                    stop_bases = (
-                        "ProfitLoss", "ProfitLossIFRS",
-                        "ProfitLossAttributableToOwnersOfParent", "ProfitLossAttributableToOwnersOfParentIFRS",
-                        "ProfitLossAttributableToNonControllingInterests", "ProfitLossAttributableToNonControllingInterestsIFRS",
-                        "BasicEarningsPerShare", "BasicEarningsPerShareIFRS",
-                        "BasicEarningsLossPerShare", "BasicEarningsLossPerShareIFRS",
-                        "DilutedEarningsPerShare", "DilutedEarningsPerShareIFRS",
-                        "DilutedEarningsLossPerShare", "DilutedEarningsLossPerShareIFRS"
-                    )
-                    # We break if this is a stop item AND there are no more "Earnings" related items later in this role
-                    if base_name in stop_bases or "EarningsLoss" in base_name or "EarningsPerShare" in base_name:
-                        idx = ordered_keys.index(full_path_data)
-                        has_more_eps = False
-                        for next_fp_data in ordered_keys[idx+1:]:
-                            next_el = next_fp_data[0].split('::')[-1]
-                            if '|' in next_el: next_el = next_el.split('|')[0]
-                            if "Earnings" in next_el:
-                                has_more_eps = True
+                    # Look for final profit or EPS items with totalLabel or at natural end
+                    is_profit_item = any(keyword in el for keyword in ['ProfitLoss', 'Profit', 'NetIncome'])
+                    is_eps_item = any(keyword in el for keyword in ['EarningsPerShare', 'EarningsLossPerShare'])
+
+                    if is_profit_item or is_eps_item:
+                        # If this has totalLabel OR is at end of hierarchy, consider it as endpoint
+                        if pref_label and 'totalLabel' in pref_label:
+                            if is_end_of_statement(current_idx, ordered_keys):
                                 break
-                        if not has_more_eps:
+                        # Even without totalLabel, if it's a key final item at natural end
+                        elif is_eps_item and is_end_of_statement(current_idx, ordered_keys):
                             break
 
         # Apply formatting and column widths
@@ -2385,11 +2411,30 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             continue
                         seen_rows_analysis.add(row_key)
                         aws.append(row_data_analysis)
-                        
-                # --- USER SUGGESTION: Stop Cash Flow Analysis at the end balance ---
-                if 'キャッシュ・フロー' in sheet_name and (base_name == "CashAndCashEquivalentsEndOfPeriod" or 
-                                                     (base_name == "CashAndCashEquivalentsIFRS" and pref_label.endswith('periodEndLabel'))):
-                    break
+
+                # --- TAXONOMY STRUCTURE-BASED: Stop Cash Flow Analysis at natural end ---
+                if 'キャッシュ・フロー' in sheet_name and 'CashAndCashEquivalents' in el:
+                    if pref_label and pref_label.endswith(('periodEndLabel', 'totalLabel')):
+                        # Check if this is at natural end of hierarchy
+                        current_idx = ordered_keys.index(full_path_data)
+                        if current_idx >= len(ordered_keys) - 1:
+                            break
+                        # Check depth of next items
+                        current_depth = len(full_path.split('::')) - 1
+                        is_at_end = True
+                        for next_idx in range(current_idx + 1, len(ordered_keys)):
+                            next_fp, _ = ordered_keys[next_idx]
+                            next_el_name = next_fp.split('::')[-1]
+                            if '|' in next_el_name:
+                                next_el_name = next_el_name.split('|')[0]
+                            if next_el_name.endswith(("Abstract", "TextBlock", "Table", "Axis", "Member")):
+                                continue
+                            next_depth = len(next_fp.split('::')) - 1
+                            if next_depth > current_depth:
+                                is_at_end = False
+                            break
+                        if is_at_end:
+                            break
 
             # Apply formatting to analysis sheet
             for row in aws.iter_rows(min_row=2, max_row=aws.max_row, min_col=3, max_col=aws.max_column):
