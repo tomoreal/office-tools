@@ -1473,6 +1473,19 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
         # Add accounting standard suffix
         is_ifrs = 'IFRS' in base_name
+        
+        # Proactively check for IFRS data in generic summary roles
+        if not is_ifrs and base_name in ('SummaryOfBusinessResults', 'BusinessResultsOfGroup', 'BusinessResultsOfReportingCompany'):
+            for full_path_data in ordered_keys:
+                full_path, _ = full_path_data
+                if full_path in all_years_data[role]:
+                    for c in all_years_data[role][full_path].keys():
+                        _, period = c if isinstance(c, tuple) else ("全体", c)
+                        if period_standards.get(period) == 'IFRS':
+                            is_ifrs = True
+                            break
+                if is_ifrs: break
+
         suffix = '(IFRS)' if is_ifrs else '(日本基準)'
         japanese_name += suffix
         
