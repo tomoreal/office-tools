@@ -145,6 +145,9 @@ def find_xbrl_files(extract_dir):
                 files['pre'] = full_path
             elif 'xbrl' not in files and fl.endswith('.xbrl'):
                 files['xbrl'] = full_path
+            elif fl.endswith('.htm') or fl.endswith('.html'):
+                if 'ixbrl' not in files: files['ixbrl'] = []
+                files['ixbrl'].append(full_path)
     
     # Priority 2: Fallback to global search if missing
     if 'pre' not in files or 'xbrl' not in files:
@@ -1023,6 +1026,27 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 thread_labels.update(std_labels)
                 thread_priorities.update(std_priorities)
 
+            # --- NEW: Detect Report-Level Accounting Standard ---
+            report_std = 'JP' # Default
+            search_content = ""
+            if xbrl_files.get('pre'):
+                with open(xbrl_files['pre'], 'r', encoding='utf-8', errors='ignore') as f:
+                    search_content += f.read(20000).lower()
+            if xbrl_files.get('ixbrl'):
+                # Check first iXBRL file for standard indicators
+                with open(xbrl_files['ixbrl'][0], 'r', encoding='utf-8', errors='ignore') as f:
+                    search_content += f.read(20000).lower()
+            
+            if 'jpigp' in search_content or 'ifrs.org' in search_content or 'ifrs-full' in search_content: 
+                report_std = 'IFRS'
+            elif 'jpusp' in search_content or 'us-gaap' in search_content: 
+                report_std = 'US'
+            elif 'jpmis' in search_content: 
+                report_std = 'JMIS'
+            
+            debug_log(f"  [DEBUG] Report standard detected as: {report_std} (from pre/ixbrl content)")
+
+
             for lf in xbrl_files.get('lab', []):
                 local_labels, local_priorities = parse_labels_file(lf)
                 for k, v in local_labels.items():
@@ -1059,7 +1083,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 dim = f.get('dimension', '')
                 val = f['value']
                 dim_label = dim if dim else "全体"
-                col_key = (dim_label, period)
+                # Use standard-aware column key to separate identical periods (e.g. 2020 JP vs 2020 IFRS)
+                col_key = (report_std, dim_label, period)
                 if el not in thread_values: thread_values[el] = {}
                 thread_values[el][col_key] = val
                 thread_periods.add(col_key)
@@ -1227,29 +1252,22 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         '0105025': 'rol_ConsolidatedStatementOfComprehensiveIncome',
         '0105040': 'rol_ConsolidatedStatementOfChangesInNetAssets',
         '0105050': 'rol_ConsolidatedStatementOfCashFlows',
+        # Notes and Accounting Policies
+        '0106010': 'rol_NotesAccountingPolicies',
+        '0107010': 'rol_Notes',
+        # Segment Information
+        '0114010': 'rol_SegmentInformation',
     }
 
-    # Correct way to find roles that actually have a presentation structure in merged_trees.
-    # We only skip the fallback if at least one zip provided a non-empty tree for that role base name.
-    roles_with_structure = set()
-    for role_uri_name, arcs_dict in merged_trees.items():
-        if len(arcs_dict) > 0:
-            roles_with_structure.add(role_uri_name.split('_')[-1])
-
-    roles_to_fill = {
-        doc_code: role_name
-        for doc_code, role_name in EDINET_DOC_ROLE_MAP.items()
-        if role_name.split('_')[-1] not in roles_with_structure
-    }
+    # Always try to capture facts from these critical documents as a fallback for structure
+    roles_to_fill = EDINET_DOC_ROLE_MAP
 
     if roles_to_fill:
-        print(f"Applying fallback for missing roles: {list(roles_to_fill.values())}", file=sys.stderr)
         facts_by_doc = {}  # {doc_code: {element: min_order}}
         for f in all_facts:
             src = f.get('source_file', '')
             fname = os.path.basename(src)
             for doc_code in roles_to_fill:
-                # Use regex for more reliable document code matching at start of filename
                 if re.match(r'^' + doc_code, fname):
                     if doc_code not in facts_by_doc:
                         facts_by_doc[doc_code] = {}
@@ -1267,24 +1285,61 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
             sorted_elems = sorted(elem_order_map.items(), key=lambda x: x[1])
             
-            # For IFRS combined filings (typically 0105010), split into separate statements
+            # For combined filings (typically 0105010), split into separate statements
+            # Auto-detect IFRS vs J-GAAP based on element name prefixes/keywords
             if doc_code == '0105010':
-                headings_to_roles = {
-                    'ConsolidatedStatementOfFinancialPositionIFRSHeading': 'rol_ConsolidatedStatementOfFinancialPositionIFRS',
-                    'ConsolidatedStatementOfProfitOrLossIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    'ConsolidatedStatementOfProfitOrLossAndOtherComprehensiveIncomeIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    'ConsolidatedStatementOfCashFlowsIFRSHeading': 'rol_ConsolidatedStatementOfCashFlowsIFRS',
-                    'ConsolidatedStatementOfChangesInEquityIFRSHeading': 'rol_ConsolidatedStatementOfChangesInEquityIFRS',
-                    'StatementOfFinancialPositionIFRSHeading': 'rol_ConsolidatedStatementOfFinancialPositionIFRS',
-                    'StatementOfProfitOrLossIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    # Backup markers
-                    'RevenueIFRS': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    'NetSalesIFRS': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
-                    'NetCashProvidedByUsedInOperatingActivitiesIFRS': 'rol_ConsolidatedStatementOfCashFlowsIFRS',
-                    'RetainedEarningsIFRS': 'rol_ConsolidatedStatementOfChangesInEquityIFRS',
-                }
+                is_ifrs_filing = any(
+                    elem.startswith('jpigp') or 'IFRS' in elem
+                    for elem in elem_order_map.keys()
+                )
                 
-                curr_role = 'rol_ConsolidatedStatementOfFinancialPositionIFRS'
+                if is_ifrs_filing:
+                    headings_to_roles = {
+                        'ConsolidatedStatementOfFinancialPositionIFRSHeading': 'rol_ConsolidatedStatementOfFinancialPositionIFRS',
+                        'ConsolidatedStatementOfProfitOrLossIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
+                        'ConsolidatedStatementOfProfitOrLossAndOtherComprehensiveIncomeIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
+                        'ConsolidatedStatementOfCashFlowsIFRSHeading': 'rol_ConsolidatedStatementOfCashFlowsIFRS',
+                        'ConsolidatedStatementOfChangesInEquityIFRSHeading': 'rol_ConsolidatedStatementOfChangesInEquityIFRS',
+                        'StatementOfFinancialPositionIFRSHeading': 'rol_ConsolidatedStatementOfFinancialPositionIFRS',
+                        'StatementOfProfitOrLossIFRSHeading': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
+                        'NotesIFRSHeading': 'rol_NotesIFRS',
+                        'SegmentInformationIFRSHeading': 'rol_SegmentInformationIFRS',
+                        'RelatedInformationIFRSHeading': 'rol_RelatedInformationIFRS',
+                        'InformationAboutReportableSegmentsIFRSHeading': 'rol_SegmentInformationIFRS',
+                        'OperatingSegmentsIFRSHeading': 'rol_SegmentInformationIFRS',
+                        'BusinessSegmentInformationIFRSHeading': 'rol_SegmentInformationIFRS',
+                        'PropertyPlantAndEquipmentIFRSHeading': 'rol_PPEIFRS',
+                        'IntangibleAssetsIFRSHeading': 'rol_IntangibleAssetsIFRS',
+                        'InventoriesIFRSHeading': 'rol_InventoriesIFRS',
+                        'FinancialInstrumentsIFRSHeading': 'rol_FinancialInstrumentsIFRS',
+                        # Backup markers
+                        'RevenueIFRS': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
+                        'NetSalesIFRS': 'rol_ConsolidatedStatementOfProfitOrLossIFRS',
+                        'NetCashProvidedByUsedInOperatingActivitiesIFRS': 'rol_ConsolidatedStatementOfCashFlowsIFRS',
+                        'RetainedEarningsIFRS': 'rol_ConsolidatedStatementOfChangesInEquityIFRS',
+                        'SegmentInformationIFRS': 'rol_SegmentInformationIFRS',
+                    }
+                    default_role = 'rol_ConsolidatedStatementOfFinancialPositionIFRS'
+                else:
+                    # J-GAAP combined filing — use standard J-GAAP role names
+                    headings_to_roles = {
+                        'ConsolidatedBalanceSheetTextBlock': 'rol_ConsolidatedBalanceSheet',
+                        'ConsolidatedStatementOfIncomeTextBlock': 'rol_ConsolidatedStatementOfIncome',
+                        'ConsolidatedStatementOfComprehensiveIncomeTextBlock': 'rol_ConsolidatedStatementOfComprehensiveIncome',
+                        'ConsolidatedStatementOfChangesInNetAssetsTextBlock': 'rol_ConsolidatedStatementOfChangesInNetAssets',
+                        'ConsolidatedStatementOfCashFlowsTextBlock': 'rol_ConsolidatedStatementOfCashFlows',
+                        # Heading-style markers
+                        'ConsolidatedBalanceSheetHeading': 'rol_ConsolidatedBalanceSheet',
+                        'ConsolidatedStatementOfIncomeHeading': 'rol_ConsolidatedStatementOfIncome',
+                        'ConsolidatedStatementOfComprehensiveIncomeHeading': 'rol_ConsolidatedStatementOfComprehensiveIncome',
+                        'ConsolidatedStatementOfChangesInEquityHeading': 'rol_ConsolidatedStatementOfChangesInNetAssets',
+                        'ConsolidatedStatementOfCashFlowsHeading': 'rol_ConsolidatedStatementOfCashFlows',
+                        'NotesHeading': 'rol_Notes',
+                    }
+                    default_role = 'rol_ConsolidatedBalanceSheet'
+                    print(f"[Fallback-Split] Detected J-GAAP filing for 0105010", file=sys.stderr)
+                
+                curr_role = default_role
                 curr_arcs = []
                 roles_created = set()
                 
@@ -1294,15 +1349,51 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         new_role = headings_to_roles[base]
                         if new_role != curr_role:
                             if curr_arcs:
-                                merged_trees[curr_role] = {(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in curr_arcs}
-                                print(f"[Fallback-Split] Created synthetic role {curr_role} (Phase 1)", file=sys.stderr)
+                                # Merge instead of Overwrite
+                                if curr_role not in merged_trees: merged_trees[curr_role] = {}
+                                merged_trees[curr_role].update({(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in curr_arcs})
+                                print(f"[Fallback-Split] Merged synthetic role {curr_role} (Phase 1)", file=sys.stderr)
                                 roles_created.add(curr_role)
                             curr_role = new_role
                             curr_arcs = []
+                    
+                    # Namespace & Element Filter (Revision 3): 
+                    # For major financial statements (BS, PL, CF), only allow standard namespace elements.
+                    # AND skip items that look like they belong in segments or detailed notes.
+                    if any(x in curr_role for x in ('BalanceSheet', 'StatementOfIncome', 'StatementOfCashFlows', 'FinancialPosition', 'ProfitOrLoss')):
+                        # 1. Namespace Check: Handle Standard Namespaces (jpcrp, jppfs, jpigp, jpusp, jpmis)
+                        # Elements usually look like common_prefix_elementName
+                        prefix = elem.split('_')[0] if '_' in elem else ""
+                        standard_prefixes = ('jpcrp_cor', 'jppfs_cor', 'jpigp_cor', 'jpusp_cor', 'jpmis_cor')
+                        is_standard_ns = any(p == prefix for p in standard_prefixes)
+                        
+                        # Special case for jpigp (sometimes it might not have _cor if it's a heading?) 
+                        # Actually standard elements almost always have _cor.
+                        if not is_standard_ns and prefix in ('jpcrp', 'jppfs', 'jpigp', 'jpusp', 'jpmis'):
+                             # Backup check for prefix without _cor if it's very standard
+                             is_standard_ns = True
+
+                        # Avoid extension namespaces (e.g. jpcrp030000-asr_E00436-000)
+                        if 'E' in prefix and '-' in prefix:
+                             is_standard_ns = False
+                        
+                        # 2. Detail/Note Blacklist
+                        el_lower = elem.lower()
+                        is_detail_item = any(x in el_lower for x in (
+                            'segment', 'externalcustomer', 'revenuefromexternal', 
+                            'acquisitioncost', 'accumulateddepreciation', 'accumulatedamortization',
+                            'rawmaterials', 'workinprocess', 'merchandise', 'finishedgoods'
+                        ))
+                        
+                        if not is_standard_ns or is_detail_item:
+                            # Skip this element - it's either an extension namespace (likely detail) or blacklisted detail
+                            continue
+
                     curr_arcs.append({'parent': curr_role, 'child': elem, 'order': float(_order), 'index': i, 'preferredLabel': None})
                 if curr_arcs:
-                    merged_trees[curr_role] = {(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in curr_arcs}
-                    print(f"[Fallback-Split] Created synthetic role {curr_role} (Phase 1)", file=sys.stderr)
+                    if curr_role not in merged_trees: merged_trees[curr_role] = {}
+                    merged_trees[curr_role].update({(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in curr_arcs})
+                    print(f"[Fallback-Split] Merged synthetic role {curr_role} (Phase 1)", file=sys.stderr)
             else:
                 virtual_root = role_name
                 arcs = []
@@ -1310,8 +1401,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order), 'index': i, 'preferredLabel': None})
                 
                 if arcs:
-                    merged_trees[role_name] = {(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in arcs}
-                    print(f"[Fallback] Created synthetic role {role_name} from {doc_code} (Phase 1)", file=sys.stderr)
+                    if role_name not in merged_trees: merged_trees[role_name] = {}
+                    merged_trees[role_name].update({(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in arcs})
+                    print(f"[Fallback] Merged synthetic role {role_name} from {doc_code} (Phase 1)", file=sys.stderr)
 
     all_years_data = {} # {role_name: {hierarchical_key: {period: value}}}
     role_to_order = {} # {role_name: [hierarchical_key1, ...]}
@@ -1329,6 +1421,75 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             if el in global_element_period_values:
                 for period, val in global_element_period_values[el].items():
                     all_years_data[role][full_path][period] = val
+
+    # --- Deduplicate overlapping roles (Fix B - Refined) ---
+    # Group roles by their fundamental base name (ignoring prefixes like jppfs_cor_ and suffixes like -indirect)
+    DEDUP_PREFIXES = ('jppfs_cor_', 'jpigp_cor_', 'jpcrp_cor_', 'rol_')
+    roles_by_base = {}
+    for r in role_to_order.keys():
+        base = r
+        for pfx in DEDUP_PREFIXES:
+            if r.startswith(pfx):
+                base = r[len(pfx):]
+                break
+        # Normalize base for matching: strip common suffix variants
+        # Note: Do NOT strip IFRS/JMIS/US here if we want them as separate sheets
+        match_base = base
+        for sfx in ('-indirect', '-direct'):
+            if match_base.endswith(sfx): match_base = match_base[:-len(sfx)]
+        
+        if match_base not in roles_by_base: roles_by_base[match_base] = []
+        roles_by_base[match_base].append(r)
+        
+    roles_to_remove = set()
+    for match_base, roles in roles_by_base.items():
+        if len(roles) <= 1: continue
+        
+        # Pick a primary role to merge into (prioritize 'rol_' or shortest)
+        primary = None
+        for r in sorted(roles, key=lambda x: (0 if x.startswith('rol_') else 1, len(x))):
+            if primary is None: primary = r
+            if '-indirect' in r: # Prefer -indirect variant if it exists as the primary
+                primary = r
+                break
+        
+        for r in roles:
+            if r == primary: continue
+            # Merge structure paths
+            existing_paths = {p for p, _ in role_to_order[primary]}
+            major_roles = ('ConsolidatedBalanceSheet', 'ConsolidatedStatementOfIncome', 'ConsolidatedStatementOfCashFlows', 'ConsolidatedStatementOfChangesInEquity', 
+                           'BalanceSheet', 'StatementOfIncome', 'StatementOfCashFlows', 'StatementOfChangesInEquity')
+            is_major = any(mr in primary for mr in major_roles)
+            
+            for full_path_data in role_to_order[r]:
+                fp, pl = full_path_data
+                if fp not in existing_paths:
+                    # Conservative Merge (V2): 
+                    # If this is a major financial statement and already has items from taxonomy, 
+                    # do NOT append extra items from a synthetic fallback role (rol_).
+                    # However, ALWAYS allow merging if the primary role belongs to a DIFFERENT standard
+                    # but here 'primary' and 'r' should share the same match_base.
+                    # NEW: Also limit synthetic-to-synthetic if the role is a major statement.
+                    is_synthetic_primary = primary.startswith('rol_')
+                    if is_major and r.startswith('rol_') and (not is_synthetic_primary or len(existing_paths) > 20) and len(existing_paths) > 5:
+                        continue
+                        
+                    role_to_order[primary].append(full_path_data)
+                    existing_paths.add(fp)
+            # Merge data values
+            for fp, period_vals in all_years_data.get(r, {}).items():
+                if fp not in all_years_data[primary]:
+                    all_years_data[primary][fp] = {}
+                for period, val in period_vals.items():
+                    if period not in all_years_data[primary][fp]:
+                        all_years_data[primary][fp][period] = val
+            roles_to_remove.add(r)
+            debug_log(f"[Dedup] Merged {r} into primary {primary} (Base: {match_base})")
+            
+    for r in roles_to_remove:
+        del role_to_order[r]
+        if r in all_years_data:
+            del all_years_data[r]
 
     # Try to find company name for filename
     company_name = "企業名不明"
@@ -1363,7 +1524,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for role, ordered_keys_dict in all_years_data.items():
         for full_path, p_dict in ordered_keys_dict.items():
             for c in p_dict.keys():
-                dim, period = c if isinstance(c, tuple) else ("全体", c)
+                # c is now (standard, dim, period)
+                std, dim, period = c if len(c) == 3 else ("JP", c[0], c[1])
                 if dim == '単体':
                     periods_with_standalone.add(period)
                     
@@ -1372,34 +1534,51 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     consolidated_standards = {} 
     non_consolidated_standards = {}
 
+    # --- Improved Standard Detection (V12) ---
+    # 1. First pass: Catch explicit indicators anywhere in the data
     for el_name, vals in global_element_period_values.items():
-        is_summary = ('SummaryOfBusinessResults' in el_name) or ('BusinessResultsOfGroup' in el_name) or ('BusinessResultsOfReportingCompany' in el_name)
-        if not is_summary: continue
-        
         target_std = None
-        if 'IFRS' in el_name: target_std = 'IFRS'
-        elif 'JMIS' in el_name: target_std = 'JMIS'
-        elif 'USGAAP' in el_name: target_std = 'US'
+        # Prioritize taxonomy namespaces (Fix: avoid misdetecting JP transition years as IFRS)
+        if el_name.startswith('jpigp_cor'): target_std = 'IFRS'
+        elif el_name.startswith('jpmis_cor'): target_std = 'JMIS'
+        elif el_name.startswith('jpusp_cor'): target_std = 'US'
+        elif el_name.startswith('jppfs_cor'): target_std = 'JP'
+        elif el_name.startswith('jpcrp_cor'):
+            if 'IFRS' in el_name: target_std = 'IFRS'
+            elif 'USGAAP' in el_name: target_std = 'US'
+            elif 'JMIS' in el_name: target_std = 'JMIS'
         
         if target_std:
             for c in vals:
-                dim, p = c if isinstance(c, tuple) else ("全体", c)
+                # c is (std, dim, p)
+                std, dim, p = c if len(c) == 3 else (target_std, c[0], c[1])
                 if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
-                    consolidated_standards[p] = target_std
+                    if p not in consolidated_standards: consolidated_standards[p] = set()
+                    consolidated_standards[p].add(target_std)
                 elif dim == '単体':
-                    non_consolidated_standards[p] = target_std
+                    if p not in non_consolidated_standards: non_consolidated_standards[p] = set()
+                    non_consolidated_standards[p].add(target_std)
     
-    # Identify J-GAAP periods (JP) using specific indicators
-    jp_indicators = ['EquityToAssetRatioSummaryOfBusinessResults', 'RateOfReturnOnEquitySummaryOfBusinessResults']
-    for ind in jp_indicators:
-        for el_name, vals in global_element_period_values.items():
-            if el_name.endswith(ind):
-                for c in vals:
-                    dim, p = c if isinstance(c, tuple) else ("全体", c)
-                    if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
-                        if p not in consolidated_standards: consolidated_standards[p] = 'JP'
-                    elif dim == '単体':
-                        if p not in non_consolidated_standards: non_consolidated_standards[p] = 'JP'
+    # 2. Second pass: Fallback to JP for any period that saw data but has no standard
+    # Also reset any IFRS detection for periods that clearly have J-GAAP (jppfs) elements
+    for el_name, vals in global_element_period_values.items():
+        is_jgaap_indicator = el_name.startswith('jppfs_cor')
+        for c in vals:
+            # c is (std, dim, p)
+            std, dim, p = c if len(c) == 3 else ("JP", c[0], c[1])
+            if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
+                if is_jgaap_indicator: 
+                    if p not in consolidated_standards: consolidated_standards[p] = set()
+                    consolidated_standards[p].add('JP')
+                if p not in consolidated_standards: consolidated_standards[p] = set(['JP'])
+            elif dim == '単体':
+                if is_jgaap_indicator:
+                    if p not in non_consolidated_standards: non_consolidated_standards[p] = set()
+                    non_consolidated_standards[p].add('JP')
+                if p not in non_consolidated_standards: non_consolidated_standards[p] = set(['JP'])
+
+    debug_log(f"Consolidated Standards: {consolidated_standards}")
+    debug_log(f"Non-consolidated Standards: {non_consolidated_standards}")
 
     sorted_periods = sorted(list(periods_seen))
     
@@ -1422,7 +1601,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             if 'IFRS' in base_name or 'IFRS' in role:
                 standards_to_try = ['IFRS']
             else:
-                standards_to_try = ['IFRS', 'JP']
+                # Include all standards detected in this document dynamically (V11)
+                all_stds = set()
+                for s_set in consolidated_standards.values(): all_stds.update(s_set)
+                for s_set in non_consolidated_standards.values(): all_stds.update(s_set)
+                standards_to_try = sorted([s for s in all_stds if s and s != 'JP_ALL'])
+                if not standards_to_try: standards_to_try = ['JP']
         else:
             # Check if this role is standalone (non-consolidated)
             is_standalone = 'Consolidated' not in base_name
@@ -1430,11 +1614,21 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             if is_standalone:
                 standards_to_try = ['JP_ALL']
             else:
-                # For specific consolidated financial statements, follow the linkbase name
-                if 'IFRS' in base_name: standards_to_try = ['IFRS']
-                elif 'JMIS' in base_name: standards_to_try = ['JMIS']
-                elif 'US' in base_name: standards_to_try = ['US']
-                else: standards_to_try = ['JP']
+                # Dynamic choice for consolidated financial statements (V12)
+                # If name is specific, use that. Otherwise try all detected.
+                if 'IFRS' in base_name: 
+                    standards_to_try = ['IFRS']
+                elif 'JMIS' in base_name: 
+                    standards_to_try = ['JMIS']
+                elif 'US' in base_name: 
+                    standards_to_try = ['US']
+                else:
+                    # Generic roles try all detected standards
+                    all_stds = set()
+                    for s_set in consolidated_standards.values(): all_stds.update(s_set)
+                    for s_set in non_consolidated_standards.values(): all_stds.update(s_set)
+                    standards_to_try = sorted([s for s in all_stds if s and s != 'JP_ALL'])
+                    if not standards_to_try: standards_to_try = ['JP']
         
         for std in standards_to_try:
             all_role_work.append((role, ordered_keys, std))
@@ -1601,21 +1795,24 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 full_path, _ = full_path_data
                 if full_path in all_years_data[role]:
                     for c in all_years_data[role][full_path].keys():
-                        dim, period = c if isinstance(c, tuple) else ("全体", c)
+                        # c is (std, dim, period)
+                        std, dim, period = c if len(c) == 3 else ("JP", c[0], c[1])
+                        
                         if dim == '連結': continue
                         if dim not in ('全体', '単体'): continue
                         
                         if period not in period_to_best_dim:
-                            period_to_best_dim[period] = dim
+                            period_to_best_dim[period] = (std, dim)
                         elif dim == '単体':
-                            period_to_best_dim[period] = '単体'
-            role_columns = set((dim, period) for period, dim in period_to_best_dim.items())
+                            period_to_best_dim[period] = (std, dim)
+            role_columns = set((s, d, p) for p, (s, d) in period_to_best_dim.items())
         else:
             for full_path_data in ordered_keys:
                 full_path, pref_label = full_path_data
                 if full_path in all_years_data[role]:
                     for c in all_years_data[role][full_path].keys():
-                        dim, period = c if isinstance(c, tuple) else ("全体", c)
+                        # c is (std, dim, period)
+                        std, dim, period = c if len(c) == 3 else ("JP", c[0], c[1])
                         
                         if is_segment:
                             if dim == '単体': continue
@@ -1625,63 +1822,43 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             if period in periods_with_standalone:
                                 if dim == '単体': continue
                                 
-                        # Filtering by accounting standard per period
-                        if is_consolidated:
-                            standard = consolidated_standards.get(period)
-                        else:
-                            standard = non_consolidated_standards.get(period)
+                        # Filtering by accounting standard (Transition Fix)
+                        if is_segment and 'AnalysisOfOperatingResults' in base_name:
+                            # Analysis roles often have their standard defined per item in the taxonomies,
+                            # but we need to ensure at least one standard-matching set is pulled.
+                            # For Toray 2021, these are detected as 'JP' despite context.
+                            pass # We'll filter during data retrieval if needed, or allow here
+                        
+                        if current_standard == 'JP_ALL':
+                            # Summary sheets merge all detected standards for the period
+                            pass
+                        elif std != current_standard:
+                            # Skip if this column's standard doesn't match the worksheet
+                            continue
                             
-                        # --- Item-Based Standard Detection (V7/V8/V9/V10) ---
-                        # If segment/analysis, prioritize English account name suffix 'IFRS'
-                        if is_segment:
-                            # Safer way to get the local name and prefix
-                            local_name = full_path.split(':')[-1] if ':' in full_path else full_path
-                            local_name = local_name.split('_')[-1] if '_' in local_name else local_name
-                            
-                            # Items with 'IFRS' in name or 'jpigp' prefix are definitely IFRS
-                            is_ifrs_item = ('IFRS' in local_name) or ('jpigp' in full_path)
-                            
-                            if current_standard == 'IFRS':
-                                if not is_ifrs_item:
-                                    # debug_log(f"  [DEBUG] Skipping non-IFRS item {local_name} for IFRS sheet")
-                                    continue
-                            elif current_standard == 'JP':
-                                if is_ifrs_item:
-                                    # debug_log(f"  [DEBUG] Skipping IFRS item {local_name} for JP sheet")
-                                    continue
-                            
-                            # debug_log(f"  [DEBUG] Column: {period} {dim}, item: {local_name}, is_ifrs: {is_ifrs_item}, std: {current_standard}")
-                        else:
-                            # Default period-based standard filtering
-                            is_sheet_ifrs = '(IFRS)' in sheet_name
-                            is_sheet_jmis = '(JMIS)' in sheet_name
-                            is_sheet_us = '(US GAAP)' in sheet_name
-                            is_sheet_all = (current_standard == 'JP_ALL')
-                            is_sheet_jp = not is_sheet_ifrs and not is_sheet_jmis and not is_sheet_us and not is_sheet_all
-                            
-                            if standard:
-                                if is_sheet_all: pass
-                                elif is_sheet_ifrs and standard != 'IFRS': continue
-                                elif is_sheet_jmis and standard != 'JMIS': continue
-                                elif is_sheet_us and standard != 'US': continue
-                                elif is_sheet_jp and standard not in ('JP', None): continue
-
                         role_columns.add(c)
-                    
+        
         if not role_columns:
             continue
             
-        counter = 1
-        while sheet_name in used_sheet_names:
-            suffix = str(counter)
-            # Truncate japanese_name enough to fit the suffix and keep total <= 31
-            sheet_name = japanese_name[:31 - len(suffix)] + suffix
-            counter += 1
+        if sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            # Use existing seen_rows to avoid duplication across merged roles
+            if not hasattr(ws, '_seen_rows'):
+                ws._seen_rows = set()
+            seen_rows = ws._seen_rows
+            is_new_sheet = False
+            debug_log(f"[Merge-Sheet] Merging data into existing sheet: {sheet_name}")
+        else:
+            ws = wb.create_sheet(title=sheet_name)
+            ws._seen_rows = set()
+            seen_rows = ws._seen_rows
+            is_new_sheet = True
+            used_sheet_names.add(sheet_name)
             
-        used_sheet_names.add(sheet_name)
-        ws = wb.create_sheet(title=sheet_name)
         if not default_sheet_removed:
-            wb.remove(wb['Sheet'])
+            if 'Sheet' in wb.sheetnames:
+                wb.remove(wb['Sheet'])
             default_sheet_removed = True
         
         # Track separators so we only print them once per sheet
@@ -1689,15 +1866,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         seen_goodwill = False
         seen_negative_goodwill = False
         seen_impairment = False
-        seen_rows = set() # Track (label, values) for deduplication in each worksheet
+        # seen_rows is now persistent per sheet
         
-        # Sort columns logically (Segment first: 各セグメント->調整額->合計->全体, then dates)
+        # Sort columns logically
         def sort_col(c):
-            if isinstance(c, str):
-                # If it's just a period string (no dimension), treat as 'Overall'
-                dim, period = "全体", c
-            else:
-                dim, period = c
+            # c is (std, dim, period)
+            std, dim, period = c if len(c) == 3 else ("JP", c[0], c[1])
             
             # Specific fixed orders for standard structural members
             order = 500
@@ -1711,8 +1885,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # 2. Adjustments and Eliminations
             if any(s in dim for s in ('調整', '調整額', '全社・消去', '消去又は全社', '調整項目')):
                 return (980, dim, period)
-                
-            # 3. Intermediate totals (e.g. Total of Reportable Segments and Others)
+            
+            # 3. Intermediate totals
             if any(s in dim for s in ('報告セグメント及びその他の合計', '報告セグメント合計', '内部売上高又は振替高')):
                 return (950, dim, period)
                 
@@ -1732,23 +1906,36 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
         sorted_role_cols = sorted(list(role_columns), key=sort_col)
         
-        has_segments = any(isinstance(c, tuple) and c[0] not in ('全体', '連結', '全社') for c in sorted_role_cols)
+        has_segments = any(c[1] not in ('全体', '連結', '全社') for c in sorted_role_cols)
         
-        if has_segments:
-            # Two-tier header: Row 1 = Segments, Row 2 = Dates
-            headers_row1 = ["", ""] + [c[0] if isinstance(c, tuple) else "" for c in sorted_role_cols]
-            headers_row2 = ["勘定科目", "項目（英名）"] + [c[1] if isinstance(c, tuple) else c for c in sorted_role_cols]
-            ws.append(headers_row1)
-            ws.append(headers_row2)
-        else:
-            headers = ["勘定科目", "項目（英名）"] + [c[1] if isinstance(c, tuple) else c for c in sorted_role_cols]
-            ws.append(headers)
+        if is_new_sheet:
+            if has_segments:
+                # Two-tier header: Row 1 = Segments (dim), Row 2 = Dates (period)
+                headers_row1 = ["", ""] + [c[1] for c in sorted_role_cols]
+                headers_row2 = ["勘定科目", "項目（英名）"] + [c[2] for c in sorted_role_cols]
+                ws.append(headers_row1)
+                ws.append(headers_row2)
+            else:
+                # Single-tier header: Dates (period)
+                headers = ["勘定科目", "項目（英名）"] + [c[2] for c in sorted_role_cols]
+                ws.append(headers)
+        elif ws.max_row == 0:
+            # Handle edge case where sheet existed but was empty
+            if has_segments:
+                ws.append(["", ""] + [c[1] for c in sorted_role_cols])
+                ws.append(["勘定科目", "項目（英名）"] + [c[2] for c in sorted_role_cols])
+            else:
+                ws.append(["勘定科目", "項目（英名）"] + [c[2] for c in sorted_role_cols])
         
         for full_path_data in ordered_keys:
             full_path, pref_label = full_path_data
             # Extract element name to get label
             el = full_path.split('::')[-1]
             if '|' in el: el = el.split('|')[0]
+
+            # --- USER SUGGESTION: Skip irrelevant element types ---
+            if el.endswith(("TextBlock","Abstract","Axis","Member","Table")):
+                continue
             
             # Common terminology translations as a fallback
             common_dict = {
@@ -1973,6 +2160,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 # Only use fallback if this isn't a CF start row (to avoid pulling ending balance)
                 if val == "" and not (is_cf_sheet and is_start_row):
                     val = all_years_data[role][full_path].get(col_key, "")
+                    if val == "" and (is_segment and 'AnalysisOfOperatingResults' in base_name):
+                        # Fallback for analysis roles: if exact standard fails, try others for this dim/period
+                        # because these roles are often sparsely populated across standards in some XBRL sets
+                        for s in ['JP', 'IFRS', 'US', 'JMIS']:
+                            if s == col_key[0]: continue
+                            test_key = (s, col_key[1], col_key[2])
+                            v = all_years_data[role][full_path].get(test_key, "")
+                            if v != "":
+                                val = v
+                                break
                 
                 # Clean numeric values
                 if val:
@@ -1990,9 +2187,17 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     has_data = True
                     
             if has_data: # Only append rows that have at least one value across columns
-                # --- セグメント情報の場合の文字情報の除外 ---
-                if is_segment:
-                    if not has_numeric_data:
+                # --- セグメント情報や財務諸表の文字情報の除外 (Current Refinement) ---
+                # Remove unwanted text blocks like *FinancialInformation or long descriptions
+                is_financial_statement = any(kw in sheet_name for kw in ('貸借対照表', '損益計算書', '包括利益', 'キャッシュ・フロー', '株主資本'))
+                if is_financial_statement or is_segment:
+                    is_text_info = (
+                        el.endswith('FinancialInformation') or 
+                        el.startswith(('jpcrp_cor_Description', 'jpcrp_cor_Note', 'jpcrp_cor_Regulations', 'jpcrp_cor_RemarkableEfforts'))
+                    )
+                    if is_text_info and not has_numeric_data:
+                        continue
+                    if is_segment and not has_numeric_data:
                         continue
                 # --- 重複排除 (勘定科目名と数値が完全に一致する行をスキップ) ---
                 row_values_tuple = tuple(row_data[2:])
@@ -2002,6 +2207,39 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 seen_rows.add(row_key)
                 
                 ws.append(row_data)
+
+                # --- USER SUGGESTION: Stop Cash Flow statement at the end balance ---
+                is_cf_sheet = 'キャッシュ・フロー' in sheet_name
+                # IFRS often uses CashAndCashEquivalentsIFRS with periodEndLabel, 
+                # but we'll check for the requested base_name and also a variant including PeriodEnd
+                if is_cf_sheet and (base_name == "CashAndCashEquivalentsEndOfPeriod" or 
+                                    (base_name == "CashAndCashEquivalentsIFRS" and pref_label.endswith('periodEndLabel'))):
+                    break
+
+                # --- USER SUGGESTION: Stop IFRS Profit or Loss statement ---
+                is_pl_sheet = '損益計算書' in sheet_name
+                if is_pl_sheet:
+                    stop_bases = (
+                        "ProfitLoss", "ProfitLossIFRS",
+                        "ProfitLossAttributableToOwnersOfParent", "ProfitLossAttributableToOwnersOfParentIFRS",
+                        "ProfitLossAttributableToNonControllingInterests", "ProfitLossAttributableToNonControllingInterestsIFRS",
+                        "BasicEarningsPerShare", "BasicEarningsPerShareIFRS",
+                        "BasicEarningsLossPerShare", "BasicEarningsLossPerShareIFRS",
+                        "DilutedEarningsPerShare", "DilutedEarningsPerShareIFRS",
+                        "DilutedEarningsLossPerShare", "DilutedEarningsLossPerShareIFRS"
+                    )
+                    # We break if this is a stop item AND there are no more "Earnings" related items later in this role
+                    if base_name in stop_bases or "EarningsLoss" in base_name or "EarningsPerShare" in base_name:
+                        idx = ordered_keys.index(full_path_data)
+                        has_more_eps = False
+                        for next_fp_data in ordered_keys[idx+1:]:
+                            next_el = next_fp_data[0].split('::')[-1]
+                            if '|' in next_el: next_el = next_el.split('|')[0]
+                            if "Earnings" in next_el:
+                                has_more_eps = True
+                                break
+                        if not has_more_eps:
+                            break
 
         # Apply formatting and column widths
         ratio_elements = {
@@ -2066,18 +2304,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Segments as horizontal axis (unique dimensions)
             unique_dims = []
             for c in sorted_role_cols:
-                if isinstance(c, tuple):
-                    d = c[0]
-                    if d not in unique_dims:
-                        unique_dims.append(d)
-                else:
-                    if "全体" not in unique_dims:
-                        unique_dims.append("全体")
+                # c is (std, dim, period)
+                d = c[1] if len(c) == 3 else c[0]
+                if d not in unique_dims:
+                    unique_dims.append(d)
             
             # Dims are already in sorted order from sorted_role_cols
             
             # All available years for this role (ascending)
-            unique_periods = sorted(list(set(c[1] if isinstance(c, tuple) else c for c in role_columns)))
+            unique_periods = sorted(list(set(c[2] if len(c) == 3 else c[1] for c in role_columns)))
             
             # Header
             aws.append(["勘定科目", "年度"] + unique_dims)
@@ -2088,6 +2323,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 full_path, pref_label = full_path_data
                 el = full_path.split('::')[-1]
                 if '|' in el: el = el.split('|')[0]
+
+                # --- USER SUGGESTION: Skip irrelevant element types (Analysis) ---
+                if el.endswith(("TextBlock","Abstract","Axis","Member","Table")):
+                    continue
                 
                 parts = el.split('_')
                 base_name = parts[-1] if len(parts) > 1 else el
@@ -2112,12 +2351,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     has_data_analysis = False
                     
                     for dim in unique_dims:
-                        # Find the value for (dim, period)
-                        col_key = (dim, period) if dim != "全体" else (period)
-                        # Fallback check because sometimes "全体" is a tuple ("全体", period) or just period
-                        val = all_years_data[role][full_path].get(col_key, "")
-                        if val == "" and dim == "全体":
-                            val = all_years_data[role][full_path].get(("全体", period), "")
+                        # Search for (any_std, dim, period) - usually current_standard
+                        # Prefer current_standard, fallback to others if needed?
+                        found_v = ""
+                        stds_to_check = [current_standard] if current_standard != 'JP_ALL' else ['IFRS', 'JP', 'US', 'JMIS']
+                        for s in stds_to_check:
+                            v = all_years_data[role][full_path].get((s, dim, period))
+                            if v is not None:
+                                found_v = v
+                                break
+                        val = found_v
                         
                         if val:
                             import unicodedata
@@ -2142,6 +2385,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             continue
                         seen_rows_analysis.add(row_key)
                         aws.append(row_data_analysis)
+                        
+                # --- USER SUGGESTION: Stop Cash Flow Analysis at the end balance ---
+                if 'キャッシュ・フロー' in sheet_name and (base_name == "CashAndCashEquivalentsEndOfPeriod" or 
+                                                     (base_name == "CashAndCashEquivalentsIFRS" and pref_label.endswith('periodEndLabel'))):
+                    break
 
             # Apply formatting to analysis sheet
             for row in aws.iter_rows(min_row=2, max_row=aws.max_row, min_col=3, max_col=aws.max_column):
@@ -2213,6 +2461,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
     wb._sheets.sort(key=lambda s: get_sheet_order(s.title))
 
+    # Log summary of sheets for verification
+    debug_log("Excel Sheet Summary:")
+    for out_ws in wb.worksheets:
+        debug_log(f"  - {out_ws.title}: {out_ws.max_row} rows")
+
     out_file = f'XBRL_横展開_{company_name}.xlsx'
     if output_dir:
         out_file = os.path.join(output_dir, out_file)
@@ -2224,9 +2477,26 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python convert_xbrl_to_excel.py <path_to_zip1> [<path_to_zip2> ...]", file=sys.stderr)
+        print("Usage: python convert_xbrl_to_excel.py <path_to_zip_or_dir1> [<path_to_zip_or_dir2> ...]", file=sys.stderr)
         sys.exit(1)
-    process_xbrl_zips(sys.argv[1:])
+        
+    input_paths = sys.argv[1:]
+    zip_files = []
+    for p in input_paths:
+        if os.path.isfile(p) and p.lower().endswith('.zip'):
+            zip_files.append(p)
+        elif os.path.isdir(p):
+            # Recursively find all ZIP files in the directory
+            for root, _, filenames in os.walk(p):
+                for f in filenames:
+                    if f.lower().endswith('.zip'):
+                        zip_files.append(os.path.join(root, f))
+    
+    if not zip_files:
+        print("Error: No ZIP files found in provided paths.", file=sys.stderr)
+        sys.exit(1)
+        
+    process_xbrl_zips(zip_files)
 
 if __name__ == "__main__":
     main()
