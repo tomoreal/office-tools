@@ -161,10 +161,6 @@ def find_xbrl_files(extract_dir):
     
     return files if 'pre' in files and 'xbrl' in files else None
 
-import json
-import urllib.request
-import re
-
 def get_standard_labels(year, cache_dir=None):
     """Returns (all_labels, label_priorities) for the given taxonomy year.
     Uses cached standard_labels.json if it exists.
@@ -1178,10 +1174,30 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     role = parts[0]
                 
                 # Filter relevant roles
-                if not (base_name.startswith('Consolidated') or base_name.startswith('Statement') or 
-                        base_name.startswith('BalanceSheet') or base_name.startswith('Notes') or 
-                        'BusinessResults' in base_name):
+                is_accepted = (base_name.startswith('Consolidated') or base_name.startswith('Statement') or 
+                               base_name.startswith('BalanceSheet') or base_name.startswith('Notes') or 
+                               'BusinessResults' in base_name or 'SegmentInformation' in base_name or 
+                               'AnalysisOfOperatingResults' in base_name)
+                
+                if not is_accepted:
                     continue
+                
+                # Normalize standalone roles: NonConsolidatedBalanceSheet -> BalanceSheet
+                IFRS_ROLE_MAP = {
+                    'StatementOfFinancialPosition': 'BalanceSheet',
+                    'StatementOfProfitOrLoss': 'StatementOfIncome',
+                    'StatementOfComprehensiveIncome': 'StatementOfComprehensiveIncome',
+                    'StatementOfChangesInEquity': 'StatementOfChangesInEquity',
+                    'StatementOfCashFlows': 'StatementOfCashFlows',
+                }
+                
+                curr_base = base_name.replace('NonConsolidated', '')
+                if curr_base in IFRS_ROLE_MAP:
+                    new_base = IFRS_ROLE_MAP[curr_base]
+                    role = role.replace(base_name, new_base)
+                elif base_name.startswith('NonConsolidated'):
+                    new_base = base_name[15:]
+                    role = role.replace(base_name, new_base)
                 
                 if role not in merged_trees:
                     merged_trees[role] = {}
@@ -1351,37 +1367,79 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if dim == '単体':
                     periods_with_standalone.add(period)
                     
-    # Identify accounting standards for each period using major indicators (Latest to Oldest)
-    period_standards = {} # {period: 'IFRS'|'JMIS'|'US'|'JP'}
+    # Identify accounting standards for each period separately for Consolidated and Non-consolidated
+    # {period: 'IFRS'|'JMIS'|'US'|'JP'}
+    consolidated_standards = {} 
+    non_consolidated_standards = {}
+
     for el_name, vals in global_element_period_values.items():
-        if 'IFRS' in el_name and 'SummaryOfBusinessResults' in el_name:
+        is_summary = ('SummaryOfBusinessResults' in el_name) or ('BusinessResultsOfGroup' in el_name) or ('BusinessResultsOfReportingCompany' in el_name)
+        if not is_summary: continue
+        
+        target_std = None
+        if 'IFRS' in el_name: target_std = 'IFRS'
+        elif 'JMIS' in el_name: target_std = 'JMIS'
+        elif 'USGAAP' in el_name: target_std = 'US'
+        
+        if target_std:
             for c in vals:
-                p = c[1] if isinstance(c, tuple) else c
-                period_standards[p] = 'IFRS'
-        elif 'JMIS' in el_name and 'SummaryOfBusinessResults' in el_name:
-            for c in vals:
-                p = c[1] if isinstance(c, tuple) else c
-                if p not in period_standards: period_standards[p] = 'JMIS'
-        elif 'USGAAP' in el_name and 'SummaryOfBusinessResults' in el_name:
-            for c in vals:
-                p = c[1] if isinstance(c, tuple) else c
-                if p not in period_standards: period_standards[p] = 'US'
+                dim, p = c if isinstance(c, tuple) else ("全体", c)
+                if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
+                    consolidated_standards[p] = target_std
+                elif dim == '単体':
+                    non_consolidated_standards[p] = target_std
     
-    # For others, if they have J-GAAP specific summary items, mark as JP
+    # Identify J-GAAP periods (JP) using specific indicators
     jp_indicators = ['EquityToAssetRatioSummaryOfBusinessResults', 'RateOfReturnOnEquitySummaryOfBusinessResults']
     for ind in jp_indicators:
         for el_name, vals in global_element_period_values.items():
             if el_name.endswith(ind):
                 for c in vals:
-                    p = c[1] if isinstance(c, tuple) else c
-                    if p not in period_standards:
-                        period_standards[p] = 'JP'
+                    dim, p = c if isinstance(c, tuple) else ("全体", c)
+                    if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
+                        if p not in consolidated_standards: consolidated_standards[p] = 'JP'
+                    elif dim == '単体':
+                        if p not in non_consolidated_standards: non_consolidated_standards[p] = 'JP'
 
     sorted_periods = sorted(list(periods_seen))
     
     used_sheet_names = set()
     
+    # Determine which standards to create for each role
+    all_role_work = []
     for role, ordered_keys in role_to_order.items():
+        base_name = role.split('_')[-1]
+        # Summary roles can contain both IFRS and JP era data for transition companies
+        if base_name == 'SummaryOfBusinessResults':
+            standards_to_try = ['IFRS', 'JP', 'JMIS', 'US']
+        elif base_name == 'BusinessResultsOfGroup':
+            standards_to_try = ['IFRS', 'JP', 'JMIS', 'US']
+        elif base_name == 'BusinessResultsOfReportingCompany':
+            # Standalone summaries always merge eras and have no suffix
+            standards_to_try = ['JP_ALL']
+        elif 'SegmentInformation' in base_name or 'AnalysisOfOperatingResults' in base_name:
+            # Case-insensitive check and include 'IFRS' in URI check
+            if 'IFRS' in base_name or 'IFRS' in role:
+                standards_to_try = ['IFRS']
+            else:
+                standards_to_try = ['IFRS', 'JP']
+        else:
+            # Check if this role is standalone (non-consolidated)
+            is_standalone = 'Consolidated' not in base_name
+            
+            if is_standalone:
+                standards_to_try = ['JP_ALL']
+            else:
+                # For specific consolidated financial statements, follow the linkbase name
+                if 'IFRS' in base_name: standards_to_try = ['IFRS']
+                elif 'JMIS' in base_name: standards_to_try = ['JMIS']
+                elif 'US' in base_name: standards_to_try = ['US']
+                else: standards_to_try = ['JP']
+        
+        for std in standards_to_try:
+            all_role_work.append((role, ordered_keys, std))
+
+    for role, ordered_keys, current_standard in all_role_work:
         # Clean role name for sheet
         base_name = role.split('_')[-1]
         sheet_mapping = {
@@ -1409,7 +1467,13 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             'SummaryOfBusinessResults': '主要な経営指標等の推移',
             'BusinessResultsOfGroup': '主要な経営指標等の推移（連結）',
             'BusinessResultsOfReportingCompany': '主要な経営指標等の推移（単体）',
-            # IFRS Notes
+            # Note / Segment keywords (without '注記_' prefix, as it's added by logic)
+            'SegmentInformationConsolidatedFinancialStatementsIFRS': 'セグメント情報等',
+            'AnalysisOfOperatingResultsConsolidatedFinancialStatementsIFRS': 'セグメント情報',
+            'NotesSegmentInformationEtcConsolidatedFinancialStatements': 'セグメント情報等',
+            'NotesAnalysisOfOperatingResultsConsolidatedFinancialStatements': 'セグメント情報',
+            'StatementOfFinancialPositionIFRS': '連結貸借対照表',
+            'StatementOfProfitOrLossIFRS': '連結損益計算書',
             'InventoriesConsolidatedFinancialStatementsIFRS': '棚卸資産',
             'PropertyPlantAndEquipmentConsolidatedFinancialStatementsIFRS': '有形固定資産',
             'GoodwillAndIntangibleAssetsConsolidatedFinancialStatementsIFRS': 'のれん及び無形資産',
@@ -1449,8 +1513,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             break
 
                 if not japanese_name:
-                    if sub_name.startswith('SegmentInformation'):
-                        m = re.search(r'-(\d+)$', sub_name)
+                    lookup_name = base_name[5:] if base_name.startswith('Notes') else base_name
+                    if 'SegmentInformation' in base_name:
+                        # Normalize for lookup
+                        m = re.search(r'-(\d+)$', lookup_name)
                         segment_dict = {
                             '01': '報告セグメントの概要等',
                             '02': 'セグメント情報',
@@ -1461,80 +1527,146 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             '07': '負ののれん'
                         }
                         if m and m.group(1) in segment_dict:
-                            japanese_name = f'注記_{segment_dict[m.group(1)]}'
+                            inner_v = segment_dict[m.group(1)]
                         elif m:
-                            japanese_name = f'注記_セグメント情報{int(m.group(1))}'
+                            inner_v = f'セグメント情報{int(m.group(1))}'
                         else:
-                            japanese_name = '注記_セグメント情報'
+                            inner_v = 'セグメント情報'
+                        
+                        japanese_name = sheet_mapping.get(lookup_name, inner_v)
                     else:
-                        japanese_name = '注記_' + sheet_mapping.get(sub_name, sub_name)
+                        japanese_name = sheet_mapping.get(lookup_name, lookup_name)
             else:
                 japanese_name = base_name
                 
-        # Add accounting standard suffix
-        is_ifrs = 'IFRS' in base_name
+        # --- Robust Naming Logic (V6) ---
+        # 1. Standard Suffix Suffix placement
+        suffix = ""
+        is_ifrs = (current_standard == 'IFRS')
+        is_jmis = (current_standard == 'JMIS')
+        is_us = (current_standard == 'US')
+        is_all = (current_standard == 'JP_ALL')
         
-        # Proactively check for IFRS data in generic summary roles
-        if not is_ifrs and base_name in ('SummaryOfBusinessResults', 'BusinessResultsOfGroup', 'BusinessResultsOfReportingCompany'):
+        if is_ifrs: suffix = '(IFRS)'
+        elif is_jmis: suffix = '(JMIS)'
+        elif is_us: suffix = '(US GAAP)'
+        elif not is_all: suffix = '(日本基準)'
+        
+        # 2. Handle Analytical Suffix (_分析)
+        analytical_suffix = ""
+        if 'AnalysisOfOperatingResults' in base_name:
+            analytical_suffix = "_分析"
+            
+        # 3. Assemble components
+        # Avoid doubling suffix if already present
+        if suffix and suffix in japanese_name:
+            suffix = ""
+            
+        final_sheet_name = f"{japanese_name}{suffix}{analytical_suffix}"
+        
+        # 4. Final '注記_' Prefixing for notes/segments
+        if base_name.startswith('Notes') or 'SegmentInformation' in base_name or 'AnalysisOfOperatingResults' in base_name:
+            if not final_sheet_name.startswith('注記_'):
+                final_sheet_name = '注記_' + final_sheet_name
+                
+        sheet_name = final_sheet_name
+        
+        # In Japanese, 31 characters maximum for sheet name
+        if len(sheet_name) > 31:
+            # If the name is too long, truncate it before the suffix and re-add suffix
+            # This logic needs to be careful with analytical_suffix and standard suffix
+            
+            # Calculate length available for the base name
+            total_suffix_len = len(suffix) + len(analytical_suffix)
+            allowed_base_len = 31 - total_suffix_len
+            
+            # Truncate the base part of the name
+            truncated_base_name = japanese_name[:allowed_base_len]
+            
+            # Reconstruct the sheet name
+            sheet_name = f"{truncated_base_name}{suffix}{analytical_suffix}"
+        
+        # Collect columns relevant to THIS role based on sheet type
+        is_segment = 'SegmentInformation' in base_name or 'AnalysisOfOperatingResults' in base_name
+        is_consolidated = 'Consolidated' in base_name or 'Group' in base_name or 'SummaryOfBusinessResults' in base_name
+        is_non_consolidated = not is_consolidated and not is_segment
+        
+        debug_log(f"[DEBUG] Processing sheet: {sheet_name} (role: {role}, std: {current_standard}, is_segment: {is_segment})")
+        
+        role_columns = set()
+        if is_non_consolidated:
+            # Merged dimensions for standalone: prioritize '単体' over '全体'
+            period_to_best_dim = {}
             for full_path_data in ordered_keys:
                 full_path, _ = full_path_data
                 if full_path in all_years_data[role]:
                     for c in all_years_data[role][full_path].keys():
-                        _, period = c if isinstance(c, tuple) else ("全体", c)
-                        if period_standards.get(period) == 'IFRS':
-                            is_ifrs = True
-                            break
-                if is_ifrs: break
-
-        suffix = '(IFRS)' if is_ifrs else '(日本基準)'
-        japanese_name += suffix
-        
-        # In Japanese, 31 characters maximum for sheet name
-        if len(japanese_name) > 31:
-            allowed_len = 31 - len(suffix)
-            sheet_name = japanese_name[:allowed_len] + suffix
+                        dim, period = c if isinstance(c, tuple) else ("全体", c)
+                        if dim == '連結': continue
+                        if dim not in ('全体', '単体'): continue
+                        
+                        if period not in period_to_best_dim:
+                            period_to_best_dim[period] = dim
+                        elif dim == '単体':
+                            period_to_best_dim[period] = '単体'
+            role_columns = set((dim, period) for period, dim in period_to_best_dim.items())
         else:
-            sheet_name = japanese_name
-        
-        # Collect columns relevant to THIS role based on sheet type
-        is_segment = 'セグメント' in sheet_name
-        is_consolidated = '連結' in sheet_name
-        is_non_consolidated = not is_consolidated and not is_segment and '注記' not in sheet_name
-        
-        role_columns = set()
-        for full_path_data in ordered_keys:
-            full_path, pref_label = full_path_data
-            if full_path in all_years_data[role]:
-                for c in all_years_data[role][full_path].keys():
-                    dim, period = c if isinstance(c, tuple) else ("全体", c)
-                    
-                    if is_segment:
-                        if dim == '単体': continue
-                    elif is_consolidated:
-                        if dim not in ('全体', '連結', '全社'): continue
-                    elif is_non_consolidated:
-                        if period in periods_with_standalone:
-                            if dim != '単体': continue
-                        else:
-                            if dim not in ('全体', '連結', '全社'): continue
-                    else: # other notes (not segment) - keep consolidated
-                        if period in periods_with_standalone:
+            for full_path_data in ordered_keys:
+                full_path, pref_label = full_path_data
+                if full_path in all_years_data[role]:
+                    for c in all_years_data[role][full_path].keys():
+                        dim, period = c if isinstance(c, tuple) else ("全体", c)
+                        
+                        if is_segment:
                             if dim == '単体': continue
+                        elif is_consolidated:
+                            if dim not in ('全体', '連結', '全社'): continue
+                        else: # other consolidated notes
+                            if period in periods_with_standalone:
+                                if dim == '単体': continue
+                                
+                        # Filtering by accounting standard per period
+                        if is_consolidated:
+                            standard = consolidated_standards.get(period)
+                        else:
+                            standard = non_consolidated_standards.get(period)
                             
-                    # Filtering by accounting standard per period
-                    standard = period_standards.get(period)
-                    is_sheet_ifrs = '(IFRS)' in sheet_name
-                    is_sheet_jmis = '(JMIS)' in sheet_name
-                    is_sheet_us = '(US GAAP)' in sheet_name # Optional, for future use
-                    is_sheet_jp = not is_sheet_ifrs and not is_sheet_jmis and not is_sheet_us
-                    
-                    if standard:
-                        if is_sheet_ifrs and standard != 'IFRS': continue
-                        if is_sheet_jmis and standard != 'JMIS': continue
-                        if is_sheet_us and standard != 'US': continue
-                        if is_sheet_jp and standard not in ('JP', None): continue
+                        # --- Item-Based Standard Detection (V7/V8/V9/V10) ---
+                        # If segment/analysis, prioritize English account name suffix 'IFRS'
+                        if is_segment:
+                            # Safer way to get the local name and prefix
+                            local_name = full_path.split(':')[-1] if ':' in full_path else full_path
+                            local_name = local_name.split('_')[-1] if '_' in local_name else local_name
+                            
+                            # Items with 'IFRS' in name or 'jpigp' prefix are definitely IFRS
+                            is_ifrs_item = ('IFRS' in local_name) or ('jpigp' in full_path)
+                            
+                            if current_standard == 'IFRS':
+                                if not is_ifrs_item:
+                                    # debug_log(f"  [DEBUG] Skipping non-IFRS item {local_name} for IFRS sheet")
+                                    continue
+                            elif current_standard == 'JP':
+                                if is_ifrs_item:
+                                    # debug_log(f"  [DEBUG] Skipping IFRS item {local_name} for JP sheet")
+                                    continue
+                            
+                            # debug_log(f"  [DEBUG] Column: {period} {dim}, item: {local_name}, is_ifrs: {is_ifrs_item}, std: {current_standard}")
+                        else:
+                            # Default period-based standard filtering
+                            is_sheet_ifrs = '(IFRS)' in sheet_name
+                            is_sheet_jmis = '(JMIS)' in sheet_name
+                            is_sheet_us = '(US GAAP)' in sheet_name
+                            is_sheet_all = (current_standard == 'JP_ALL')
+                            is_sheet_jp = not is_sheet_ifrs and not is_sheet_jmis and not is_sheet_us and not is_sheet_all
+                            
+                            if standard:
+                                if is_sheet_all: pass
+                                elif is_sheet_ifrs and standard != 'IFRS': continue
+                                elif is_sheet_jmis and standard != 'JMIS': continue
+                                elif is_sheet_us and standard != 'US': continue
+                                elif is_sheet_jp and standard not in ('JP', None): continue
 
-                    role_columns.add(c)
+                        role_columns.add(c)
                     
         if not role_columns:
             continue
