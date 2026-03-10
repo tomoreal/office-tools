@@ -531,7 +531,7 @@ def parse_presentation_linkbase(pre_file):
         label_to_element = content['locs']
         
         parent_child = []
-        for arc in content['arcs']:
+        for i, arc in enumerate(content['arcs']):
             p = label_to_element.get(arc['from'])
             c = label_to_element.get(arc['to'])
             if p and c:
@@ -539,6 +539,7 @@ def parse_presentation_linkbase(pre_file):
                     'parent': p,
                     'child': c,
                     'order': arc['order'],
+                    'index': i,
                     'preferredLabel': arc.get('preferredLabel')
                 })
                 
@@ -893,7 +894,8 @@ def create_hierarchy(parent_child_arcs):
     
     # Sort children by order, with stable tie-breaking on child name
     for p in adj:
-        adj[p].sort(key=lambda x: (x['order'], x['child']))
+        # Sort children by order, then by their original index in the XBRL file for stable tie-breaking
+        adj[p].sort(key=lambda x: (x.get('order', 0), x.get('index', 0), x['child']))
         
     roots = set(arc['parent'] for arc in parent_child_arcs)
     children = set(arc['child'] for arc in parent_child_arcs)
@@ -1186,10 +1188,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     seen_children_in_role[role] = set()
                     
                 for arc in tree_arcs:
-                    p, c, o, pl = arc['parent'], arc['child'], arc['order'], arc.get('preferredLabel')
+                    p, c, o, i, pl = arc['parent'], arc['child'], arc['order'], arc.get('index', 0), arc.get('preferredLabel')
                     # Unique key including preferredLabel to allow duplicates in CF statements
                     arc_key = (p, c, pl)
-                    merged_trees[role][arc_key] = float(o) + sub_role_idx
+                    # Newest report wins (results is sorted year DESC)
+                    if arc_key not in merged_trees[role]:
+                        merged_trees[role][arc_key] = (float(o) + sub_role_idx, i)
         
         debug_log(f"Merged total: {len(all_facts)} facts, {len(periods_seen)} periods, {len(merged_trees)} tree roles")
     except Exception as e:
@@ -1268,36 +1272,37 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 curr_arcs = []
                 roles_created = set()
                 
-                for elem, _order in sorted_elems:
+                for i, (elem, _order) in enumerate(sorted_elems):
                     base = elem.split('_')[-1]
                     if base in headings_to_roles:
                         new_role = headings_to_roles[base]
                         if new_role != curr_role:
                             if curr_arcs:
-                                merged_trees[curr_role] = {(a['parent'], a['child'], a['preferredLabel']): a['order'] for a in curr_arcs}
+                                merged_trees[curr_role] = {(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in curr_arcs}
                                 print(f"[Fallback-Split] Created synthetic role {curr_role} (Phase 1)", file=sys.stderr)
                                 roles_created.add(curr_role)
                             curr_role = new_role
                             curr_arcs = []
-                    curr_arcs.append({'parent': curr_role, 'child': elem, 'order': float(_order), 'preferredLabel': None})
+                    curr_arcs.append({'parent': curr_role, 'child': elem, 'order': float(_order), 'index': i, 'preferredLabel': None})
                 if curr_arcs:
-                    merged_trees[curr_role] = {(a['parent'], a['child'], a['preferredLabel']): a['order'] for a in curr_arcs}
+                    merged_trees[curr_role] = {(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in curr_arcs}
                     print(f"[Fallback-Split] Created synthetic role {curr_role} (Phase 1)", file=sys.stderr)
             else:
                 virtual_root = role_name
                 arcs = []
-                for elem, _order in sorted_elems:
-                    arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order), 'preferredLabel': None})
+                for i, (elem, _order) in enumerate(sorted_elems):
+                    arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order), 'index': i, 'preferredLabel': None})
                 
                 if arcs:
-                    merged_trees[role_name] = {(a['parent'], a['child'], a['preferredLabel']): a['order'] for a in arcs}
+                    merged_trees[role_name] = {(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in arcs}
                     print(f"[Fallback] Created synthetic role {role_name} from {doc_code} (Phase 1)", file=sys.stderr)
 
     all_years_data = {} # {role_name: {hierarchical_key: {period: value}}}
     role_to_order = {} # {role_name: [hierarchical_key1, ...]}
     
     for role, pd_dict in merged_trees.items():
-        tree_arcs = [{'parent': p, 'child': c, 'order': o, 'preferredLabel': pl} for (p, c, pl), o in pd_dict.items()]
+        tree_arcs = [{'parent': p, 'child': c, 'order': o_i[0], 'index': o_i[1], 'preferredLabel': pl} 
+                     for (p, c, pl), o_i in pd_dict.items()]
         ordered_items = create_hierarchy(tree_arcs)
         
         all_years_data[role] = {}
