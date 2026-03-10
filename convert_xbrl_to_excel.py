@@ -2205,7 +2205,83 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if row_key in seen_rows:
                     continue
                 seen_rows.add(row_key)
-                
+
+                # --- SPECIAL: Add beginning balance row for IFRS Cash Flow ---
+                # If this is CashAndCashEquivalents with periodEndLabel in CF sheet,
+                # first add a beginning balance row using prior period's ending values
+                if (is_cf_sheet and 'CashAndCashEquivalents' in el and
+                    pref_label and pref_label.endswith(('periodEndLabel', 'totalLabel'))):
+                    # Create beginning balance row
+                    beginning_label = label.replace('（期末残高）', '（期首残高）')
+                    beginning_row = [indent_prefix + beginning_label, el]
+
+                    # For each column, use the prior period's value
+                    for i, col_key in enumerate(sorted_role_cols):
+                        beginning_val = ""
+                        # Get the period date for this column
+                        if len(col_key) == 2:  # (dim, period)
+                            period_date = col_key[1]
+                        elif len(col_key) == 3:  # (std, dim, period)
+                            period_date = col_key[2]
+                        else:
+                            period_date = None
+
+                        if period_date:
+                            # Find the startDate for this period
+                            from datetime import datetime, timedelta
+                            try:
+                                # Look up the start date from metadata
+                                start_date = global_element_period_values.get('_metadata', {}).get(col_key)
+                                if start_date:
+                                    # Try the start date and the day before
+                                    dates_to_try = [start_date]
+                                    try:
+                                        dt = datetime.strptime(start_date, '%Y-%m-%d')
+                                        prev_day = (dt - timedelta(days=1)).strftime('%Y-%m-%d')
+                                        dates_to_try.append(prev_day)
+                                    except:
+                                        pass
+
+                                    # Try to find instant value at beginning of period
+                                    for t_date in dates_to_try:
+                                        if len(col_key) == 2:
+                                            target_key = (col_key[0], t_date)
+                                        else:  # len == 3
+                                            target_key = (col_key[0], col_key[1], t_date)
+
+                                        if el in global_element_period_values:
+                                            if target_key in global_element_period_values[el]:
+                                                beginning_val = global_element_period_values[el][target_key]
+                                                break
+                                            # Try matching just the date
+                                            for k, v in global_element_period_values[el].items():
+                                                if isinstance(k, tuple) and k[-1] == t_date:
+                                                    beginning_val = v
+                                                    break
+                                        if beginning_val:
+                                            break
+                            except:
+                                pass
+
+                        # Clean and convert to numeric if possible
+                        if beginning_val:
+                            import unicodedata
+                            val_clean = unicodedata.normalize('NFKC', str(beginning_val)).replace(',', '').strip()
+                            try:
+                                if val_clean and not any(c.isalpha() for c in val_clean):
+                                    beginning_val = float(val_clean)
+                            except:
+                                pass
+
+                        beginning_row.append(beginning_val)
+
+                    # Only add if it has some data
+                    if any(v != "" for v in beginning_row[2:]):
+                        beginning_row_key = (beginning_label, tuple(beginning_row[2:]))
+                        if beginning_row_key not in seen_rows:
+                            ws.append(beginning_row)
+                            seen_rows.add(beginning_row_key)
+
                 ws.append(row_data)
 
                 # --- TAXONOMY STRUCTURE-BASED: Stop at appropriate end items ---
@@ -2245,11 +2321,30 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
                 current_idx = ordered_keys.index(full_path_data)
 
-                # Cash Flow: Stop at CashAndCashEquivalents with periodEndLabel/totalLabel
+                # Cash Flow: Stop AFTER CashAndCashEquivalents with periodEndLabel/totalLabel
+                # (allow both periodStartLabel and periodEndLabel to be displayed)
                 if is_cf_sheet and 'CashAndCashEquivalents' in el:
+                    # Only break if this is periodEndLabel (not periodStartLabel)
+                    # AND it's at the natural end of the statement
                     if pref_label and pref_label.endswith(('periodEndLabel', 'totalLabel')):
-                        # This is an ending balance - check if it's the natural end
-                        if is_end_of_statement(current_idx, ordered_keys):
+                        # Check if there are more CashAndCash items with periodStartLabel ahead
+                        has_more_cash_items = False
+                        for next_idx in range(current_idx + 1, len(ordered_keys)):
+                            next_fp, next_pref = ordered_keys[next_idx]
+                            next_el = next_fp.split('::')[-1]
+                            if '|' in next_el:
+                                next_el = next_el.split('|')[0]
+                            # Skip non-substantive items
+                            if next_el.endswith(("Abstract", "TextBlock", "Table", "Axis", "Member")):
+                                continue
+                            # If we find another CashAndCash item, don't break yet
+                            if 'CashAndCashEquivalents' in next_el:
+                                has_more_cash_items = True
+                                break
+                            # If we find a different substantive item, we can break
+                            break
+
+                        if not has_more_cash_items and is_end_of_statement(current_idx, ordered_keys):
                             break
 
                 # Profit/Loss Statement: Stop at final profit or EPS items
@@ -2413,13 +2508,33 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         aws.append(row_data_analysis)
 
                 # --- TAXONOMY STRUCTURE-BASED: Stop Cash Flow Analysis at natural end ---
+                # (allow both periodStartLabel and periodEndLabel to be displayed)
                 if 'キャッシュ・フロー' in sheet_name and 'CashAndCashEquivalents' in el:
                     if pref_label and pref_label.endswith(('periodEndLabel', 'totalLabel')):
                         # Check if this is at natural end of hierarchy
                         current_idx = ordered_keys.index(full_path_data)
                         if current_idx >= len(ordered_keys) - 1:
                             break
-                        # Check depth of next items
+
+                        # Check if there are more CashAndCash items ahead
+                        has_more_cash_items = False
+                        for next_idx in range(current_idx + 1, len(ordered_keys)):
+                            next_fp, _ = ordered_keys[next_idx]
+                            next_el_name = next_fp.split('::')[-1]
+                            if '|' in next_el_name:
+                                next_el_name = next_el_name.split('|')[0]
+                            if next_el_name.endswith(("Abstract", "TextBlock", "Table", "Axis", "Member")):
+                                continue
+                            # If we find another CashAndCash item, don't break yet
+                            if 'CashAndCashEquivalents' in next_el_name:
+                                has_more_cash_items = True
+                                break
+                            break
+
+                        if has_more_cash_items:
+                            continue  # Don't break, process the next CashAndCash item
+
+                        # Check depth of next items if no more CashAndCash items
                         current_depth = len(full_path.split('::')) - 1
                         is_at_end = True
                         for next_idx in range(current_idx + 1, len(ordered_keys)):
