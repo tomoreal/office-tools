@@ -8,6 +8,7 @@ import time
 import json
 import urllib.request
 import re
+import gzip
 
 try:
     from lxml import etree
@@ -29,9 +30,52 @@ HAS_OPENPYXL = False
 # Control verbose logging via environment variable (default: enabled for debugging)
 VERBOSE_LOGGING = os.environ.get('XBRL_VERBOSE', '1') == '1'
 
+def rotate_logs_manually(log_file):
+    """cronが使えない環境向け：プログラム実行時にログをチェックし、1週間単位でローテーション・圧縮を行う"""
+    if not os.path.exists(log_file):
+        return
+
+    # 1週間（7日）の秒数
+    WEEK_SECONDS = 7 * 24 * 3600
+    
+    # ログファイルの最終更新時間を取得
+    file_mtime = os.path.getmtime(log_file)
+    if time.time() - file_mtime < WEEK_SECONDS:
+        return # まだ1週間経っていないので何もしない
+
+    try:
+        import gzip
+        import shutil
+        # ローテーション処理 (4回分＝1ヶ月分保持)
+        # 1. 一番古いファイルを削除し、順にずらす
+        for i in range(4, 1, -1):
+            old_file = f"{log_file}.{i}.gz"
+            prev_file = f"{log_file}.{i-1}.gz"
+            if i == 4 and os.path.exists(old_file):
+                os.remove(old_file)
+            if os.path.exists(prev_file):
+                os.rename(prev_file, f"{log_file}.{i}.gz")
+
+        # 2. 直近の非圧縮ログ (.1) を圧縮して .2.gz にする
+        log_1 = f"{log_file}.1"
+        if os.path.exists(log_1):
+            with open(log_1, 'rb') as f_in:
+                with gzip.open(f"{log_file}.2.gz", 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            os.remove(log_1)
+
+        # 3. 現在のログを .1 にリネーム
+        os.rename(log_file, log_1)
+    except Exception as e:
+        # ログローテーション自体のエラーはstderrにのみ出力（デッドロック回避）
+        print(f"Log rotation error: {e}", file=sys.stderr)
+
 def debug_log(message):
     """Write message to a persistent debug log file for user visibility."""
     log_file = os.path.join(SCRIPT_DIR, 'convert_xbrl_debug.log')
+    # Check for manual rotation
+    rotate_logs_manually(log_file)
+    
     try:
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         with open(log_file, 'a', encoding='utf-8') as f:
