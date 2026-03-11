@@ -1026,16 +1026,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 thread_labels.update(std_labels)
                 thread_priorities.update(std_priorities)
 
-            # --- NEW: Detect Report-Level Accounting Standard ---
-            report_std = 'JP' # Default
+            # --- NEW: Detect Report-Level Accounting Standard (V13) ---
+            report_std = None # Default: None (don't assume until detected)
             search_content = ""
             if xbrl_files.get('pre'):
                 with open(xbrl_files['pre'], 'r', encoding='utf-8', errors='ignore') as f:
-                    search_content += f.read(20000).lower()
+                    search_content += f.read(40000).lower() # Increased context
             if xbrl_files.get('ixbrl'):
                 # Check first iXBRL file for standard indicators
                 with open(xbrl_files['ixbrl'][0], 'r', encoding='utf-8', errors='ignore') as f:
-                    search_content += f.read(20000).lower()
+                    search_content += f.read(40000).lower()
             
             if 'jpigp' in search_content or 'ifrs.org' in search_content or 'ifrs-full' in search_content: 
                 report_std = 'IFRS'
@@ -1043,6 +1043,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 report_std = 'US'
             elif 'jpmis' in search_content: 
                 report_std = 'JMIS'
+            elif 'jppfs' in search_content:
+                report_std = 'JP'
             
             debug_log(f"  [DEBUG] Report standard detected as: {report_std} (from pre/ixbrl content)")
 
@@ -1083,8 +1085,24 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 dim = f.get('dimension', '')
                 val = f['value']
                 dim_label = dim if dim else "全体"
+                
+                # --- Granular Fact Tagging (V13) ---
+                fact_std = None
+                if el.startswith('jpigp_cor'): fact_std = 'IFRS'
+                elif el.startswith('jppfs_cor'): fact_std = 'JP'
+                elif el.startswith('jpusp_cor'): fact_std = 'US'
+                elif el.startswith('jpmis_cor'): fact_std = 'JMIS'
+                elif el.startswith('jpcrp_cor'):
+                    if 'IFRS' in el: fact_std = 'IFRS'
+                    elif 'USGAAP' in el: fact_std = 'US'
+                    elif 'JMIS' in el: fact_std = 'JMIS'
+                    else: fact_std = report_std # fallback to document standard for jpcrp elements (general metadata)
+                else:
+                    # Extension elements (e.g. E01766...)
+                    fact_std = report_std
+                
                 # Use standard-aware column key to separate identical periods (e.g. 2020 JP vs 2020 IFRS)
-                col_key = (report_std, dim_label, period)
+                col_key = (fact_std, dim_label, period)
                 if el not in thread_values: thread_values[el] = {}
                 thread_values[el][col_key] = val
                 thread_periods.add(col_key)
@@ -1103,7 +1121,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'values': thread_values,
                 'trees': trees,
                 'member_seq': [], # Will fill below
-                'year': taxonomy_year
+                'year': taxonomy_year,
+                'report_std': report_std
             }
 
         # Multi-threading for performance (I/O and C-based lxml parsing)
@@ -1159,7 +1178,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Merge member sequences
             master_member_seq = merge_sequences(master_member_seq, res['member_seq'])
 
+        report_stds = set()
         for res in results:
+            if res.get('report_std'):
+                report_stds.add(res['report_std'])
+            
             # Merge labels with priorities
             for k, v in res['labels'].items():
                 p = res['priorities'].get(k, 100)
@@ -1578,52 +1601,41 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     periods_with_standalone.add(period)
                     
     # Identify accounting standards for each period separately for Consolidated and Non-consolidated
-    # {period: 'IFRS'|'JMIS'|'US'|'JP'}
     consolidated_standards = {} 
     non_consolidated_standards = {}
 
-    # --- Improved Standard Detection (V12) ---
-    # 1. First pass: Catch explicit indicators anywhere in the data
+    # --- Refined Standard Detection (V13) ---
+    # Use the fact_std already tagged in the keys (c)
     for el_name, vals in global_element_period_values.items():
-        target_std = None
-        # Prioritize taxonomy namespaces (Fix: avoid misdetecting JP transition years as IFRS)
-        if el_name.startswith('jpigp_cor'): target_std = 'IFRS'
-        elif el_name.startswith('jpmis_cor'): target_std = 'JMIS'
-        elif el_name.startswith('jpusp_cor'): target_std = 'US'
-        elif el_name.startswith('jppfs_cor'): target_std = 'JP'
-        elif el_name.startswith('jpcrp_cor'):
-            if 'IFRS' in el_name: target_std = 'IFRS'
-            elif 'USGAAP' in el_name: target_std = 'US'
-            elif 'JMIS' in el_name: target_std = 'JMIS'
-        
-        if target_std:
-            for c in vals:
-                # c is (std, dim, p)
-                std, dim, p = c if len(c) == 3 else (target_std, c[0], c[1])
-                if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
-                    if p not in consolidated_standards: consolidated_standards[p] = set()
-                    consolidated_standards[p].add(target_std)
-                elif dim == '単体':
-                    if p not in non_consolidated_standards: non_consolidated_standards[p] = set()
-                    non_consolidated_standards[p].add(target_std)
-    
-    # 2. Second pass: Fallback to JP for any period that saw data but has no standard
-    # Also reset any IFRS detection for periods that clearly have J-GAAP (jppfs) elements
-    for el_name, vals in global_element_period_values.items():
-        is_jgaap_indicator = el_name.startswith('jppfs_cor')
         for c in vals:
-            # c is (std, dim, p)
-            std, dim, p = c if len(c) == 3 else ("JP", c[0], c[1])
-            if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
-                if is_jgaap_indicator: 
-                    if p not in consolidated_standards: consolidated_standards[p] = set()
-                    consolidated_standards[p].add('JP')
-                if p not in consolidated_standards: consolidated_standards[p] = set(['JP'])
-            elif dim == '単体':
-                if is_jgaap_indicator:
-                    if p not in non_consolidated_standards: non_consolidated_standards[p] = set()
-                    non_consolidated_standards[p].add('JP')
-                if p not in non_consolidated_standards: non_consolidated_standards[p] = set(['JP'])
+            # c is (fact_std, dim, p)
+            if len(c) == 3:
+                f_std, dim, p = c
+                if f_std:
+                    if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
+                        if p not in consolidated_standards: consolidated_standards[p] = set()
+                        consolidated_standards[p].add(f_std)
+                    elif dim == '単体':
+                        if p not in non_consolidated_standards: non_consolidated_standards[p] = set()
+                        non_consolidated_standards[p].add(f_std)
+    
+    # Global Fallback: Only if NO standards were detected for a period that has data
+    all_explicit_stds = set()
+    for s_set in consolidated_standards.values(): all_explicit_stds.update(s_set)
+    for s_set in non_consolidated_standards.values(): all_explicit_stds.update(s_set)
+    
+    if not all_explicit_stds:
+        # Fallback to JP only if document-wide report_std is JP or generic
+        # or if absolutely nothing was found.
+        # This is for pure JP-GAAP reports where no prefixes are found.
+        for el_name, vals in global_element_period_values.items():
+            for c in vals:
+                # c is (fact_std, dim, p)
+                f_std, dim, p = c if len(c) == 3 else (None, c[0], c[1])
+                if dim in ('全体', '連結', '全社', '連結財務諸表計上額'):
+                    if p not in consolidated_standards: consolidated_standards[p] = set(['JP'])
+                elif dim == '単体':
+                    if p not in non_consolidated_standards: non_consolidated_standards[p] = set(['JP'])
 
     debug_log(f"Consolidated Standards: {consolidated_standards}")
     debug_log(f"Non-consolidated Standards: {non_consolidated_standards}")
@@ -1634,49 +1646,74 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     
     # Determine which standards to create for each role
     all_role_work = []
+    
+    # Pre-calculate all detected standards for the document (V13)
+    doc_cons_stds = set()
+    for s_set in consolidated_standards.values(): doc_cons_stds.update(s_set)
+    doc_cons_stds = sorted([s for s in doc_cons_stds if s and s != 'JP_ALL'])
+    if not doc_cons_stds: doc_cons_stds = ['JP']
+    
+    doc_noncons_stds = set()
+    for s_set in non_consolidated_standards.values(): doc_noncons_stds.update(s_set)
+    doc_noncons_stds = sorted([s for s in doc_noncons_stds if s and s != 'JP_ALL'])
+    if not doc_noncons_stds: doc_noncons_stds = ['JP']
+
+    # Select representive report_std from zips
+    report_std = None
+    if 'IFRS' in doc_cons_stds: report_std = 'IFRS'
+    elif 'US' in doc_cons_stds: report_std = 'US'
+    elif 'JMIS' in doc_cons_stds: report_std = 'JMIS'
+    elif 'JP' in doc_cons_stds: report_std = 'JP'
+
     for role, ordered_keys in role_to_order.items():
         base_name = role.split('_')[-1]
-        # Summary roles can contain both IFRS and JP era data for transition companies
-        if base_name == 'SummaryOfBusinessResults':
-            standards_to_try = ['IFRS', 'JP', 'JMIS', 'US']
-        elif base_name == 'BusinessResultsOfGroup':
-            standards_to_try = ['IFRS', 'JP', 'JMIS', 'US']
+        
+        # --- Role-Based Standard Detection (V13) ---
+        # 1. Scan elements in this role to see which standards are explicitly used
+        role_detected_stds = set()
+        for full_path, _ in ordered_keys:
+            el_name = full_path.split('/')[-1]
+            if el_name.startswith('jpigp_cor'): role_detected_stds.add('IFRS')
+            elif el_name.startswith('jppfs_cor'): role_detected_stds.add('JP')
+            elif el_name.startswith('jpusp_cor'): role_detected_stds.add('US')
+            elif el_name.startswith('jpmis_cor'): role_detected_stds.add('JMIS')
+            elif el_name.startswith('jpcrp_cor'):
+                if 'IFRS' in el_name: role_detected_stds.add('IFRS')
+                elif 'USGAAP' in el_name: role_detected_stds.add('US')
+                elif 'JMIS' in el_name: role_detected_stds.add('JMIS')
+        
+        # 2. Decide standards to try for this role
+        if base_name in ('SummaryOfBusinessResults', 'BusinessResultsOfGroup'):
+            # Consolidated summaries need all detected consolidated standards
+            standards_to_try = doc_cons_stds
         elif base_name == 'BusinessResultsOfReportingCompany':
-            # Standalone summaries always merge eras and have no suffix
             standards_to_try = ['JP_ALL']
         elif 'SegmentInformation' in base_name or 'AnalysisOfOperatingResults' in base_name:
-            # Case-insensitive check and include 'IFRS' in URI check
             if 'IFRS' in base_name or 'IFRS' in role:
                 standards_to_try = ['IFRS']
             else:
-                # Include all standards detected in this document dynamically (V11)
-                all_stds = set()
-                for s_set in consolidated_standards.values(): all_stds.update(s_set)
-                for s_set in non_consolidated_standards.values(): all_stds.update(s_set)
-                standards_to_try = sorted([s for s in all_stds if s and s != 'JP_ALL'])
-                if not standards_to_try: standards_to_try = ['JP']
+                # Use role-specific detection if possible, fallback to doc consolidated
+                standards_to_try = sorted([s for s in role_detected_stds if s])
+                if not standards_to_try: standards_to_try = doc_cons_stds
         else:
-            # Check if this role is standalone (non-consolidated)
             is_standalone = 'Consolidated' not in base_name
-            
             if is_standalone:
+                # Standalone roles use non-consolidated standards (always 'JP_ALL' for now but kept dynamic)
                 standards_to_try = ['JP_ALL']
             else:
-                # Dynamic choice for consolidated financial statements (V12)
-                # If name is specific, use that. Otherwise try all detected.
-                if 'IFRS' in base_name: 
-                    standards_to_try = ['IFRS']
-                elif 'JMIS' in base_name: 
-                    standards_to_try = ['JMIS']
-                elif 'US' in base_name: 
-                    standards_to_try = ['US']
+                # Consolidated Financial Statements (BS, PL, CF)
+                if 'IFRS' in base_name: standards_to_try = ['IFRS']
+                elif 'JMIS' in base_name: standards_to_try = ['JMIS']
+                elif 'US' in base_name: standards_to_try = ['US']
                 else:
-                    # Generic roles try all detected standards
-                    all_stds = set()
-                    for s_set in consolidated_standards.values(): all_stds.update(s_set)
-                    for s_set in non_consolidated_standards.values(): all_stds.update(s_set)
-                    standards_to_try = sorted([s for s in all_stds if s and s != 'JP_ALL'])
-                    if not standards_to_try: standards_to_try = ['JP']
+                    # Generic roles: use only detections within THIS role's tree
+                    standards_to_try = sorted([s for s in role_detected_stds if s])
+                    if not standards_to_try:
+                        # Fallback for generic roles: prefer report standard, then doc consolidated standards
+                        if report_std and report_std in doc_cons_stds:
+                            standards_to_try = [report_std]
+                        else:
+                            standards_to_try = doc_cons_stds
         
         for std in standards_to_try:
             all_role_work.append((role, ordered_keys, std))
@@ -1871,19 +1908,24 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             if period in periods_with_standalone:
                                 if dim == '単体': continue
                                 
-                        # Filtering by accounting standard (Transition Fix)
-                        if is_segment and 'AnalysisOfOperatingResults' in base_name:
-                            # Analysis roles often have their standard defined per item in the taxonomies,
-                            # but we need to ensure at least one standard-matching set is pulled.
-                            # For Toray 2021, these are detected as 'JP' despite context.
-                            pass # We'll filter during data retrieval if needed, or allow here
-                        
+                        # Filtering by accounting standard (V13 Refined)
+                        # c is (fact_std, dim, p)
+                        fact_std, f_dim, f_p = c if len(c) == 3 else ("JP", c[0], c[1])
+
                         if current_standard == 'JP_ALL':
                             # Summary sheets merge all detected standards for the period
                             pass
-                        elif std != current_standard:
-                            # Skip if this column's standard doesn't match the worksheet
-                            continue
+                        else:
+                            # Rule 1: If fact has an explicit standard, it MUST match the sheet's standard
+                            if fact_std is not None and fact_std != current_standard:
+                                continue
+                            
+                            # Rule 2: If fact has NO explicit standard (extension), 
+                            # only include it if the sheet's standard is one of the primary standards for this period.
+                            if fact_std is None:
+                                p_stds = consolidated_standards.get(f_p, set())
+                                if current_standard not in p_stds:
+                                    continue
                             
                         role_columns.add(c)
         
