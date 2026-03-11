@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import openpyxl; wb = openpyxl.load_workbook(''XBRL_横展開_トヨタ自動車.xlsx''); print(''Sheets:'', wb.sheetnames)\")",
+      "Bash(python3 convert_xbrl_to_excel.py \"味の素XBRL/Xbrl_Search_20260310_214816.zip\")",
+      "Bash(python3 -c \"import openpyxl; wb = openpyxl.load_workbook(''日本電気/XBRL_横展開_日本電気.xlsx''); print(''Sheets:'', wb.sheetnames)\")",
+      "Bash(for file in 日本電気/*.zip)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(unzip -l \"$file\")",
+      "Bash(done)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
