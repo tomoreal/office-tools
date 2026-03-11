@@ -36,10 +36,19 @@ def debug_log(message):
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         with open(log_file, 'a', encoding='utf-8') as f:
             f.write(f"{timestamp} {message}\n")
-    except:
+    except Exception:
         pass
     # Also print to stderr for server log visibility
     print(message, file=sys.stderr)
+
+def validate_zip_path(target_path, base_dir):
+    """Ensure the target path is within the base directory to prevent Zip Slip."""
+    abs_target = os.path.abspath(target_path)
+    abs_base = os.path.abspath(base_dir)
+    # Use commonpath to ensure target is actually within base_dir
+    # (prevents prefix match bypass where '/tmp/base_dir_extra' starts with '/tmp/base_dir')
+    if os.path.commonpath([abs_target, abs_base]) != abs_base:
+        raise Exception(f"Zip Slip detected: {abs_target} is outside of {abs_base}")
 
 def vprint(*args, **kwargs):
     """Verbose print - only prints if VERBOSE_LOGGING is enabled."""
@@ -220,7 +229,8 @@ def get_standard_labels(year, cache_dir=None):
             tax_dir = os.path.join('/tmp', 'edinet_taxonomies', str(year))
             try:
                 os.makedirs(tax_dir, exist_ok=True)
-            except: pass
+            except Exception as e:
+                vprint(f"Fallback to /tmp failed for {year}: {e}")
             labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
 
     if not os.path.exists(labels_cache_file):
@@ -238,10 +248,11 @@ def get_standard_labels(year, cache_dir=None):
                             # We re-encode and decode correctly
                             filename_raw = info.filename.encode('cp437')
                             filename = filename_raw.decode('cp932')
-                        except:
+                        except Exception:
                             filename = info.filename
                         
                         target_path = os.path.join(tax_dir, filename)
+                        validate_zip_path(target_path, tax_dir)
                         if info.is_dir():
                             os.makedirs(target_path, exist_ok=True)
                         else:
@@ -298,8 +309,8 @@ def get_standard_labels(year, cache_dir=None):
                 if (el not in all_labels) or (prio < current_prio) or (prio == current_prio and text < all_labels.get(el, "")):
                     all_labels[el] = text
                     label_priorities[el] = prio
-        except:
-            pass
+        except Exception as e:
+            vprint(f"Error parsing labels from {lf}: {e}")
 
     # Report which taxonomies were loaded
     if taxonomy_types:
@@ -329,7 +340,8 @@ def parse_labels_file(lab_file):
     try:
         # Parse XML with lxml if available (ElementTree.XMLParser doesn't support 'recover')
         if HAS_LXML:
-            parser = etree.XMLParser(recover=True)
+            # Secure parser against XXE attacks
+            parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
             tree = etree.parse(lab_file, parser)
         else:
             tree = etree.parse(lab_file)
@@ -473,7 +485,8 @@ def parse_presentation_linkbase(pre_file):
     try:
         # Use lxml for robust namespace handling if available
         if HAS_LXML:
-            parser = etree.XMLParser(recover=True)
+            # Secure parser against XXE attacks
+            parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
             tree = etree.parse(pre_file, parser)
         else:
             tree = etree.parse(pre_file)
@@ -596,7 +609,8 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
     try:
         # Use lxml for robust namespace handling if available
         if HAS_LXML:
-            parser = etree.XMLParser(recover=True)
+            # Secure parser against XXE attacks
+            parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
             tree = etree.parse(xbrl_file, parser)
         else:
             tree = etree.parse(xbrl_file)
@@ -747,7 +761,9 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
             if HAS_LXML:
                 try:
                     from lxml import html
-                    tree = html.fromstring(content)
+                    # Secure parser against XXE attacks (Note: HTMLParser doesn't support resolve_entities)
+                    parser = html.HTMLParser(no_network=True)
+                    tree = html.fromstring(content, parser=parser)
                     # Use a more robust way to find tags that works with or without namespace awareness
                     tags = [t for t in tree.iter() if any(x in (t.tag if isinstance(t.tag, str) else "").lower() for x in ('nonfraction', 'nonnumeric'))]
                 except Exception as e:
@@ -844,7 +860,7 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
                         amt *= (10 ** int(scale or 0))
                         if is_jpy: amt /= 1000000.0
                         valStr = str(int(amt)) if amt.is_integer() else str(amt)
-                    except:
+                    except Exception:
                         valStr = value
                 else:
                     valStr = value
@@ -1002,6 +1018,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 for info in zip_ref.infolist():
                     # Normalize Windows backslashes in paths
                     info.filename = info.filename.replace('\\', '/')
+                    # Path validation to prevent Zip Slip
+                    target_path = os.path.join(extract_dir, info.filename)
+                    validate_zip_path(target_path, extract_dir)
                     zip_ref.extract(info, extract_dir)
                 
             subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
@@ -2234,7 +2253,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             dt = datetime.strptime(current_start_date, '%Y-%m-%d')
                             prev_day = (dt - timedelta(days=1)).strftime('%Y-%m-%d')
                             dates_to_try.append(prev_day)
-                        except:
+                        except Exception:
                             pass
                         
                         found_val = False
@@ -2279,7 +2298,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         if val_clean and not any(c.isalpha() for c in val_clean):
                             val = float(val_clean)
                             has_numeric_data = True
-                    except:
+                    except Exception:
                         pass
                 row_data.append(val)
                 if val != "":
@@ -2338,7 +2357,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                                         dt = datetime.strptime(start_date, '%Y-%m-%d')
                                         prev_day = (dt - timedelta(days=1)).strftime('%Y-%m-%d')
                                         dates_to_try.append(prev_day)
-                                    except:
+                                    except Exception:
                                         pass
 
                                     # Try to find instant value at beginning of period
@@ -2359,7 +2378,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                                                     break
                                         if beginning_val:
                                             break
-                            except:
+                            except Exception:
                                 pass
 
                         # Clean and convert to numeric if possible
@@ -2369,7 +2388,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             try:
                                 if val_clean and not any(c.isalpha() for c in val_clean):
                                     beginning_val = float(val_clean)
-                            except:
+                            except Exception:
                                 pass
 
                         beginning_row.append(beginning_val)
@@ -2597,7 +2616,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                                 if val_clean and not any(c.isalpha() for c in val_clean):
                                     val = float(val_clean)
                                     has_numeric_data_analysis = True
-                            except:
+                            except Exception:
                                 pass
                         row_data_analysis.append(val)
                         if val != "":
@@ -2673,7 +2692,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 try:
                     if len(str(cell.value)) > max_length:
                         max_length = len(str(cell.value))
-                except:
+                except Exception:
                     pass
             # Add a little extra padding, especially for Japanese characters
             adjusted_width = (max_length + 2) * 1.2
