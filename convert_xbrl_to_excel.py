@@ -1357,7 +1357,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             curr_role = new_role
                             curr_arcs = []
                     
-                    # Namespace & Element Filter (Revision 3): 
+                    # Namespace & Element Filter (Revision 3):
                     # For major financial statements (BS, PL, CF), only allow standard namespace elements.
                     # AND skip items that look like they belong in segments or detailed notes.
                     if any(x in curr_role for x in ('BalanceSheet', 'StatementOfIncome', 'StatementOfCashFlows', 'FinancialPosition', 'ProfitOrLoss')):
@@ -1366,8 +1366,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         prefix = elem.split('_')[0] if '_' in elem else ""
                         standard_prefixes = ('jpcrp_cor', 'jppfs_cor', 'jpigp_cor', 'jpusp_cor', 'jpmis_cor')
                         is_standard_ns = any(p == prefix for p in standard_prefixes)
-                        
-                        # Special case for jpigp (sometimes it might not have _cor if it's a heading?) 
+
+                        # Special case for jpigp (sometimes it might not have _cor if it's a heading?)
                         # Actually standard elements almost always have _cor.
                         if not is_standard_ns and prefix in ('jpcrp', 'jppfs', 'jpigp', 'jpusp', 'jpmis'):
                              # Backup check for prefix without _cor if it's very standard
@@ -1376,15 +1376,31 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         # Avoid extension namespaces (e.g. jpcrp030000-asr_E00436-000)
                         if 'E' in prefix and '-' in prefix:
                              is_standard_ns = False
-                        
+
                         # 2. Detail/Note Blacklist
                         el_lower = elem.lower()
                         is_detail_item = any(x in el_lower for x in (
-                            'segment', 'externalcustomer', 'revenuefromexternal', 
+                            'segment', 'externalcustomer', 'revenuefromexternal',
                             'acquisitioncost', 'accumulateddepreciation', 'accumulatedamortization',
                             'rawmaterials', 'workinprocess', 'merchandise', 'finishedgoods'
                         ))
-                        
+
+                        # 3. CashFlow-specific filter (V13)
+                        # For CashFlow statements, only allow CF-related elements
+                        if 'CashFlow' in curr_role:
+                            is_cf_element = any(suffix in elem for suffix in [
+                                'OpeCFIFRS', 'InvCFIFRS', 'FinCFIFRS',  # IFRS CF suffixes
+                                'OpeCF', 'InvCF', 'FinCF', 'CCE',       # JP-GAAP CF suffixes
+                                'CashFlow', 'CashAndCashEquivalents'    # Generic CF terms
+                            ])
+                            is_structural_elem = any(keyword in elem for keyword in [
+                                'Abstract', 'Heading', 'Table', 'LineItems', 'Axis', 'Member'
+                            ])
+                            # Skip non-CF elements unless structural
+                            if not is_cf_element and not is_structural_elem:
+                                debug_log(f"  [CF-Fallback-Filter] Skipped non-CF element: {elem}")
+                                continue
+
                         if not is_standard_ns or is_detail_item:
                             # Skip this element - it's either an extension namespace (likely detail) or blacklisted detail
                             continue
@@ -1473,11 +1489,43 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     is_synthetic_primary = primary.startswith('rol_')
                     if is_major and r.startswith('rol_') and (not is_synthetic_primary or len(existing_paths) > 20) and len(existing_paths) > 5:
                         continue
-                        
+
+                    # Additional filter for CashFlow statements to exclude non-CF elements (V13)
+                    # This prevents notes elements (e.g., sales expenses, finance income breakdown)
+                    # from being merged into the CF statement
+                    if 'CashFlow' in primary:
+                        # Check if this is a CF-related element
+                        is_cf_element = any(suffix in fp for suffix in [
+                            'OpeCFIFRS', 'InvCFIFRS', 'FinCFIFRS',  # IFRS CF suffixes
+                            'OpeCF', 'InvCF', 'FinCF', 'CCE',       # JP-GAAP CF suffixes
+                            'CashFlow', 'CashAndCashEquivalents'    # Generic CF terms
+                        ])
+                        # Allow structural elements (Abstract, Heading, Table, Axis, Member)
+                        is_structural = any(keyword in fp for keyword in [
+                            'Abstract', 'Heading', 'Table', 'LineItems', 'Axis', 'Member'
+                        ])
+
+                        # Skip non-CF elements unless they are structural
+                        if not is_cf_element and not is_structural:
+                            debug_log(f"  [CF-Filter] Skipped non-CF element in CashFlow role: {fp}")
+                            continue
+
                     role_to_order[primary].append(full_path_data)
                     existing_paths.add(fp)
             # Merge data values
             for fp, period_vals in all_years_data.get(r, {}).items():
+                # Apply same CF filter to data values (V13)
+                if 'CashFlow' in primary:
+                    is_cf_element = any(suffix in fp for suffix in [
+                        'OpeCFIFRS', 'InvCFIFRS', 'FinCFIFRS', 'OpeCF', 'InvCF', 'FinCF', 'CCE',
+                        'CashFlow', 'CashAndCashEquivalents'
+                    ])
+                    is_structural = any(keyword in fp for keyword in [
+                        'Abstract', 'Heading', 'Table', 'LineItems', 'Axis', 'Member'
+                    ])
+                    if not is_cf_element and not is_structural:
+                        continue  # Skip non-CF data values
+
                 if fp not in all_years_data[primary]:
                     all_years_data[primary][fp] = {}
                 for period, val in period_vals.items():
@@ -1786,7 +1834,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         is_non_consolidated = not is_consolidated and not is_segment
         
         debug_log(f"[DEBUG] Processing sheet: {sheet_name} (role: {role}, std: {current_standard}, is_segment: {is_segment})")
-        
+        debug_log(f"  [DEBUG] Role has {len(ordered_keys)} elements in presentation tree")
+
         role_columns = set()
         if is_non_consolidated:
             # Merged dimensions for standalone: prioritize '単体' over '全体'
@@ -2108,6 +2157,14 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     
             # Indent based on depth
             depth = len(full_path.split('::')) - 1
+            # USER: Reduce indentation for specific CF headings by 1 space
+            cf_targets = (
+                "営業活動によるキャッシュ・フロー", "投資活動によるキャッシュ・フロー", "財務活動によるキャッシュ・フロー",
+                "営業活動によるキャッシュ・フロー（IFRS）", "投資活動によるキャッシュ・フロー（IFRS）", "財務活動によるキャッシュ・フロー（IFRS）"
+            )
+            if is_cf_sheet and label in cf_targets:
+                depth = max(0, depth - 1)
+                
             indent_prefix = "　" * depth
             
             row_data = [indent_prefix + label, el]
@@ -2463,6 +2520,14 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     label = convert_camel_case_to_title(base_name)
                 
                 depth = len(full_path.split('::')) - 1
+                # USER: Reduce indentation for specific CF headings by 1 space
+                cf_targets = (
+                    "営業活動によるキャッシュ・フロー", "投資活動によるキャッシュ・フロー", "財務活動によるキャッシュ・フロー",
+                    "営業活動によるキャッシュ・フロー（IFRS）", "投資活動によるキャッシュ・フロー（IFRS）", "財務活動によるキャッシュ・フロー（IFRS）"
+                )
+                if 'キャッシュ・フロー' in sheet_name and label in cf_targets:
+                    depth = max(0, depth - 1)
+                
                 indent_prefix = "　" * depth
                 
                 # For each year, create a row
