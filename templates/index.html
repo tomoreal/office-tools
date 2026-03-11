@@ -333,8 +333,9 @@
             fileInput.dispatchEvent(new Event('change'));
         });
 
-        form.addEventListener('submit', () => {
+        form.addEventListener('submit', async (e) => {
             if (fileInput.files.length === 0) return;
+            e.preventDefault();
 
             btnText.style.display = 'none';
             loader.style.display = 'block';
@@ -344,30 +345,84 @@
             const progressBar = document.getElementById('progressBar');
             if (progressContainer && progressBar) {
                 progressContainer.style.display = 'block';
-                // Reset to 0 without transition
                 progressBar.style.transition = 'none';
                 progressBar.style.width = '0%';
-
-                // Force a reflow
                 void progressBar.offsetWidth;
-
-                // Animate to 100% over 20 seconds
                 progressBar.style.transition = 'width 20s linear';
                 progressBar.style.width = '100%';
             }
 
-            // Re-enable form after 20 seconds
-            setTimeout(() => {
-                btnText.style.display = 'block';
-                loader.style.display = 'none';
-                btn.disabled = false;
-                if (progressContainer && progressBar) {
-                    progressBar.style.transition = 'none';
-                    progressBar.style.width = '0%';
-                    progressContainer.style.display = 'none';
+            const formData = new FormData(form);
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('サーバーエラーが発生しました');
                 }
-            }, 20000);
+
+                // Check if it's a file download or a redirect (flash message)
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('text/html')) {
+                    // Likely a redirect or error page, reload to show flash messages
+                    window.location.reload();
+                    return;
+                }
+
+                const blob = await response.blob();
+                
+                // Get filename from Content-Disposition if possible
+                let filename = 'converted_xbrl.xlsx';
+                const disposition = response.headers.get('Content-Disposition');
+                if (disposition) {
+                    const filenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i) || 
+                                          disposition.match(/filename="?([^";]+)"?/i);
+                    if (filenameMatch && filenameMatch[1]) {
+                        filename = decodeURIComponent(filenameMatch[1]);
+                    }
+                }
+
+                // Create download link
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+                // Jump to 100% instantly
+                if (progressBar) {
+                    progressBar.style.transition = 'width 0.2s ease-out';
+                    progressBar.style.width = '100%';
+                }
+                
+                setTimeout(() => {
+                    resetUI();
+                }, 1000);
+
+            } catch (error) {
+                console.error(error);
+                alert('エラーが発生しました: ' + error.message);
+                resetUI();
+            }
         });
+
+        function resetUI() {
+            btnText.style.display = 'block';
+            loader.style.display = 'none';
+            btn.disabled = false;
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            if (progressContainer && progressBar) {
+                progressBar.style.transition = 'none';
+                progressBar.style.width = '0%';
+                progressContainer.style.display = 'none';
+            }
+        }
     </script>
 
     <!-- XREA Ad Alignment Enforcement -->
