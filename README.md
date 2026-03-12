@@ -48,23 +48,23 @@
 ### 構成ファイル
 
 #### EDINETのXBRL変換ツール
-- `requirements.txt`: XBRL変換ツール実行に必要なPythonライブラリの一覧。
 - `index.cgi`: CGI環境でXBRL変換ツールを動作させるための設定ファイル。
 - `app.py`: XBRL変換ツールのファイル受け渡し用プログラム。
 - `convert_xbrl_to_excel.py`: XBRL変換エンジンのコア。EDINETの複雑なデータ構造を解析し、Excelを生成するメインロジック。
-- `templates/`: XBRL変換ツールのHTMLテンプレートディレクトリ。
-    - `index.html`: Webツールのメイン画面テンプレート。
-    - `bookmarklets.html`: ブラウザのお気に入りに追加して使用する、効率化スクリプト（ブックマークレット）の管理画面。
-    - `csv_bookmarklets.html`: CSV変換向けのブックマークレット管理画面。
-    - `セグメント情報の別シートの追加.ini`: セグメント抽出設定に関する初期設定ファイル。
+- `templates/`: XBRL変換ツール/CSV変換ツールのHTMLテンプレートディレクトリ。
+    - `index.html`: XBRL変換ツールのメイン画面テンプレート。
+    - `bookmarklets.html`: XBRL変換ツール用のブックマークレット（ブラウザのお気に入りに追加して使用する、効率化スクリプト）の管理画面。
 
 #### EOLのCSV変換ツール
 - `index.html`: EOLのCSV変換ツールのメインUI画面。
-- `style.css`: index.htmlがブラウザで読み込まれる際、デザインやレイアウトを適用
-- `app2.js`: EOLのCSV変換ツールのメインプログラム
+- `style.css`: index.htmlがブラウザで読み込まれる際、デザインやレイアウトを適用。
+- `app2.js`: EOLのCSV変換ツールのメインプログラム。
+- `templates/`: XBRL変換ツール/CSV変換ツールのHTMLテンプレートディレクトリ。
+    - `csv_bookmarklets.html`: CSV変換ツール用のブックマ ークレット（ブラウザのお気に入りに追加して使用する、効率化スクリプト）の管理画面。
 
 #### 共通・Webプラットフォーム関連
 - `DEPLOY.md`: サーバー設置・環境構築の手順書。
+- `requirements.txt`: XBRL変換ツール実行に必要なPythonライブラリの一覧。
 
 #### CSV変換ツール　windowsのVBS用　※サーバーに設置は不要
 - `財務データ横展開ツール.vbs`: 複数のExcelファイルを1つのブックにまとめるための補助ツール。

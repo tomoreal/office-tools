@@ -1,13 +1,13 @@
-# サーバー構築手順 (makoto.xtomo.com)
+# サーバー構築手順
 
-このディレクトリを `makoto.xtomo.com` サーバーに配置し、Webアプリケーションとして公開する手順です。
+このディレクトリを webサーバーに配置し、Webアプリケーションとして公開する手順です。
 
 ## 1. 必要な環境のインストール
 サーバー上でPython環境（venv）を作成し、必要なライブラリをインストールします。
 
 ```bash
 # プロジェクトディレクトリに移動
-cd /path/to/work_office
+cd /path/to/directory
 
 # 仮想環境の作成と有効化
 python3 -m venv venv
@@ -33,42 +33,7 @@ pip install gunicorn
 gunicorn -w 4 -b 127.0.0.1:8000 app:app --daemon
 ```
 
-## 4. (任意) Nginx / Apache との連携
-外部（学生）からアクセスできるようにするには、NginxやApacheのリバースプロキシ設定で、ドメインへのリクエストを先ほど立ち上げたポート `8000` に転送（ProxyPass）します。
-
-### Nginx の設定例
-```nginx
-server {
-    listen 443 ssl;
-    server_name makoto.xtomo.com;
-
-    # SSL証明書等の設定群 ...
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-### Apache の設定例
-```apache
-<VirtualHost *:443>
-    ServerName makoto.xtomo.com
-    
-    # SSL証明書等の設定群 ...
-
-    ProxyPreserveHost On
-    ProxyPass / http://127.0.0.1:8000/
-    ProxyPassReverse / http://127.0.0.1:8000/
-</VirtualHost>
-```
-
-以上の設定で、学生が `https://makoto.xtomo.com/` にアクセスし、ZIPファイルをアップロードすると自動でExcelが変換・ダウンロードされるようになります。
-
 ---
-
 # コアサーバー（V2）への配置手順
 
 コアサーバーには標準で `python3.10` がインストールされているため、これを利用して環境構築を行います。
@@ -119,7 +84,7 @@ chmod 755 index.cgi
 
 ## 4. 動作確認
 
-ブラウザで `https://makoto.xtomo.com/` にアクセスし、画面が表示されるか確認してください。
+ブラウザで webサーバー にアクセスし、画面が表示されるか確認してください。
 動かない場合は、SSHで以下を実行してエラーを確認します：
 ```bash
 cd ~/public_html/xbrl2excel
@@ -131,7 +96,7 @@ cd ~/public_html/xbrl2excel
 
 ## 4. 動作確認
 
-ブラウザで `https://makoto.xtomo.com/` にアクセスし、画面が表示されるか確認してください。
+ブラウザで `https://yourserver.com/xbrl2excel/` にアクセスし、画面が表示されるか確認してください。
 動かない場合は、SSHで以下を実行してエラーを確認します：
 ```bash
 cd ~/public_html/xbrl2excel
