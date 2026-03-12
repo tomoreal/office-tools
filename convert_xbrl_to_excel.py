@@ -1321,8 +1321,71 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     # Newest report wins (results is sorted year DESC)
                     if arc_key not in merged_trees[role]:
                         merged_trees[role][arc_key] = (float(o) + sub_role_idx, i)
-        
+
+        # --- Build element-to-statement-type mapping (FIX V7 - IMPROVED) ---
+        # Use a smarter approach: if an element appears in multiple statement types,
+        # remove it from the mapping (it's a shared element like Abstract, Heading, etc.)
+        element_to_statement_type = {}  # {element_name: statement_type or None}
+
+        for role_name, arcs_dict in merged_trees.items():
+            # Determine statement type from role name
+            statement_type = None
+            base_name = role_name.split('_')[-1]
+
+            # Map role base name to statement type
+            if 'ConsolidatedBalanceSheet' in base_name or 'BalanceSheet' in base_name:
+                statement_type = 'BalanceSheet'
+            elif 'ConsolidatedStatementOfIncome' in base_name or 'StatementOfIncome' in base_name:
+                statement_type = 'StatementOfIncome'
+            elif 'ConsolidatedStatementOfCashFlows' in base_name or 'StatementOfCashFlows' in base_name:
+                statement_type = 'StatementOfCashFlows'
+            elif 'ConsolidatedStatementOfChangesInEquity' in base_name or 'StatementOfChangesInEquity' in base_name or 'StatementOfChangesInNetAssets' in base_name:
+                statement_type = 'StatementOfChangesInEquity'
+            elif 'ConsolidatedStatementOfComprehensiveIncome' in base_name or 'StatementOfComprehensiveIncome' in base_name:
+                statement_type = 'StatementOfComprehensiveIncome'
+            elif 'Notes' in base_name or 'Segment' in base_name:
+                statement_type = 'Notes'
+            elif 'BusinessResults' in base_name:
+                statement_type = 'BusinessResults'
+
+            # For each element in this role, record or update its statement type
+            if statement_type:
+                for (parent, child, _), _ in arcs_dict.items():
+                    # Process both parent and child
+                    for element in [parent, child]:
+                        if not element:
+                            continue
+
+                        # Skip structural elements that are legitimately shared across statements
+                        # (Axis, Member, Abstract, Heading, TextBlock, LineItems, Table)
+                        structural_suffixes = ('Axis', 'Member', 'Abstract', 'Heading', 'TextBlock', 'LineItems', 'Table')
+                        if any(element.endswith(suffix) for suffix in structural_suffixes):
+                            continue
+
+                        if element in element_to_statement_type:
+                            # Element already seen in another role
+                            existing_type = element_to_statement_type[element]
+                            if existing_type is not None:  # Not yet marked as shared
+                                # Only mark as shared if both types are main financial statements (not Notes)
+                                # Notes often reference main statement elements, but that shouldn't disqualify them
+                                main_statement_types = {'BalanceSheet', 'StatementOfIncome', 'StatementOfCashFlows',
+                                                       'StatementOfChangesInEquity', 'StatementOfComprehensiveIncome'}
+                                if (existing_type in main_statement_types and
+                                    statement_type in main_statement_types and
+                                    existing_type != statement_type):
+                                    # Different main statement types - mark as shared (None)
+                                    element_to_statement_type[element] = None
+                                    debug_log(f"  [Mapping] Element '{element}' appears in multiple statement types ({existing_type}, {statement_type}) - marked as shared")
+                                # else: same type or one is Notes, keep existing mapping
+                        else:
+                            # First time seeing this element
+                            element_to_statement_type[element] = statement_type
+
+        # Count unique (non-shared) elements
+        unique_elements = sum(1 for v in element_to_statement_type.values() if v is not None)
+        shared_elements = sum(1 for v in element_to_statement_type.values() if v is None)
         debug_log(f"Merged total: {len(all_facts)} facts, {len(periods_seen)} periods, {len(merged_trees)} tree roles")
+        debug_log(f"Element mapping: {unique_elements} unique elements, {shared_elements} shared elements")
     except Exception as e:
         debug_log(f"ERROR: Overall processing failure: {e}")
         import traceback
@@ -1547,13 +1610,48 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     role_to_order = {} # {role_name: [hierarchical_key1, ...]}
     
     for role, pd_dict in merged_trees.items():
-        tree_arcs = [{'parent': p, 'child': c, 'order': o_i[0], 'index': o_i[1], 'preferredLabel': pl} 
+        tree_arcs = [{'parent': p, 'child': c, 'order': o_i[0], 'index': o_i[1], 'preferredLabel': pl}
                      for (p, c, pl), o_i in pd_dict.items()]
         ordered_items = create_hierarchy(tree_arcs)
-        
+
+        # Determine this role's statement type for filtering
+        current_role_type = None
+        base_name = role.split('_')[-1]
+        if 'ConsolidatedBalanceSheet' in base_name or 'BalanceSheet' in base_name:
+            current_role_type = 'BalanceSheet'
+        elif 'ConsolidatedStatementOfIncome' in base_name or 'StatementOfIncome' in base_name:
+            current_role_type = 'StatementOfIncome'
+        elif 'ConsolidatedStatementOfCashFlows' in base_name or 'StatementOfCashFlows' in base_name:
+            current_role_type = 'StatementOfCashFlows'
+        elif 'ConsolidatedStatementOfChangesInEquity' in base_name or 'StatementOfChangesInEquity' in base_name:
+            current_role_type = 'StatementOfChangesInEquity'
+        elif 'ConsolidatedStatementOfComprehensiveIncome' in base_name or 'StatementOfComprehensiveIncome' in base_name:
+            current_role_type = 'StatementOfComprehensiveIncome'
+
         all_years_data[role] = {}
         role_to_order[role] = []
+
         for el, full_path, depth, pref_label in ordered_items:
+            # Filter elements based on statement type mapping (FIX V9 - SKIP UNMAPPED, BREAK ON MISMATCH)
+            # Skip elements not in mapping (shared/structural elements)
+            # Stop only when a mapped element has a different statement type
+            should_stop = False
+
+            if current_role_type and el in element_to_statement_type:
+                element_type = element_to_statement_type[el]
+
+                if element_type is None:
+                    # Element is not in mapping (shared/structural) - skip judgment, continue output
+                    debug_log(f"  [Skip-Judgment] Element '{el}' not in mapping (shared) - skipping judgment, continuing output")
+                    # Do NOT stop, just continue to next element
+                elif element_type != current_role_type and element_type != 'Notes':
+                    # Element belongs to a different specific statement type - stop here
+                    debug_log(f"  [Type-Filter] Found {element_type} element '{el}' in {current_role_type} role '{role}' - stopping output")
+                    should_stop = True
+
+            if should_stop:
+                break
+
             role_to_order[role].append((full_path, pref_label))
             all_years_data[role][full_path] = {}
             if el in global_element_period_values:
