@@ -97,6 +97,9 @@ pip install -r requirements.txt
 - `convert_xbrl_to_excel.py`
 - `index.cgi`
 - `.htaccess`
+- `index.html`
+- `app2.js`
+- `style.css`
 - `requirements.txt`
 - `templates/` (ディレクトリごと)
 - `edinet_taxonomies/` (ディレクトリごと)
