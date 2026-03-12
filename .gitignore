@@ -12,3 +12,4 @@ tmp_xbrl/
 *.log
 ヨネックスxbrl/
 xbrl_sample/
+.claude/
