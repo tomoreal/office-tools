@@ -47,21 +47,26 @@
 
 ### 構成ファイル
 
-#### XBRL変換ツール関連
+#### EDINETのXBRL変換ツール
+- `requirements.txt`: XBRL変換ツール実行に必要なPythonライブラリの一覧。
+- `index.cgi`: CGI環境でXBRL変換ツールを動作させるための設定ファイル。
+- `app.py`: XBRL変換ツールのファイル受け渡し用プログラム。
 - `convert_xbrl_to_excel.py`: XBRL変換エンジンのコア。EDINETの複雑なデータ構造を解析し、Excelを生成するメインロジック。
-- `edinet_taxonomies/`: EDINETから取得したタクソノミ（辞書情報）のキャッシュディレクトリ。
+- `templates/`: XBRL変換ツールのHTMLテンプレートディレクトリ。
+    - `index.html`: Webツールのメイン画面テンプレート。
+    - `bookmarklets.html`: ブラウザのお気に入りに追加して使用する、効率化スクリプト（ブックマークレット）の管理画面。
+    - `csv_bookmarklets.html`: CSV変換向けのブックマークレット管理画面。
+    - `セグメント情報の別シートの追加.ini`: セグメント抽出設定に関する初期設定ファイル。
 
-#### CSV変換ツール関連
-- `create_vbs_csv_v3.py`: EOL向けCSV横展開ツールを生成するプログラム。
-- `エクセル結合.vbs`: 複数のExcelファイルを1つのブックにまとめるための補助ツール。
+#### EOLのCSV変換ツール
+- `index.html`: EOLのCSV変換ツールのメインUI画面。
+- `style.css`: index.htmlがブラウザで読み込まれる際、デザインやレイアウトを適用
+- `app2.js`: EOLのCSV変換ツールのメインプログラム
 
 #### 共通・Webプラットフォーム関連
-- `app.py`: Webアプリケーションのメインサーバープログラム（Flask）。
-- `index.html`: ツールのメインUI画面。XBRL/CSV両方のアップロードインターフェースを提供。
-- `app2.js`: ブラウザ側（フロントエンド）ロジック。進行状況の表示やアップロード制御を担当。
-- `style.css`: アプリケーションの全体的なデザインとレイアウトを定義。
-- `templates/`: WebアプリケーションのHTMLテンプレートディレクトリ。
-- `index.cgi` / `.htaccess`: CGI環境（レンタルサーバー等）でWebツールを動作させるための設定ファイル。
-- `requirements.txt`: 実行に必要なPythonライブラリの一覧。
 - `DEPLOY.md`: サーバー設置・環境構築の手順書。
-- `操作説明.txr`: ユーザー向けの基本操作マニュアル。
+
+#### CSV変換ツール　windowsのVBS用　※サーバーに設置は不要
+- `財務データ横展開ツール.vbs`: 複数のExcelファイルを1つのブックにまとめるための補助ツール。
+- `エクセル結合.vbs`: 複数のExcelファイルを1つのブックにまとめるための補助ツール。
+
