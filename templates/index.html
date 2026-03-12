@@ -333,6 +333,19 @@
             fileInput.dispatchEvent(new Event('change'));
         });
 
+        function resetUI() {
+            btnText.style.display = 'block';
+            loader.style.display = 'none';
+            btn.disabled = false;
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            if (progressContainer && progressBar) {
+                progressBar.style.transition = 'none';
+                progressBar.style.width = '0%';
+                progressContainer.style.display = 'none';
+            }
+        }
+
         form.addEventListener('submit', async (e) => {
             if (fileInput.files.length === 0) return;
             e.preventDefault();
@@ -410,19 +423,6 @@
                 resetUI();
             }
         });
-
-        function resetUI() {
-            btnText.style.display = 'block';
-            loader.style.display = 'none';
-            btn.disabled = false;
-            const progressContainer = document.getElementById('progressContainer');
-            const progressBar = document.getElementById('progressBar');
-            if (progressContainer && progressBar) {
-                progressBar.style.transition = 'none';
-                progressBar.style.width = '0%';
-                progressContainer.style.display = 'none';
-            }
-        }
     </script>
 
     <!-- XREA Ad Alignment Enforcement -->
