@@ -1,13 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 -c \"import openpyxl; wb = openpyxl.load_workbook(''XBRL_横展開_トヨタ自動車.xlsx''); print(''Sheets:'', wb.sheetnames)\")",
-      "Bash(python3 convert_xbrl_to_excel.py \"味の素XBRL/Xbrl_Search_20260310_214816.zip\")",
-      "Bash(python3 -c \"import openpyxl; wb = openpyxl.load_workbook(''日本電気/XBRL_横展開_日本電気.xlsx''); print(''Sheets:'', wb.sheetnames)\")",
-      "Bash(for file in 日本電気/*.zip)",
-      "Bash(do echo \"=== $file ===\")",
-      "Bash(unzip -l \"$file\")",
-      "Bash(done)"
+      "Bash(python3 -c \"\n# 簡易的にロジックをテストするため、阪急阪神のXBRLから取得したroleリストと\n# コード内のmajor_headingsを確認\n\nmajor_headings = [\n    ''ConsolidatedBalanceSheetHeading'', ''ConsolidatedStatementOfIncomeHeading'', \n    ''ConsolidatedStatementOfCashFlowsHeading'', ''ConsolidatedStatementOfChangesInEquityHeading'',\n    ''BalanceSheetHeading'', ''StatementOfIncomeHeading'', ''StatementOfChangesInEquityHeading'',\n    ''ConsolidatedStatementOfFinancialPositionIFRSHeading'', ''ConsolidatedStatementOfProfitOrLossIFRSHeading'',\n    ''ConsolidatedStatementOfCashFlowsIFRSHeading'', ''ConsolidatedStatementOfChangesInEquityIFRSHeading'',\n    ''ConsolidatedStatementOfFinancialPositionHeading'', \n    ''ConsolidatedStatementOfProfitOrLossHeading'',\n    ''ConsolidatedStatementOfComprehensiveIncomeIFRSHeading'',\n    ''SummaryOfBusinessResultsHeading'', ''BusinessResultsOfGroupHeading'', ''BusinessResultsOfReportingCompanyHeading''\n]\n\n# 阪急阪神で見つかったHeading\nactual_headings = [\n    ''jppfs_cor_ConsolidatedBalanceSheetHeading'',\n    ''jppfs_cor_ConsolidatedStatementOfIncomeHeading'',\n    ''jppfs_cor_ConsolidatedStatementOfComprehensiveIncomeHeading'',\n    ''jppfs_cor_ConsolidatedStatementOfCashFlowsHeading''\n]\n\nprint(''=== Major headings in code ==='')\nfor h in major_headings:\n    print(f''  {h}'')\n\nprint(''\\n=== Actual headings in 阪急阪神 XBRL ==='')\nfor h in actual_headings:\n    matched = False\n    for mh in major_headings:\n        if h.endswith(mh):\n            print(f''  {h} -> MATCHES {mh}'')\n            matched = True\n            break\n    if not matched:\n        print(f''  {h} -> NO MATCH'')\n\n# 問題：ConsolidatedStatementOfComprehensiveIncomeHeading がmajor_headingsに含まれていない\nprint(''\\n包括利益計算書のHeadingはリストに含まれている:'', ''ConsolidatedStatementOfComprehensiveIncomeHeading'' in major_headings)\n\")",
+      "Bash(python3 ../convert_xbrl_to_excel.py \"Xbrl_Search_20260312_151807.zip\")",
+      "Bash(tee /tmp/hankyu_convert.log)",
+      "Bash(python3 -c \"import openpyxl; wb = openpyxl.load_workbook(''XBRL_横展開_阪急阪神ホールディングス.xlsx''); print(''シート数:'', len(wb.sheetnames)); print(''\\n''.join(f''{i+1}. {name}'' for i, name in enumerate(wb.sheetnames)))\")"
     ],
     "deny": [],
     "ask": []

@@ -1507,6 +1507,42 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     merged_trees[role_name].update({(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in arcs})
                     print(f"[Fallback] Merged synthetic role {role_name} from {doc_code} (Phase 1)", file=sys.stderr)
 
+    # --- Clean up stub taxonomy roles from jumbo roles (FIX V5) ---
+    # Jumbo roles create virtual taxonomy roles (e.g., jppfs_cor_ConsolidatedBalanceSheet)
+    # but these often only contain Heading and TextBlock elements.
+    # If a fallback role exists with substantially more elements, remove the stub taxonomy role.
+    DEDUP_PREFIXES = ('jppfs_cor_', 'jpigp_cor_', 'jpcrp_cor_', 'rol_')
+    roles_to_clean = set()
+    for role_name in list(merged_trees.keys()):
+        # Only check taxonomy roles (not fallback roles)
+        if role_name.startswith('rol_'):
+            continue
+
+        # Extract base name
+        for pfx in ('jppfs_cor_', 'jpigp_cor_', 'jpcrp_cor_'):
+            if role_name.startswith(pfx):
+                base = role_name[len(pfx):]
+                break
+        else:
+            continue  # Not a standard taxonomy role
+
+        # Count elements in this taxonomy role
+        tax_elem_count = len(merged_trees[role_name])
+
+        # Check if a fallback role with the same base exists and has more elements
+        fallback_role = 'rol_' + base.replace('-indirect', '').replace('-direct', '')
+        if fallback_role in merged_trees:
+            fallback_elem_count = len(merged_trees[fallback_role])
+
+            # If taxonomy role is a stub (<=5 elements) and fallback has substantially more (>20),
+            # remove the taxonomy role and keep the fallback
+            if tax_elem_count <= 5 and fallback_elem_count > 20:
+                roles_to_clean.add(role_name)
+                debug_log(f"[Stub-Cleanup] Removing stub taxonomy role {role_name} ({tax_elem_count} elems) in favor of fallback role {fallback_role} ({fallback_elem_count} elems)")
+
+    for role_name in roles_to_clean:
+        del merged_trees[role_name]
+
     all_years_data = {} # {role_name: {hierarchical_key: {period: value}}}
     role_to_order = {} # {role_name: [hierarchical_key1, ...]}
     
@@ -1546,14 +1582,37 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     roles_to_remove = set()
     for match_base, roles in roles_by_base.items():
         if len(roles) <= 1: continue
-        
-        # Pick a primary role to merge into (prioritize 'rol_' or shortest)
+
+        # Pick a primary role to merge into
+        # PRIORITY (REVISED V4):
+        # After stub cleanup, stubs are gone. Prefer whichever role has more structure.
+        # Generally fallback roles have fuller document-order structure.
+        # 1. Fallback synthetic roles (rol_) - often have complete structure from document order
+        # 2. Roles with -indirect suffix (for CF statements)
+        # 3. Roles from standard taxonomy (jppfs_cor_, etc.) - use if fallback doesn't exist
         primary = None
-        for r in sorted(roles, key=lambda x: (0 if x.startswith('rol_') else 1, len(x))):
-            if primary is None: primary = r
-            if '-indirect' in r: # Prefer -indirect variant if it exists as the primary
-                primary = r
-                break
+        taxonomy_roles = [r for r in roles if not r.startswith('rol_')]
+        fallback_roles = [r for r in roles if r.startswith('rol_')]
+
+        # Prefer fallback roles (complete structure)
+        if fallback_roles:
+            for r in sorted(fallback_roles, key=lambda x: (0 if '-indirect' in x else 1, len(x))):
+                if primary is None: primary = r
+                if '-indirect' in r:
+                    primary = r
+                    break
+
+        # Use taxonomy roles if no fallback
+        if not primary and taxonomy_roles:
+            for r in sorted(taxonomy_roles, key=lambda x: (0 if '-indirect' in x else 1, len(x))):
+                if primary is None: primary = r
+                if '-indirect' in r:
+                    primary = r
+                    break
+
+        # Final fallback (should not happen)
+        if not primary:
+            primary = sorted(roles)[0]
         
         for r in roles:
             if r == primary: continue
@@ -1566,12 +1625,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             for full_path_data in role_to_order[r]:
                 fp, pl = full_path_data
                 if fp not in existing_paths:
-                    # Conservative Merge (V2): 
-                    # If this is a major financial statement and already has items from taxonomy, 
-                    # do NOT append extra items from a synthetic fallback role (rol_).
-                    # However, ALWAYS allow merging if the primary role belongs to a DIFFERENT standard
-                    # but here 'primary' and 'r' should share the same match_base.
-                    # NEW: Also limit synthetic-to-synthetic if the role is a major statement.
+                    # Conservative Merge (V4):
+                    # With fallback cleanup, fallback roles should not contaminate taxonomy roles.
+                    # Standard dedup logic applies.
                     is_synthetic_primary = primary.startswith('rol_')
                     if is_major and r.startswith('rol_') and (not is_synthetic_primary or len(existing_paths) > 20) and len(existing_paths) > 5:
                         continue
@@ -1600,6 +1656,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     existing_paths.add(fp)
             # Merge data values
             for fp, period_vals in all_years_data.get(r, {}).items():
+                # No filtering needed here for now - data should follow structure
+                # The structure merge above handles filtering
+
                 # Apply same CF filter to data values (V13)
                 if 'CashFlow' in primary:
                     is_cf_element = any(suffix in fp for suffix in [
