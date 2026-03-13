@@ -951,10 +951,12 @@ def create_hierarchy(parent_child_arcs):
         if p not in adj: adj[p] = []
         adj[p].append(arc)
     
-    # Sort children by order, with stable tie-breaking on child name
+    # Sort children by appearance order (index) to preserve natural XBRL order
     for p in adj:
-        # Sort children by order, then by their original index in the XBRL file for stable tie-breaking
-        adj[p].sort(key=lambda x: (x.get('order', 0), x.get('index', 0), x['child']))
+        # Primary: index (appearance order in XBRL)
+        # Secondary: order (explicit ordering from presentation linkbase, if defined)
+        # Tertiary: child name (for stable sorting)
+        adj[p].sort(key=lambda x: (x.get('index', 0), x.get('order', 0), x['child']))
         
     roots = set(arc['parent'] for arc in parent_child_arcs)
     children = set(arc['child'] for arc in parent_child_arcs)
@@ -1612,25 +1614,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for role, pd_dict in merged_trees.items():
         tree_arcs = [{'parent': p, 'child': c, 'order': o_i[0], 'index': o_i[1], 'preferredLabel': pl}
                      for (p, c, pl), o_i in pd_dict.items()]
-        
-        # --- NEW: Indicator Ordering Fix (V14) ---
-        # "Common" indicators (employees, etc.) are often at the end of the IFRS tree (orders 17-18)
-        # but because they are namespace jpcrp_cor without specific suffixes, they appear 
-        # before J-GAAP specific indicators (jpcrp_cor_...SummaryOfBusinessResults) when filtered.
-        # We push them to the end of their sibling group by giving them a large order penalty.
-        if 'BusinessResults' in role:
-            for arc in tree_arcs:
-                child = arc['child']
-                # Identify common indicators: jpcrp_cor prefix, but no standard-specific suffix
-                is_common_indicator = (
-                    child.startswith('jpcrp_cor_') and 
-                    'SummaryOfBusinessResults' not in child and 
-                    not any(child.endswith(s) for s in ['Abstract', 'Heading', 'TextBlock', 'Table', 'Axis', 'Member'])
-                )
-                if is_common_indicator:
-                    # Give a large order penalty to move them after standard-specific financial indicators
-                    arc['order'] += 10000.0
 
+        # Use original appearance order (index) for hierarchy creation
+        # This preserves the natural order defined in XBRL without ad-hoc manipulation
         ordered_items = create_hierarchy(tree_arcs)
 
         # Determine this role's statement type for filtering
