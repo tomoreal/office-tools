@@ -17,13 +17,10 @@ except ImportError:
     import xml.etree.ElementTree as etree
     HAS_LXML = False
 
-import gc
-
 # Base directory for the script and caching
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Delay loading heavy libraries until needed (helps CGI performance)
-HAS_BS4 = True # bs4 is at the top but BeautifulSoup is imported there.
 HAS_PANDAS = False
 HAS_OPENPYXL = False
 
@@ -931,7 +928,6 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
                 del soup
             else:
                 del tree
-            gc.collect()
 
         except Exception as e:
             debug_log(f"ERROR: Error parsing file {f}: {e}")
