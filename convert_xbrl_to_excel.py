@@ -2482,6 +2482,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             display_label = display_label.replace(' [目次項目]', '').replace(' [タイトル項目]', '')
             display_label = display_label.replace('（IFRS）', '').replace('(IFRS)', '')
             display_label = display_label.replace('、経営指標等', '')
+            # Remove Cash Flow activity suffixes for IFRS
+            display_label = display_label.replace('、営業活動によるキャッシュ・フロー', '')
+            display_label = display_label.replace('、投資活動によるキャッシュ・フロー', '')
+            display_label = display_label.replace('、財務活動によるキャッシュ・フロー', '')
             display_label = display_label.strip()
 
             row_data = [indent_prefix + display_label, el]
