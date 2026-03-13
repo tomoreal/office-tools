@@ -13,11 +13,11 @@ import logging
 from threading import Lock
 
 try:
-    from lxml import etree, html as lxml_html
+    from lxml import etree
+    HAS_LXML = True
 except ImportError:
-    print("ERROR: lxml is required for XBRL processing.", file=sys.stderr)
-    print("Please install it with: pip install lxml", file=sys.stderr)
-    sys.exit(1)
+    import xml.etree.ElementTree as etree
+    HAS_LXML = False
 
 # Base directory for the script and caching
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -139,8 +139,30 @@ def vprint(*args, **kwargs):
 
 
 def safe_xpath(tree_or_elem, query, namespaces=None):
-    """XPath helper using lxml (required for XBRL processing)."""
-    return tree_or_elem.xpath(query, namespaces=namespaces)
+    """Safe XPath helper that works with both lxml and standard xml.etree.ElementTree.
+    Note: ElementTree supports only a subset of XPath.
+    """
+    if HAS_LXML:
+        return tree_or_elem.xpath(query, namespaces=namespaces)
+    else:
+        # Fallback for standard ElementTree (basic namespace handling)
+        # Note: ET uses {url}prefix syntax for namespaces in findall
+        # We try to convert basic queries but complex XPath might skip.
+        try:
+            # If it's a Tree object, get root first
+            root = tree_or_elem.getroot() if hasattr(tree_or_elem, 'getroot') else tree_or_elem
+            if namespaces:
+                # Basic conversion for link:loc -> {http://...}loc if query is simple
+                # For now, we return empty or try simple findall if query starts with //
+                if query.startswith('//'):
+                    tag = query.split(':')[-1]
+                    return root.findall(f'.//{{*}}{tag}')
+            if namespaces:
+                return root.findall(query, namespaces=namespaces)
+            return root.findall(query)
+        except Exception as e:
+            vprint(f"safe_xpath error: {e}")
+            return []
 
 # Common dimension axis and member mapping for Japanese fallback
 COMMON_DIMENSION_MAPPING = {
@@ -416,9 +438,13 @@ def parse_labels_file(lab_file):
     labels = {}
     priorities = {}
     try:
-        # Parse XML with lxml (secure parser against XXE attacks)
-        parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
-        tree = etree.parse(lab_file, parser)
+        # Parse XML with lxml if available (ElementTree.XMLParser doesn't support 'recover')
+        if HAS_LXML:
+            # Secure parser against XXE attacks
+            parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
+            tree = etree.parse(lab_file, parser)
+        else:
+            tree = etree.parse(lab_file)
     except Exception as e:
         # If parsing fails, return empty mappings
         vprint(f"Error parsing {lab_file}: {e}")
@@ -557,9 +583,13 @@ def convert_camel_case_to_title(name):
 def parse_presentation_linkbase(pre_file):
     vprint(f"Parsing presentation linkbase... {os.path.basename(pre_file)}")
     try:
-        # Parse XML with lxml (secure parser against XXE attacks)
-        parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
-        tree = etree.parse(pre_file, parser)
+        # Use lxml for robust namespace handling if available
+        if HAS_LXML:
+            # Secure parser against XXE attacks
+            parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
+            tree = etree.parse(pre_file, parser)
+        else:
+            tree = etree.parse(pre_file)
     except Exception as e:
         vprint(f"Error parsing presentation linkbase: {e}")
         return {}
@@ -677,9 +707,13 @@ def parse_presentation_linkbase(pre_file):
 def parse_instance_contexts_and_units(xbrl_file, labels_map):
     vprint(f"Parsing XBRL contexts and units... {os.path.basename(xbrl_file)}")
     try:
-        # Parse XML with lxml (secure parser against XXE attacks)
-        parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
-        tree = etree.parse(xbrl_file, parser)
+        # Use lxml for robust namespace handling if available
+        if HAS_LXML:
+            # Secure parser against XXE attacks
+            parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
+            tree = etree.parse(xbrl_file, parser)
+        else:
+            tree = etree.parse(xbrl_file)
     except Exception as e:
         vprint(f"Error parsing XBRL instance: {e}")
         return {}, {}
@@ -813,71 +847,118 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
 
 def parse_ixbrl_facts(ixbrl_files, contexts, units):
     t_start = time.time()
-    debug_log(f"Starting Inline XBRL parsing using lxml for {len(ixbrl_files)} files")
+    parser_info = 'lxml' if HAS_LXML else 'html.parser'
+    debug_log(f"Starting Inline XBRL parsing using {parser_info} for {len(ixbrl_files)} files")
     facts = []
-
+    
     for f in ixbrl_files:
         size_mb = os.path.getsize(f) / (1024 * 1024)
         debug_log(f"  Parsing {os.path.basename(f)} ({size_mb:.2f} MB)...")
         try:
             with open(f, 'r', encoding='utf-8', errors='replace') as file:
                 content = file.read()
+            
+            if HAS_LXML:
+                try:
+                    from lxml import html
+                    # Secure parser against XXE attacks (Note: HTMLParser doesn't support resolve_entities)
+                    parser = html.HTMLParser(no_network=True)
+                    tree = html.fromstring(content, parser=parser)
+                    # Use a more robust way to find tags that works with or without namespace awareness
+                    tags = [t for t in tree.iter() if any(x in (t.tag if isinstance(t.tag, str) else "").lower() for x in ('nonfraction', 'nonnumeric'))]
+                except Exception as e:
+                    debug_log(f"  LXML fast-path failed: {e}. Falling back to BS4.")
+                    HAS_LXML_LOCAL = False
+                else:
+                    HAS_LXML_LOCAL = True
+            else:
+                HAS_LXML_LOCAL = False
 
-            # Parse HTML with lxml (secure parser)
-            parser = lxml_html.HTMLParser(no_network=True)
-            tree = lxml_html.fromstring(content, parser=parser)
-
-            # Find all iXBRL tags (nonfraction and nonnumeric)
-            tags = [t for t in tree.iter() if any(x in (t.tag if isinstance(t.tag, str) else "").lower() for x in ('nonfraction', 'nonnumeric'))]
+            if not HAS_LXML_LOCAL:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(content, 'html.parser')
+                def is_ix_tag(tag):
+                    if not tag.name: return False
+                    local = tag.name.split(':')[-1].lower()
+                    return local in ('nonfraction', 'nonnumeric')
+                tags = soup.find_all(is_ix_tag)
 
             elem_order_in_file = 0
             for tag in tags:
-                # Access attributes robustly (handle namespaced keys like {uri}name or ix:name)
-                # LXML uses {uri}attribute_name format for namespaced attributes
-                attrs = {}
-                for k, v in tag.attrib.items():
-                    # Extract local name: handle {uri}name and prefix:name
-                    local_k = k
-                    if '}' in local_k:
-                        local_k = local_k.split('}')[-1]
-                    if ':' in local_k:
-                        local_k = local_k.split(':')[-1]
-                    attrs[local_k.lower()] = v
-
-                ctx_ref = attrs.get('contextref')
-                if not ctx_ref or ctx_ref not in contexts:
-                    continue
-
-                element_name = attrs.get('name')
-                if not element_name:
-                    continue
-                if ':' in element_name:
-                    element_name = element_name.replace(':', '_')
-
-                value = tag.text_content().strip() if hasattr(tag, 'text_content') else (tag.text or "").strip()
-                local_name = tag.tag.split('}')[-1].lower() if isinstance(tag.tag, str) and '}' in tag.tag else (tag.tag.split(':')[-1].lower() if isinstance(tag.tag, str) else "")
-
-                unit_ref = attrs.get('unitref')
-                scale = attrs.get('scale', '0')
-                sign = attrs.get('sign', '')
+                if HAS_LXML_LOCAL:
+                    # Access attributes robustly (handle namespaced keys like {uri}name or ix:name)
+                    # LXML uses {uri}attribute_name format for namespaced attributes
+                    attrs = {}
+                    for k, v in tag.attrib.items():
+                        # Extract local name: handle {uri}name and prefix:name
+                        local_k = k
+                        if '}' in local_k:
+                            local_k = local_k.split('}')[-1]
+                        if ':' in local_k:
+                            local_k = local_k.split(':')[-1]
+                        attrs[local_k.lower()] = v
+                    ctx_ref = attrs.get('contextref')
+                    if not ctx_ref or ctx_ref not in contexts: continue
+                    
+                    element_name = attrs.get('name')
+                    if not element_name: continue
+                    if ':' in element_name:
+                        element_name = element_name.replace(':', '_')
+                    
+                    value = tag.text_content().strip() if hasattr(tag, 'text_content') else (tag.text or "").strip()
+                    local_name = tag.tag.split('}')[-1].lower() if isinstance(tag.tag, str) and '}' in tag.tag else (tag.tag.split(':')[-1].lower() if isinstance(tag.tag, str) else "")
+                    
+                    unit_ref = attrs.get('unitref')
+                    scale = attrs.get('scale', '0')
+                    sign = attrs.get('sign', '')
+                else:
+                    # BS4 path
+                    ctx_ref = None
+                    for k, v in tag.attrs.items():
+                        if k.lower() == 'contextref':
+                            ctx_ref = v
+                            break
+                    if not ctx_ref or ctx_ref not in contexts: continue
+                    
+                    element_name = None
+                    for k, v in tag.attrs.items():
+                        if k.lower() == 'name':
+                            element_name = v
+                            break
+                    if not element_name: continue
+                    if ':' in element_name:
+                        element_name = element_name.replace(':', '_')
+                    
+                    value = tag.get_text().strip()
+                    local_name = tag.name.split(':')[-1].lower()
 
                 if local_name == 'nonnumeric':
                     # Skip massive text blocks only if it's explicitly a TextBlock element
                     if 'TextBlock' in element_name:
                         continue
-
+                
                 valStr = ""
                 if local_name == 'nonfraction':
+                    if not HAS_LXML_LOCAL:
+                        unit_ref = None
+                        for k, v in tag.attrs.items():
+                            if k.lower() == 'unitref':
+                                unit_ref = v
+                                break
+                        scale = '0'
+                        sign = ''
+                        for k, v in tag.attrs.items():
+                            if k.lower() == 'scale': scale = v
+                            if k.lower() == 'sign': sign = v
+
                     is_jpy = units.get(unit_ref, False) if unit_ref else False
                     clean_val = value.replace(',', '').replace('△', '-').replace('▲', '-').replace('(', '-').replace(')', '').strip()
-
+                    
                     try:
                         amt = float(clean_val)
-                        if sign == '-':
-                            amt *= -1
+                        if sign == '-': amt *= -1
                         amt *= (10 ** int(scale or 0))
-                        if is_jpy:
-                            amt /= 1000000.0
+                        if is_jpy: amt /= 1000000.0
                         valStr = str(int(amt)) if amt.is_integer() else str(amt)
                     except Exception:
                         valStr = value
@@ -900,9 +981,12 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
             
             if elem_order_in_file > 0:
                 vprint(f"  Extracted {elem_order_in_file} facts from {os.path.basename(f)}")
-
-            # Clean up to free memory
-            del tree
+            
+            if not HAS_LXML_LOCAL:
+                soup.decompose()
+                del soup
+            else:
+                del tree
 
         except Exception as e:
             debug_log(f"ERROR: Error parsing file {f}: {e}")
