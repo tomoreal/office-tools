@@ -1612,6 +1612,25 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for role, pd_dict in merged_trees.items():
         tree_arcs = [{'parent': p, 'child': c, 'order': o_i[0], 'index': o_i[1], 'preferredLabel': pl}
                      for (p, c, pl), o_i in pd_dict.items()]
+        
+        # --- NEW: Indicator Ordering Fix (V14) ---
+        # "Common" indicators (employees, etc.) are often at the end of the IFRS tree (orders 17-18)
+        # but because they are namespace jpcrp_cor without specific suffixes, they appear 
+        # before J-GAAP specific indicators (jpcrp_cor_...SummaryOfBusinessResults) when filtered.
+        # We push them to the end of their sibling group by giving them a large order penalty.
+        if 'BusinessResults' in role:
+            for arc in tree_arcs:
+                child = arc['child']
+                # Identify common indicators: jpcrp_cor prefix, but no standard-specific suffix
+                is_common_indicator = (
+                    child.startswith('jpcrp_cor_') and 
+                    'SummaryOfBusinessResults' not in child and 
+                    not any(child.endswith(s) for s in ['Abstract', 'Heading', 'TextBlock', 'Table', 'Axis', 'Member'])
+                )
+                if is_common_indicator:
+                    # Give a large order penalty to move them after standard-specific financial indicators
+                    arc['order'] += 10000.0
+
         ordered_items = create_hierarchy(tree_arcs)
 
         # Determine this role's statement type for filtering
