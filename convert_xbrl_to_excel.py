@@ -9,6 +9,7 @@ import json
 import urllib.request
 import re
 import gzip
+import logging
 from threading import Lock
 
 try:
@@ -31,6 +32,39 @@ VERBOSE_LOGGING = os.environ.get('XBRL_VERBOSE', '1') == '1'
 # Thread lock for taxonomy cache operations to prevent race conditions
 # when multiple workers try to download/extract/write taxonomy cache simultaneously
 _TAXONOMY_LOCK = Lock()
+
+# Configure logging using Python's standard logging module
+# This provides better performance (buffering) and thread safety compared to manual file I/O
+_LOG_FILE = os.path.join(SCRIPT_DIR, 'convert_xbrl_debug.log')
+
+# Custom formatter that includes timestamp
+class TimestampFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(record.created))
+
+# Set up the logger
+_logger = logging.getLogger('xbrl_converter')
+_logger.setLevel(logging.DEBUG if VERBOSE_LOGGING else logging.INFO)
+
+# File handler with buffering
+_file_handler = logging.FileHandler(_LOG_FILE, mode='a', encoding='utf-8')
+_file_handler.setLevel(logging.DEBUG)
+_file_formatter = TimestampFormatter('%(asctime)s %(message)s')
+_file_handler.setFormatter(_file_formatter)
+_logger.addHandler(_file_handler)
+
+# Console handler (stderr) for server log visibility
+_console_handler = logging.StreamHandler(sys.stderr)
+_console_handler.setLevel(logging.INFO)
+_console_formatter = logging.Formatter('%(message)s')
+_console_handler.setFormatter(_console_formatter)
+_logger.addHandler(_console_handler)
+
+# Prevent propagation to root logger
+_logger.propagate = False
+
+# Flag to ensure log rotation is only checked once per session
+_log_rotation_checked = False
 
 def rotate_logs_manually(log_file):
     """cronが使えない環境向け：プログラム実行時にログをチェックし、1週間単位でローテーション・圧縮を行う"""
@@ -73,19 +107,20 @@ def rotate_logs_manually(log_file):
         print(f"Log rotation error: {e}", file=sys.stderr)
 
 def debug_log(message):
-    """Write message to a persistent debug log file for user visibility."""
-    log_file = os.path.join(SCRIPT_DIR, 'convert_xbrl_debug.log')
-    # Check for manual rotation
-    rotate_logs_manually(log_file)
-    
-    try:
-        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-        with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f"{timestamp} {message}\n")
-    except Exception:
-        pass
-    # Also print to stderr for server log visibility
-    print(message, file=sys.stderr)
+    """Write message to a persistent debug log file for user visibility.
+
+    Now uses Python's logging module for better performance (buffering)
+    and thread safety instead of manual file I/O.
+    """
+    global _log_rotation_checked
+
+    # Check for manual rotation (only once per session for performance)
+    if not _log_rotation_checked:
+        rotate_logs_manually(_LOG_FILE)
+        _log_rotation_checked = True
+
+    # Use logging module which handles buffering and thread safety
+    _logger.info(message)
 
 def validate_zip_path(target_path, base_dir):
     """Ensure the target path is within the base directory to prevent Zip Slip."""
@@ -100,7 +135,7 @@ def vprint(*args, **kwargs):
     """Verbose print - only prints if VERBOSE_LOGGING is enabled."""
     if VERBOSE_LOGGING:
        msg = " ".join(map(str, args))
-       debug_log(f"[VERBOSE] {msg}")
+       _logger.debug(f"[VERBOSE] {msg}")
 
 
 def safe_xpath(tree_or_elem, query, namespaces=None):
