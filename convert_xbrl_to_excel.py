@@ -2475,17 +2475,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     
             # Indent based on depth
             depth = len(full_path.split('::')) - 1
-            # USER: Reduce indentation for specific CF headings by 1 space
-            cf_targets = (
-                "営業活動によるキャッシュ・フロー", "投資活動によるキャッシュ・フロー", "財務活動によるキャッシュ・フロー",
-                "営業活動によるキャッシュ・フロー（IFRS）", "投資活動によるキャッシュ・フロー（IFRS）", "財務活動によるキャッシュ・フロー（IFRS）"
-            )
-            if is_cf_sheet and label in cf_targets:
-                depth = max(0, depth - 1)
-                
             indent_prefix = "　" * depth
-            
-            row_data = [indent_prefix + label, el]
+
+            # Remove unwanted suffixes from label for Excel output
+            display_label = label
+            display_label = display_label.replace(' [目次項目]', '').replace(' [タイトル項目]', '')
+            display_label = display_label.replace('（IFRS）', '').replace('(IFRS)', '')
+            display_label = display_label.replace('、経営指標等', '')
+            display_label = display_label.strip()
+
+            row_data = [indent_prefix + display_label, el]
             
             has_numeric_data = False
             has_data = False
@@ -2580,7 +2579,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         continue
                 # --- 重複排除 (勘定科目名と数値が完全に一致する行をスキップ) ---
                 row_values_tuple = tuple(row_data[2:])
-                row_key = (label, row_values_tuple)
+                row_key = (display_label, row_values_tuple)
                 if row_key in seen_rows:
                     continue
                 seen_rows.add(row_key)
@@ -2842,19 +2841,18 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     label = convert_camel_case_to_title(base_name)
                 
                 depth = len(full_path.split('::')) - 1
-                # USER: Reduce indentation for specific CF headings by 1 space
-                cf_targets = (
-                    "営業活動によるキャッシュ・フロー", "投資活動によるキャッシュ・フロー", "財務活動によるキャッシュ・フロー",
-                    "営業活動によるキャッシュ・フロー（IFRS）", "投資活動によるキャッシュ・フロー（IFRS）", "財務活動によるキャッシュ・フロー（IFRS）"
-                )
-                if 'キャッシュ・フロー' in sheet_name and label in cf_targets:
-                    depth = max(0, depth - 1)
-                
                 indent_prefix = "　" * depth
-                
+
+                # Remove unwanted suffixes from label for Excel output
+                display_label = label
+                display_label = display_label.replace(' [目次項目]', '').replace(' [タイトル項目]', '')
+                display_label = display_label.replace('（IFRS）', '').replace('(IFRS)', '')
+                display_label = display_label.replace('、経営指標等', '')
+                display_label = display_label.strip()
+
                 # For each year, create a row
                 for period in unique_periods:
-                    row_data_analysis = [indent_prefix + label, period]
+                    row_data_analysis = [indent_prefix + display_label, period]
                     has_numeric_data_analysis = False
                     has_data_analysis = False
                     
@@ -2888,7 +2886,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             continue
                         # Deduplication
                         row_values_tuple = tuple(row_data_analysis[2:])
-                        row_key = (label, period, row_values_tuple)
+                        row_key = (display_label, period, row_values_tuple)
                         if row_key in seen_rows_analysis:
                             continue
                         seen_rows_analysis.add(row_key)
