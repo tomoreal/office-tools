@@ -2265,9 +2265,37 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             if '|' in el: el = el.split('|')[0]
 
             # --- USER SUGGESTION: Skip irrelevant element types ---
-            if el.endswith(("TextBlock","Abstract","Axis","Member","Table")):
+            # Note: Keep Abstract and Heading elements for hierarchy display
+            # Skip only TextBlock, Axis, Member, Table, LineItems
+            if el.endswith(("TextBlock","Axis","Member","Table","LineItems")):
                 continue
+
+            # Determine if this element is a heading (Abstract or Heading suffix)
+            is_heading = el.endswith(("Abstract", "Heading"))
             
+            # Heading-specific terminology for Abstract elements
+            heading_dict = {
+                'AssetsIFRSAbstract': '資産',
+                'AssetsAbstract': '資産',
+                'CurrentAssetsIFRSAbstract': '流動資産',
+                'CurrentAssetsAbstract': '流動資産',
+                'NonCurrentAssetsIFRSAbstract': '非流動資産',
+                'NonCurrentAssetsAbstract': '非流動資産',
+                'NoncurrentAssetsAbstract': '非流動資産',
+                'LiabilitiesAndEquityIFRSAbstract': '負債及び資本',
+                'LiabilitiesAndNetAssetsAbstract': '負債及び純資産',
+                'LiabilitiesIFRSAbstract': '負債',
+                'LiabilitiesAbstract': '負債',
+                'CurrentLiabilitiesIFRSAbstract': '流動負債',
+                'CurrentLiabilitiesAbstract': '流動負債',
+                'NonCurrentLiabilitiesIFRSAbstract': '非流動負債',
+                'NonCurrentLiabilitiesAbstract': '非流動負債',
+                'NoncurrentLiabilitiesAbstract': '非流動負債',
+                'EquityIFRSAbstract': '資本',
+                'NetAssetsAbstract': '純資産',
+                'ShareholdersEquityAbstract': '株主資本',
+            }
+
             # Common terminology translations as a fallback
             common_dict = {
                 'CashAndDeposits': '現金及び預金',
@@ -2394,7 +2422,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'IncreaseInPropertyPlantAndEquipmentAndIntangibleAssets': '有形固定資産及び無形固定資産の増加額'
             }
             
-            if is_segment and base_name in segment_dict:
+            # Label resolution priority:
+            # 1. Heading-specific dictionary (for Abstract/Heading elements)
+            # 2. Segment-specific dictionary
+            # 3. Common dictionary
+            # 4. labels_map from XBRL
+            # 5. CamelCase conversion
+            if is_heading and el in heading_dict:
+                label = heading_dict[el]
+            elif is_segment and base_name in segment_dict:
                 label = segment_dict[base_name]
             elif base_name in common_dict:
                 label = common_dict[base_name]
@@ -2524,19 +2560,23 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 row_data.append(val)
                 if val != "":
                     has_data = True
-                    
-            if has_data: # Only append rows that have at least one value across columns
+
+            # Display heading elements even if they have no data (for hierarchy structure)
+            # Display data elements only if they have at least one value
+            if has_data or is_heading:
                 # --- セグメント情報や財務諸表の文字情報の除外 (Current Refinement) ---
                 # Remove unwanted text blocks like *FinancialInformation or long descriptions
+                # But keep heading elements for hierarchy structure
                 is_financial_statement = any(kw in sheet_name for kw in ('貸借対照表', '損益計算書', '包括利益', 'キャッシュ・フロー', '株主資本'))
                 if is_financial_statement or is_segment:
                     is_text_info = (
-                        el.endswith('FinancialInformation') or 
+                        el.endswith('FinancialInformation') or
                         el.startswith(('jpcrp_cor_Description', 'jpcrp_cor_Note', 'jpcrp_cor_Regulations', 'jpcrp_cor_RemarkableEfforts'))
                     )
                     if is_text_info and not has_numeric_data:
                         continue
-                    if is_segment and not has_numeric_data:
+                    # Skip non-numeric data elements in segments, but keep headings for structure
+                    if is_segment and not has_numeric_data and not is_heading:
                         continue
                 # --- 重複排除 (勘定科目名と数値が完全に一致する行をスキップ) ---
                 row_values_tuple = tuple(row_data[2:])
