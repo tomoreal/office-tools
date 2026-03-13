@@ -1057,13 +1057,36 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
             extract_dir = os.path.join(temp_base, f"zip_{zip_idx}")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # Selective extraction: only extract files we actually need
+                # This significantly reduces I/O for large EDINET ZIPs (2000+ files)
                 for info in zip_ref.infolist():
-                    # Normalize Windows backslashes in paths
-                    info.filename = info.filename.replace('\\', '/')
-                    # Path validation to prevent Zip Slip
-                    target_path = os.path.join(extract_dir, info.filename)
-                    validate_zip_path(target_path, extract_dir)
-                    zip_ref.extract(info, extract_dir)
+                    filename_lower = info.filename.lower()
+
+                    # Skip directories
+                    if info.is_dir():
+                        continue
+
+                    # Extract only necessary files:
+                    # 1. Japanese label linkbases (exclude English versions)
+                    # 2. Presentation linkbases
+                    # 3. XBRL instance files
+                    # 4. iXBRL HTML files (in PublicDoc only, skip AuditDoc)
+                    # 5. manifest.xml (for metadata)
+                    should_extract = (
+                        (filename_lower.endswith('_lab.xml') and not filename_lower.endswith('_lab-en.xml')) or
+                        filename_lower.endswith('_pre.xml') or
+                        filename_lower.endswith('.xbrl') or
+                        (filename_lower.endswith(('.htm', '.html')) and 'publicdoc' in filename_lower) or
+                        filename_lower.endswith('manifest.xml')
+                    )
+
+                    if should_extract:
+                        # Normalize Windows backslashes in paths
+                        info.filename = info.filename.replace('\\', '/')
+                        # Path validation to prevent Zip Slip
+                        target_path = os.path.join(extract_dir, info.filename)
+                        validate_zip_path(target_path, extract_dir)
+                        zip_ref.extract(info, extract_dir)
                 
             subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
             if len(subdirs) == 1:
