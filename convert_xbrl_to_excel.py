@@ -2093,6 +2093,26 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         debug_log(f"[DEBUG] Processing sheet: {sheet_name} (role: {role}, std: {current_standard}, is_segment: {is_segment})")
         debug_log(f"  [DEBUG] Role has {len(ordered_keys)} elements in presentation tree")
 
+        # --- Skip roles that only contain structural/non-data elements ---
+        # Check if role contains only TextBlock, Abstract, Heading, Table, Axis, Member elements
+        structural_suffixes = ('TextBlock', 'Abstract', 'Heading', 'Table', 'Axis', 'Member', 'LineItems')
+        has_data_element = False
+        for full_path, _ in ordered_keys:
+            # Extract element name from full path (last component)
+            element_name = full_path.split('::')[-1]
+            # Remove dimension suffix if present (e.g., "ElementName|DimensionName")
+            if '|' in element_name:
+                element_name = element_name.split('|')[0]
+
+            # Check if this is a structural element
+            if not any(element_name.endswith(suffix) for suffix in structural_suffixes):
+                has_data_element = True
+                break
+
+        if not has_data_element:
+            debug_log(f"[Skip-Role] Role '{role}' contains only structural elements (TextBlock/Abstract/etc), skipping sheet creation")
+            continue
+
         role_columns = set()
         if is_non_consolidated:
             # Merged dimensions for standalone: prioritize '単体' over '全体'
@@ -2947,6 +2967,29 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         return (group, stmt_order, 0, std_order)
                 
     wb._sheets.sort(key=lambda s: get_sheet_order(s.title))
+
+    # Remove sheets with no numeric data (e.g., text-only note sheets)
+    sheets_to_remove = []
+    for out_ws in wb.worksheets:
+        # Skip if sheet has very few rows (likely no meaningful data)
+        if out_ws.max_row <= 2:
+            has_numeric = False
+            # Check if any cell contains numeric data
+            for row in out_ws.iter_rows(min_row=2, max_row=out_ws.max_row):
+                for cell in row:
+                    if isinstance(cell.value, (int, float)):
+                        has_numeric = True
+                        break
+                if has_numeric:
+                    break
+
+            if not has_numeric:
+                sheets_to_remove.append(out_ws.title)
+                debug_log(f"[Remove-Sheet] Sheet '{out_ws.title}' has no numeric data (only {out_ws.max_row} rows)")
+
+    # Remove sheets without numeric data
+    for sheet_name in sheets_to_remove:
+        wb.remove(wb[sheet_name])
 
     # Log summary of sheets for verification
     debug_log("Excel Sheet Summary:")
