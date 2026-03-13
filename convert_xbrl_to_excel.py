@@ -9,6 +9,7 @@ import json
 import urllib.request
 import re
 import gzip
+from threading import Lock
 
 try:
     from lxml import etree
@@ -26,6 +27,10 @@ HAS_OPENPYXL = False
 
 # Control verbose logging via environment variable (default: enabled for debugging)
 VERBOSE_LOGGING = os.environ.get('XBRL_VERBOSE', '1') == '1'
+
+# Thread lock for taxonomy cache operations to prevent race conditions
+# when multiple workers try to download/extract/write taxonomy cache simultaneously
+_TAXONOMY_LOCK = Lock()
 
 def rotate_logs_manually(log_file):
     """cronが使えない環境向け：プログラム実行時にログをチェックし、1週間単位でローテーション・圧縮を行う"""
@@ -244,7 +249,7 @@ def get_standard_labels(year, cache_dir=None):
     tax_dir = os.path.join(cache_dir, str(year))
     labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
     
-    # Try to load from cache
+    # Try to load from cache (fast path, no lock needed)
     if os.path.exists(labels_cache_file):
         try:
             with open(labels_cache_file, 'r', encoding='utf-8') as f:
@@ -260,115 +265,134 @@ def get_standard_labels(year, cache_dir=None):
                     return data, priorities
         except Exception as e:
             debug_log(f"ERROR: Cache read error for {year}: {e}")
-            
-    if not os.path.exists(tax_dir):
-        try:
-            os.makedirs(tax_dir, exist_ok=True)
-            debug_log(f"Created taxonomy directory: {tax_dir}")
-        except Exception as e:
-            debug_log(f"WARNING: Could not create tax_dir {tax_dir}, falling back to /tmp: {e}")
-            tax_dir = os.path.join('/tmp', 'edinet_taxonomies', str(year))
+
+    # Cache doesn't exist - acquire lock to prevent race conditions
+    # Only one thread should download/extract/write the taxonomy cache
+    with _TAXONOMY_LOCK:
+        # Double-check: another thread may have created the cache while we were waiting
+        if os.path.exists(labels_cache_file):
+            try:
+                with open(labels_cache_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict) and 'labels' in data:
+                        res = data['labels'], data.get('priorities', {})
+                        debug_log(f"SUCCESS: Loaded taxonomy cache for {year} (created by another thread) in {time.time() - start_time:.2f}s")
+                        return res
+                    else:
+                        priorities = {k: 50 for k in data}
+                        debug_log(f"SUCCESS: Loaded legacy taxonomy cache for {year} (created by another thread) in {time.time() - start_time:.2f}s")
+                        return data, priorities
+            except Exception as e:
+                debug_log(f"ERROR: Cache read error for {year} after lock: {e}")
+
+        if not os.path.exists(tax_dir):
             try:
                 os.makedirs(tax_dir, exist_ok=True)
+                debug_log(f"Created taxonomy directory: {tax_dir}")
             except Exception as e:
-                vprint(f"Fallback to /tmp failed for {year}: {e}")
-            labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
+                debug_log(f"WARNING: Could not create tax_dir {tax_dir}, falling back to /tmp: {e}")
+                tax_dir = os.path.join('/tmp', 'edinet_taxonomies', str(year))
+                try:
+                    os.makedirs(tax_dir, exist_ok=True)
+                except Exception as e:
+                    vprint(f"Fallback to /tmp failed for {year}: {e}")
+                labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
 
-    if not os.path.exists(labels_cache_file):
-        zip_path = os.path.join(tax_dir, 'taxonomy.zip')
-        if not os.path.exists(os.path.join(tax_dir, 'taxonomy')): # rudimentary check for extracted data
-            vprint(f"Downloading EDINET taxonomy for {year} (takes a moment)...")
+        if not os.path.exists(labels_cache_file):
+            zip_path = os.path.join(tax_dir, 'taxonomy.zip')
+            if not os.path.exists(os.path.join(tax_dir, 'taxonomy')): # rudimentary check for extracted data
+                vprint(f"Downloading EDINET taxonomy for {year} (takes a moment)...")
+                try:
+                    urllib.request.urlretrieve(urls[year], zip_path)
+                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                        # Robust extraction: manually decode filenames using CP932 (shift_jis)
+                        # to avoid Mojibake on Linux/Unix systems that default to UTF-8
+                        for info in zip_ref.infolist():
+                            try:
+                                # infolist().filename is often bytes or interpreted as CP437
+                                # We re-encode and decode correctly
+                                filename_raw = info.filename.encode('cp437')
+                                filename = filename_raw.decode('cp932')
+                            except Exception:
+                                filename = info.filename
+
+                            target_path = os.path.join(tax_dir, filename)
+                            validate_zip_path(target_path, tax_dir)
+                            if info.is_dir():
+                                os.makedirs(target_path, exist_ok=True)
+                            else:
+                                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                                with zip_ref.open(info) as source, open(target_path, 'wb') as target:
+                                    shutil.copyfileobj(source, target)
+                    os.remove(zip_path)
+
+                    # Canonical normalization: Rename any Mojibake "タクソノミ" folder to "taxonomy"
+                    for entry in os.listdir(tax_dir):
+                        full_p = os.path.join(tax_dir, entry)
+                        if os.path.isdir(full_p) and ('â^' in entry or 'タクソノミ' in entry):
+                            new_p = os.path.join(tax_dir, 'taxonomy')
+                            if not os.path.exists(new_p):
+                                os.rename(full_p, new_p)
+                                vprint(f"Normalized taxonomy directory: {entry} -> taxonomy")
+                except Exception as e:
+                    vprint(f"Failed to download/extract taxonomy for {year}: {e}")
+                    return {}, {}
+
+        vprint(f"Parsing EDINET taxonomy labels for {year}... (First run only)")
+        lab_files = sorted(glob.glob(os.path.join(tax_dir, '**', '*_lab.xml'), recursive=True))
+        all_labels = {}
+        label_priorities = {} # {element_name: priority}
+
+        # Track which taxonomy types we're loading
+        taxonomy_types = set()
+
+        for lf in lab_files:
+            if 'deprecated' in lf or 'dep' in lf or '-en.xml' in lf:
+                continue
+
+            # Extract taxonomy type (jpigp, jppfs, jpcrp, etc.)
+            basename = os.path.basename(lf)
+            if '_lab.xml' in basename:
+                tax_type = basename.split('_')[0]
+                taxonomy_types.add(tax_type)
+
             try:
-                urllib.request.urlretrieve(urls[year], zip_path)
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    # Robust extraction: manually decode filenames using CP932 (shift_jis)
-                    # to avoid Mojibake on Linux/Unix systems that default to UTF-8
-                    for info in zip_ref.infolist():
-                        try:
-                            # infolist().filename is often bytes or interpreted as CP437
-                            # We re-encode and decode correctly
-                            filename_raw = info.filename.encode('cp437')
-                            filename = filename_raw.decode('cp932')
-                        except Exception:
-                            filename = info.filename
-                        
-                        target_path = os.path.join(tax_dir, filename)
-                        validate_zip_path(target_path, tax_dir)
-                        if info.is_dir():
-                            os.makedirs(target_path, exist_ok=True)
-                        else:
-                            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                            with zip_ref.open(info) as source, open(target_path, 'wb') as target:
-                                shutil.copyfileobj(source, target)
-                os.remove(zip_path)
-                
-                # Canonical normalization: Rename any Mojibake "タクソノミ" folder to "taxonomy"
-                for entry in os.listdir(tax_dir):
-                    full_p = os.path.join(tax_dir, entry)
-                    if os.path.isdir(full_p) and ('â^' in entry or 'タクソノミ' in entry):
-                        new_p = os.path.join(tax_dir, 'taxonomy')
-                        if not os.path.exists(new_p):
-                            os.rename(full_p, new_p)
-                            vprint(f"Normalized taxonomy directory: {entry} -> taxonomy")
+                # Determine taxonomy type from filename for domain-specific weighting
+                tax_type = os.path.basename(lf).split('_')[0]
+                parsed_labels, parsed_priorities = parse_labels_file(lf)
+
+                for el, text in parsed_labels.items():
+                    prio = parsed_priorities.get(el, 99)
+
+                    # Element-Prefix Awareness: Boost priority if the taxonomy file matches the element's prefix
+                    # e.g. jppfs label for jppfs element is better than general label
+                    el_prefix = el.split('_')[0] if '_' in el else ""
+                    if el_prefix and el_prefix == tax_type:
+                        prio -= 0.5 # Slight boost for domain-exact match
+
+                    current_prio = label_priorities.get(el, 100)
+                    if (el not in all_labels) or (prio < current_prio) or (prio == current_prio and text < all_labels.get(el, "")):
+                        all_labels[el] = text
+                        label_priorities[el] = prio
             except Exception as e:
-                vprint(f"Failed to download/extract taxonomy for {year}: {e}")
-                return {}, {}
-            
-    vprint(f"Parsing EDINET taxonomy labels for {year}... (First run only)")
-    lab_files = sorted(glob.glob(os.path.join(tax_dir, '**', '*_lab.xml'), recursive=True))
-    all_labels = {}
-    label_priorities = {} # {element_name: priority}
+                vprint(f"Error parsing labels from {lf}: {e}")
 
-    # Track which taxonomy types we're loading
-    taxonomy_types = set()
+        # Report which taxonomies were loaded
+        if taxonomy_types:
+            vprint(f"  Loaded taxonomies: {', '.join(sorted(taxonomy_types))}")
 
-    for lf in lab_files:
-        if 'deprecated' in lf or 'dep' in lf or '-en.xml' in lf:
-            continue
+        ifrs_count = sum(1 for k in all_labels if 'IFRS' in k)
+        vprint(f"  Total labels: {len(all_labels)}, IFRS labels: {ifrs_count}")
 
-        # Extract taxonomy type (jpigp, jppfs, jpcrp, etc.)
-        basename = os.path.basename(lf)
-        if '_lab.xml' in basename:
-            tax_type = basename.split('_')[0]
-            taxonomy_types.add(tax_type)
+        if all_labels:
+            try:
+                with open(labels_cache_file, 'w', encoding='utf-8') as f:
+                    json.dump({'labels': all_labels, 'priorities': label_priorities}, f, ensure_ascii=False, indent=2)
+                debug_log(f"SUCCESS: Saved taxonomy cache to {labels_cache_file} in {time.time() - start_time:.2f}s")
+            except Exception as e:
+                debug_log(f"WARNING: Could not cache labels to {labels_cache_file}: {e}")
 
-        try:
-            # Determine taxonomy type from filename for domain-specific weighting
-            tax_type = os.path.basename(lf).split('_')[0]
-            parsed_labels, parsed_priorities = parse_labels_file(lf)
-            
-            for el, text in parsed_labels.items():
-                prio = parsed_priorities.get(el, 99)
-                
-                # Element-Prefix Awareness: Boost priority if the taxonomy file matches the element's prefix
-                # e.g. jppfs label for jppfs element is better than general label
-                el_prefix = el.split('_')[0] if '_' in el else ""
-                if el_prefix and el_prefix == tax_type:
-                    prio -= 0.5 # Slight boost for domain-exact match
-                
-                current_prio = label_priorities.get(el, 100)
-                if (el not in all_labels) or (prio < current_prio) or (prio == current_prio and text < all_labels.get(el, "")):
-                    all_labels[el] = text
-                    label_priorities[el] = prio
-        except Exception as e:
-            vprint(f"Error parsing labels from {lf}: {e}")
-
-    # Report which taxonomies were loaded
-    if taxonomy_types:
-        vprint(f"  Loaded taxonomies: {', '.join(sorted(taxonomy_types))}")
-
-    ifrs_count = sum(1 for k in all_labels if 'IFRS' in k)
-    vprint(f"  Total labels: {len(all_labels)}, IFRS labels: {ifrs_count}")
-            
-    if all_labels:
-        try:
-            with open(labels_cache_file, 'w', encoding='utf-8') as f:
-                json.dump({'labels': all_labels, 'priorities': label_priorities}, f, ensure_ascii=False, indent=2)
-            debug_log(f"SUCCESS: Saved taxonomy cache to {labels_cache_file} in {time.time() - start_time:.2f}s")
-        except Exception as e:
-            debug_log(f"WARNING: Could not cache labels to {labels_cache_file}: {e}")
-            
-    return all_labels, label_priorities
+        return all_labels, label_priorities
 
 
 def parse_labels_file(lab_file):
