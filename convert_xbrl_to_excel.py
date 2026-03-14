@@ -273,6 +273,19 @@ def safe_xpath(tree_or_elem, query, namespaces=None):
             vprint(f"safe_xpath error: {e}")
             return []
 
+# Label priority constants (used in parse_labels_file)
+# Lower priority values are preferred (1 is highest priority)
+PRIORITY_VERBOSE_LABEL = 1
+PRIORITY_ALT_LABEL = 2
+PRIORITY_STANDARD_LABEL = 3
+PRIORITY_INDUSTRY_LABEL = 4
+PRIORITY_TERSE_LABEL = 5
+PRIORITY_TOTAL_LABEL = 10
+PRIORITY_DEFAULT = 99
+PRIORITY_WORST = 100
+PRIORITY_LEGACY_DEFAULT = 50
+PRIORITY_GENERIC_PENALTY = 50  # Added to priority for generic labels like "Total"
+
 # Common dimension axis and member mapping for Japanese fallback
 COMMON_DIMENSION_MAPPING = {
     'ConsolidatedOrNonConsolidatedAxis': '連結・非連結',
@@ -469,7 +482,7 @@ def get_standard_labels(year, cache_dir=None):
                     return res
                 else:
                     # Legacy format compatibility
-                    priorities = {k: 50 for k in data}
+                    priorities = {k: PRIORITY_LEGACY_DEFAULT for k in data}
                     debug_log(f"SUCCESS: Loaded legacy taxonomy cache for {year} in {time.time() - start_time:.2f}s")
                     return data, priorities
         except Exception as e:
@@ -490,7 +503,7 @@ def get_standard_labels(year, cache_dir=None):
                             debug_log(f"SUCCESS: Loaded taxonomy cache for {year} (created by another thread/process) in {time.time() - start_time:.2f}s")
                             return res
                         else:
-                            priorities = {k: 50 for k in data}
+                            priorities = {k: PRIORITY_LEGACY_DEFAULT for k in data}
                             debug_log(f"SUCCESS: Loaded legacy taxonomy cache for {year} (created by another thread/process) in {time.time() - start_time:.2f}s")
                             return data, priorities
                 except Exception as e:
@@ -671,16 +684,16 @@ def parse_labels_file(lab_file):
     # Role priority: verboseLabel is standard for EDINET CSV output
     # XBRL Label Roles and their associated priority (lower is better)
     role_priority = {
-        "http://www.xbrl.org/2003/role/verboseLabel": 1,
-        "http://disclosure.edinet-fsa.go.jp/jpcrp/alt/role/label": 2, # EDINET industry-specific alternate
-        "http://www.xbrl.org/2003/role/label": 3,
-        "http://disclosure.edinet-fsa.go.jp/jppfs/ele/role/label": 4, # Electric Power
-        "http://disclosure.edinet-fsa.go.jp/jppfs/gas/role/label": 4, # Gas
-        "http://disclosure.edinet-fsa.go.jp/jppfs/sec/role/label": 4, # Securities
-        "http://disclosure.edinet-fsa.go.jp/jppfs/ins/role/label": 4, # Insurance
-        "http://disclosure.edinet-fsa.go.jp/jppfs/bnk/role/label": 4, # Banking
-        "http://www.xbrl.org/2003/role/terseLabel": 5,
-        "http://www.xbrl.org/2003/role/totalLabel": 10,
+        "http://www.xbrl.org/2003/role/verboseLabel": PRIORITY_VERBOSE_LABEL,
+        "http://disclosure.edinet-fsa.go.jp/jpcrp/alt/role/label": PRIORITY_ALT_LABEL, # EDINET industry-specific alternate
+        "http://www.xbrl.org/2003/role/label": PRIORITY_STANDARD_LABEL,
+        "http://disclosure.edinet-fsa.go.jp/jppfs/ele/role/label": PRIORITY_INDUSTRY_LABEL, # Electric Power
+        "http://disclosure.edinet-fsa.go.jp/jppfs/gas/role/label": PRIORITY_INDUSTRY_LABEL, # Gas
+        "http://disclosure.edinet-fsa.go.jp/jppfs/sec/role/label": PRIORITY_INDUSTRY_LABEL, # Securities
+        "http://disclosure.edinet-fsa.go.jp/jppfs/ins/role/label": PRIORITY_INDUSTRY_LABEL, # Insurance
+        "http://disclosure.edinet-fsa.go.jp/jppfs/bnk/role/label": PRIORITY_INDUSTRY_LABEL, # Banking
+        "http://www.xbrl.org/2003/role/terseLabel": PRIORITY_TERSE_LABEL,
+        "http://www.xbrl.org/2003/role/totalLabel": PRIORITY_TOTAL_LABEL,
         "http://disclosure.edinet-fsa.go.jp/jpcrp/alt/role/totalLabel": 11,
     }
 
@@ -699,20 +712,20 @@ def parse_labels_file(lab_file):
         if not text:
             continue
             
-        priority = role_priority.get(role, 99)
+        priority = role_priority.get(role, PRIORITY_DEFAULT)
         # Demote verboseLabel if it contains structural markers like "、報告セグメント"
         # to prefer cleaner standard labels for segment names.
-        if priority == 1:
+        if priority == PRIORITY_VERBOSE_LABEL:
             structural_markers = ['、報告セグメント', '、セグメント情報', '、事業セグメント', '、セグメント別情報']
             if any(s in text for s in structural_markers):
-                priority = 4  # Standard label (priority 3) will take precedence
+                priority = PRIORITY_INDUSTRY_LABEL  # Standard label will take precedence
 
         # Penalize generic labels to avoid "Total" appearing everywhere if a better name exists
-        # Phase 1: Skip penalty if it's the high-priority verboseLabel (priority 1)
-        if priority > 1 and any(g in text.lower() for g in GENERIC_LABELS):
-            priority += 50
+        # Skip penalty if it's the high-priority verboseLabel
+        if priority > PRIORITY_VERBOSE_LABEL and any(g in text.lower() for g in GENERIC_LABELS):
+            priority += PRIORITY_GENERIC_PENALTY
             
-        if (res_id not in res_id_to_text) or (priority < res_id_to_priority.get(res_id, 100)) or (priority == res_id_to_priority.get(res_id, 100) and text < res_id_to_text[res_id]):
+        if (res_id not in res_id_to_text) or (priority < res_id_to_priority.get(res_id, PRIORITY_WORST)) or (priority == res_id_to_priority.get(res_id, PRIORITY_WORST) and text < res_id_to_text[res_id]):
             res_id_to_text[res_id] = text
             res_id_to_priority[res_id] = priority
 
@@ -720,11 +733,11 @@ def parse_labels_file(lab_file):
     for label_id, element_name in href_to_label_id.items():
         res_ids = label_id_to_res_ids.get(label_id, [])
         best_text = None
-        best_priority = 100
+        best_priority = PRIORITY_WORST
         
         for res_id in res_ids:
             text = res_id_to_text.get(res_id)
-            priority = res_id_to_priority.get(res_id, 99)
+            priority = res_id_to_priority.get(res_id, PRIORITY_DEFAULT)
             if text and priority < best_priority:
                 best_text = text
                 best_priority = priority
@@ -1357,14 +1370,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
             # --- NEW: Detect Report-Level Accounting Standard (V13) ---
             report_std = None # Default: None (don't assume until detected)
-            search_content = ""
+            # Use list append + join for efficient string concatenation
+            search_content_parts = []
             if xbrl_files.get('pre'):
                 with open(xbrl_files['pre'], 'r', encoding='utf-8', errors='ignore') as f:
-                    search_content += f.read(40000).lower() # Increased context
+                    search_content_parts.append(f.read(40000).lower()) # Increased context
             if xbrl_files.get('ixbrl'):
                 # Check first iXBRL file for standard indicators
                 with open(xbrl_files['ixbrl'][0], 'r', encoding='utf-8', errors='ignore') as f:
-                    search_content += f.read(40000).lower()
+                    search_content_parts.append(f.read(40000).lower())
+            search_content = ''.join(search_content_parts)
             
             if 'jpigp' in search_content or 'ifrs.org' in search_content or 'ifrs-full' in search_content: 
                 report_std = 'IFRS'
