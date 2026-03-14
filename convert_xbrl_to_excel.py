@@ -1471,6 +1471,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
         # Multi-threading for performance (I/O and C-based lxml parsing)
         # Use a maximum of 4 workers to avoid memory exhaustion in CGI
+        t_parallel_start = time.time()
         with ThreadPoolExecutor(max_workers=min(len(zip_paths), 4)) as executor:
             def process_single_zip_wrapper(p):
                 try:
@@ -1512,8 +1513,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     debug_log(f"Worker failed for {p[1]}: {e}")
                     return None
             results = list(executor.map(process_single_zip_wrapper, enumerate(zip_paths)))
-            
+
+        debug_log(f"Parallel ZIP processing completed in {time.time() - t_parallel_start:.2f}s")
+
         # Sort results by taxonomy year DESCENDING to ensure latest structure is prioritized
+        t_merge_start = time.time()
         results = [r for r in results if r]
         results.sort(key=lambda x: str(x.get('year') or '0000'), reverse=True)
 
@@ -1886,6 +1890,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for role_name in roles_to_clean:
         del merged_trees[role_name]
 
+    debug_log(f"Data merging and tree processing completed in {time.time() - t_merge_start:.2f}s")
+
+    # Build hierarchical data structure for Excel sheets
+    t_hierarchy_start = time.time()
     all_years_data = {} # {role_name: {hierarchical_key: {period: value}}}
     role_to_order = {} # {role_name: [hierarchical_key1, ...]}
     
@@ -2088,11 +2096,18 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         top_el = sorted(list(global_element_period_values.keys()))[:30]
         debug_log(f"DEBUG: Company discovery failed. Top 30 elements: {top_el}")
 
+    debug_log(f"Hierarchical data structure built in {time.time() - t_hierarchy_start:.2f}s")
+
     # Now generate Excel
+    t_excel_start = time.time()
     print(f"Generating Excel for {company_name}...", file=sys.stderr)
+    # Note: write_only=True is faster but incompatible with sheet merging and formatting
+    # Current implementation requires normal mode for merge operations
     wb = Workbook()
     default_sheet_removed = False
-    
+
+    # Identify periods and standards for sheet planning
+    t_sheet_planning_start = time.time()
     # Identify periods that are standalone (not consolidated)
     periods_with_standalone = set()
     for role, ordered_keys_dict in all_years_data.items():
@@ -2221,6 +2236,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         for std in standards_to_try:
             all_role_work.append((role, ordered_keys, std))
 
+    debug_log(f"Sheet planning completed in {time.time() - t_sheet_planning_start:.2f}s ({len(all_role_work)} sheets to process)")
+
+    # Generate Excel sheets
+    t_sheet_generation_start = time.time()
     for role, ordered_keys, current_standard in all_role_work:
         # Clean role name for sheet
         base_name = role.split('_')[-1]
@@ -3229,12 +3248,17 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     if isinstance(cell.value, (int, float)):
                         cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
 
-        # Auto-adjust column widths
+    debug_log(f"Sheet generation completed in {time.time() - t_sheet_generation_start:.2f}s")
+
+        # Auto-adjust column widths (optimized: sample first 100 rows only)
+    t_colwidth_start = time.time()
+    MAX_SAMPLE_ROWS = 100  # Only check first 100 rows for width calculation
     for out_ws in wb.worksheets:
         for col in out_ws.columns:
             max_length = 0
             column_letter = col[0].column_letter
-            for cell in col:
+            # Optimization: Only sample first 100 rows instead of entire column
+            for cell in col[:MAX_SAMPLE_ROWS]:
                 try:
                     if len(str(cell.value)) > max_length:
                         max_length = len(str(cell.value))
@@ -3246,6 +3270,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             if adjusted_width > 50:
                 adjusted_width = 50
             out_ws.column_dimensions[column_letter].width = adjusted_width
+    debug_log(f"Column width adjustment completed in {time.time() - t_colwidth_start:.2f}s")
 
     # シートの並び替え
     def get_sheet_order(title):
@@ -3324,9 +3349,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     out_file = f'XBRL_横展開_{company_name}.xlsx'
     if output_dir:
         out_file = os.path.join(output_dir, out_file)
+
+    debug_log(f"Excel generation (structure) completed in {time.time() - t_excel_start:.2f}s")
     t_save = time.time()
     wb.save(out_file)
-    debug_log(f"SUCCESS: Excel saved to {out_file} in {time.time() - t_save:.2f}s")
+    debug_log(f"Excel file write (wb.save) completed in {time.time() - t_save:.2f}s")
+    debug_log(f"SUCCESS: Excel saved to {out_file} in {time.time() - t_excel_start:.2f}s")
     debug_log(f"TOTAL: process_xbrl_zips completed in {time.time() - overall_start:.2f}s")
     return out_file
 
