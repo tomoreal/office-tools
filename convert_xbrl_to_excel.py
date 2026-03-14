@@ -40,6 +40,15 @@ VERBOSE_LOGGING = os.environ.get('XBRL_VERBOSE', '1') == '1'
 # when multiple workers try to download/extract/write taxonomy cache simultaneously
 _TAXONOMY_LOCK = Lock()
 
+# Pre-compiled regular expressions (performance optimization)
+# These patterns are used frequently in loops, so pre-compiling avoids repeated compilation
+_RE_CAMEL_CASE_1 = re.compile(r'(.)([A-Z][a-z]+)')
+_RE_CAMEL_CASE_2 = re.compile(r'([a-z0-9])([A-Z])')
+_RE_TAXONOMY_YEAR = re.compile(r'http://disclosure\.edinet-fsa\.go\.jp/taxonomy/[a-z]+(?:_[a-z]+)?/(\d{4})-\d{2}-\d{2}')
+_RE_SEGMENT_SUFFIX = re.compile(r'-(\d+)$')
+_RE_TAXONOMY_INDEX = re.compile(r'<a href="(/search/\d+\.html)">(\d{4})年版EDINETタクソノミ</a>')
+_RE_TAXONOMY_ZIP = re.compile(r'(/search/\d+/1c_Taxonomy\.zip)')
+
 # Configure logging using Python's standard logging module
 # This provides better performance (buffering) and thread safety compared to manual file I/O
 _LOG_FILE = os.path.join(SCRIPT_DIR, 'convert_xbrl_debug.log')
@@ -378,7 +387,7 @@ def fetch_taxonomy_url(year):
 
         # Step 2: Parse to find the link for requested year
         # Pattern: <a href="/search/YYYYMMDD.html">YYYY年版EDINETタクソノミ</a>
-        import re
+        # Note: We need to create a dynamic pattern with the year, so we use format string
         pattern = rf'<a href="(/search/\d+\.html)">{year}年版EDINETタクソノミ</a>'
         match = re.search(pattern, html)
 
@@ -395,8 +404,8 @@ def fetch_taxonomy_url(year):
             detail_html = response.read().decode('utf-8', errors='ignore')
 
         # Pattern: <a href="/search/YYYYMMDD/1c_Taxonomy.zip">
-        zip_pattern = r'(/search/\d+/1c_Taxonomy\.zip)'
-        zip_match = re.search(zip_pattern, detail_html)
+        # Use pre-compiled regex for performance
+        zip_match = _RE_TAXONOMY_ZIP.search(detail_html)
 
         if zip_match:
             zip_path = zip_match.group(1)
@@ -753,9 +762,9 @@ def clean_label(text):
 
 def convert_camel_case_to_title(name):
     # e.g. CashAndDeposits -> Cash And Deposits
-    import re
-    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1 \2', name)
-    return re.sub('([a-z0-9])([A-Z])', r'\1 \2', s1).title()
+    # Uses pre-compiled regexes for performance (called frequently in loops)
+    s1 = _RE_CAMEL_CASE_1.sub(r'\1 \2', name)
+    return _RE_CAMEL_CASE_2.sub(r'\1 \2', s1).title()
 
 def parse_presentation_linkbase(pre_file):
     vprint(f"Parsing presentation linkbase... {os.path.basename(pre_file)}")
@@ -1336,7 +1345,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             if xbrl_files['pre']:
                 with open(xbrl_files['pre'], 'r', encoding='utf-8') as f:
                     content = f.read(4000)
-                    m = re.search(r'http://disclosure\.edinet-fsa\.go\.jp/taxonomy/[a-z]+(?:_[a-z]+)?/(\d{4})-\d{2}-\d{2}', content)
+                    m = _RE_TAXONOMY_YEAR.search(content)
                     if m:
                         year_str = m.group(1)
                         taxonomy_year = '2021' if year_str == '2020' else year_str
@@ -2274,7 +2283,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     lookup_name = base_name[5:] if base_name.startswith('Notes') else base_name
                     if 'SegmentInformation' in base_name:
                         # Normalize for lookup
-                        m = re.search(r'-(\d+)$', lookup_name)
+                        m = _RE_SEGMENT_SUFFIX.search(lookup_name)
                         segment_dict = {
                             '01': '報告セグメントの概要等',
                             '02': 'セグメント情報',
