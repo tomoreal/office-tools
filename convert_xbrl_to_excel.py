@@ -207,6 +207,30 @@ def file_lock(lock_path, timeout=60):
             except Exception:
                 pass
 
+def build_suffix_index(labels_map):
+    """Build a suffix index for O(1) label lookups.
+
+    Converts O(N) suffix searches to O(1) hash lookups.
+    For a labels_map with 20,000+ entries, this significantly improves performance
+    when searching for labels by suffix (e.g., '_OperatingRevenue').
+
+    Args:
+        labels_map: dict mapping element names to labels
+
+    Returns:
+        dict: suffix -> (full_key, label) mapping
+            Keys are element suffixes after the last '_' (e.g., 'OperatingRevenue')
+    """
+    suffix_index = {}
+    for full_key, label in labels_map.items():
+        if '_' in full_key:
+            # Extract suffix after last underscore
+            suffix = full_key.split('_')[-1]
+            # Only keep the first match for each suffix (priority)
+            if suffix not in suffix_index:
+                suffix_index[suffix] = (full_key, label)
+    return suffix_index
+
 def vprint(*args, **kwargs):
     """Verbose print - only prints if VERBOSE_LOGGING is enabled."""
     if VERBOSE_LOGGING:
@@ -871,6 +895,10 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
         vprint(f"Error parsing XBRL instance: {e}")
         return {}, {}
 
+    # Build suffix index for O(1) label lookups (performance optimization)
+    # This converts O(N) suffix searches to O(1) hash lookups
+    suffix_index = build_suffix_index(labels_map)
+
     # Standard namespaces for XBRL instance and dimensions
     ns = {
         "xbrli": "http://www.xbrl.org/2003/instance",
@@ -920,23 +948,16 @@ def parse_instance_contexts_and_units(xbrl_file, labels_map):
                         label = clean_label(labels_map[p + member_val])
                         break
                 
-                # If not found, try searching for any element ending with this member name in labels_map
+                # If not found, use suffix index for O(1) lookup
                 # (to catch standard elements from any taxonomy namespace)
-                if not label:
-                    suffix = '_' + member_val
-                    for k, v in labels_map.items():
-                        if k.endswith(suffix):
-                            label = clean_label(v)
-                            break
-                    
-            # Fallback for company specific segment names found in _lab.xml 
+                if not label and member_val in suffix_index:
+                    _, label_text = suffix_index[member_val]
+                    label = clean_label(label_text)
+
+            # Fallback for company specific segment names found in _lab.xml
             if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
-            if not label:
-                suffix = '_' + member_val
-                for k, v in labels_map.items():
-                    if k.endswith(suffix):
-                        label = v
-                        break
+            if not label and member_val in suffix_index:
+                _, label = suffix_index[member_val]
             
             if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
             if not label:
@@ -1431,6 +1452,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 try:
                     res = process_single_zip(p[0], p[1])
                     if res:
+                        # Build suffix index for O(1) label lookups
+                        res_suffix_index = build_suffix_index(res['labels'])
+
                         # Identify segment members in order from trees
                         local_seq = []
                         for role_name, arcs in res['trees'].items():
@@ -1450,13 +1474,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                                                 label = res['labels'][pr + base]
                                                 break
                                         
-                                        if not label:
-                                            # Try suffix search for company-specific members (e.g. E00032-000_...)
-                                            suffix = '_' + base
-                                            for k, v in res['labels'].items():
-                                                if k.endswith(suffix):
-                                                    label = v
-                                                    break
+                                        if not label and base in res_suffix_index:
+                                            # Use suffix index for O(1) lookup of company-specific members
+                                            _, label = res_suffix_index[base]
                                     if label:
                                         label = clean_label(label)
                                         # Skip '全体' and headings that are likely just grouping nodes
