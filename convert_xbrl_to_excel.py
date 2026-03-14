@@ -2522,13 +2522,13 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # 3. Intermediate totals
             if any(s in dim for s in ('報告セグメント及びその他の合計', '報告セグメント合計', '内部売上高又は振替高')):
                 return (950, dim, period)
-                
+
             if dim == '報告セグメント':
-                return (940, dim, period)
-                
+                return (900, dim, period)
+
             # 4. 'Others' category
             if any(s in dim for s in ('報告セグメント以外の全てのセグメント', '報告セグメント以外', 'その他')):
-                return (900, dim, period)
+                return (940, dim, period)
             
             # 5. Members found in hierarchy (actual segments)
             if dim in master_member_seq:
