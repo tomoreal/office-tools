@@ -330,6 +330,63 @@ def find_xbrl_files(extract_dir):
     
     return files if 'pre' in files and 'xbrl' in files else None
 
+def fetch_taxonomy_url(year):
+    """Dynamically fetch EDINET taxonomy URL from FSA index page.
+
+    This approach is more robust than hardcoded URLs because:
+    1. FSA may update taxonomy URLs when they reorganize their site
+    2. New years are automatically discovered
+    3. Fallback to hardcoded URLs if fetching fails
+
+    Args:
+        year: Taxonomy year as string (e.g., '2025')
+
+    Returns:
+        str: Taxonomy ZIP URL, or None if not found
+    """
+    try:
+        # Step 1: Fetch index page to find the year's detail page
+        index_url = 'https://www.fsa.go.jp/search/EDINET_Taxonomy_All.html'
+        debug_log(f"Fetching taxonomy index from {index_url}")
+
+        with urllib.request.urlopen(index_url, timeout=10) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+
+        # Step 2: Parse to find the link for requested year
+        # Pattern: <a href="/search/YYYYMMDD.html">YYYY年版EDINETタクソノミ</a>
+        import re
+        pattern = rf'<a href="(/search/\d+\.html)">{year}年版EDINETタクソノミ</a>'
+        match = re.search(pattern, html)
+
+        if not match:
+            debug_log(f"Could not find {year} taxonomy link in index page")
+            return None
+
+        detail_path = match.group(1)
+        detail_url = f'https://www.fsa.go.jp{detail_path}'
+        debug_log(f"Found detail page: {detail_url}")
+
+        # Step 3: Fetch detail page to find ZIP download link
+        with urllib.request.urlopen(detail_url, timeout=10) as response:
+            detail_html = response.read().decode('utf-8', errors='ignore')
+
+        # Pattern: <a href="/search/YYYYMMDD/1c_Taxonomy.zip">
+        zip_pattern = r'(/search/\d+/1c_Taxonomy\.zip)'
+        zip_match = re.search(zip_pattern, detail_html)
+
+        if zip_match:
+            zip_path = zip_match.group(1)
+            taxonomy_url = f'https://www.fsa.go.jp{zip_path}'
+            debug_log(f"Found taxonomy URL: {taxonomy_url}")
+            return taxonomy_url
+        else:
+            debug_log(f"Could not find Taxonomy.zip link in detail page")
+            return None
+
+    except Exception as e:
+        debug_log(f"ERROR: Failed to fetch taxonomy URL for {year}: {e}")
+        return None
+
 def get_standard_labels(year, cache_dir=None):
     """Returns (all_labels, label_priorities) for the given taxonomy year.
     Uses cached standard_labels.json if it exists.
@@ -340,9 +397,12 @@ def get_standard_labels(year, cache_dir=None):
     start_time = time.time()
     tax_dir = os.path.join(cache_dir, str(year))
     labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
-    
+
     debug_log(f"Checking taxonomy cache: {labels_cache_file}")
-    urls = {
+
+    # Fallback URLs (hardcoded) - used if dynamic fetching fails
+    # These are maintained for reliability and offline operation
+    fallback_urls = {
         '2025': 'https://www.fsa.go.jp/search/20241112/1c_Taxonomy.zip',
         '2024': 'https://www.fsa.go.jp/search/20231211/1c_Taxonomy.zip',
         '2023': 'https://www.fsa.go.jp/search/20221108/1c_Taxonomy.zip',
@@ -352,13 +412,18 @@ def get_standard_labels(year, cache_dir=None):
         '2019': 'https://www.fsa.go.jp/search/20190228/1c_Taxonomy.zip',
         '2018': 'https://www.fsa.go.jp/search/20180228/1c_Taxonomy.zip',
     }
-    
-    if year not in urls:
-        vprint(f"Taxonomy for year {year} not found in our known URL map.")
-        return {}, {}
-        
-    tax_dir = os.path.join(cache_dir, str(year))
-    labels_cache_file = os.path.join(tax_dir, 'standard_labels.json')
+
+    # Try to fetch URL dynamically from FSA index page (more robust for future updates)
+    taxonomy_url = fetch_taxonomy_url(year)
+
+    # Fallback to hardcoded URLs if dynamic fetch fails
+    if not taxonomy_url:
+        if year in fallback_urls:
+            taxonomy_url = fallback_urls[year]
+            debug_log(f"Using fallback URL for {year}")
+        else:
+            vprint(f"Taxonomy for year {year} not found (neither dynamic nor fallback).")
+            return {}, {}
     
     # Try to load from cache (fast path, no lock needed)
     if os.path.exists(labels_cache_file):
@@ -416,7 +481,7 @@ def get_standard_labels(year, cache_dir=None):
                 if not os.path.exists(os.path.join(tax_dir, 'taxonomy')): # rudimentary check for extracted data
                     vprint(f"Downloading EDINET taxonomy for {year} (takes a moment)...")
                     try:
-                        urllib.request.urlretrieve(urls[year], zip_path)
+                        urllib.request.urlretrieve(taxonomy_url, zip_path)
                         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                             # Check for ZIP bomb before extraction
                             check_zip_bomb(zip_ref)
