@@ -10,7 +10,6 @@ import urllib.request
 import re
 import gzip
 import logging
-import subprocess
 from threading import Lock
 from contextlib import contextmanager
 
@@ -26,9 +25,6 @@ try:
 except ImportError:
     import xml.etree.ElementTree as etree
     HAS_LXML = False
-
-# Import EDINET Taxonomy Dictionary
-from edinet_taxonomy_dict import common_dict as EDINET_COMMON_DICT
 
 # Base directory for the script and caching
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -85,101 +81,6 @@ _logger.propagate = False
 
 # Flag to ensure log rotation is only checked once per session
 _log_rotation_checked = False
-
-# Flag to ensure EDINET taxonomy dict update is checked at most once per session
-# (keyed by the highest taxonomy_year seen so far)
-_taxonomy_dict_last_checked_year = None
-
-def get_edinet_taxonomy_dict_year():
-    """Read the taxonomy year embedded in edinet_taxonomy_dict.py's docstring.
-
-    The file header contains a line like:
-        Generated: 2026-03-18 23:48:57
-    We treat the calendar year of generation (e.g. 2026) as the proxy for
-    which taxonomy version the dict was built from.
-
-    Returns:
-        str | None: Four-digit year string (e.g. '2026'), or None on failure.
-    """
-    dict_path = os.path.join(SCRIPT_DIR, 'edinet_taxonomy_dict.py')
-    if not os.path.exists(dict_path):
-        return None
-    try:
-        with open(dict_path, 'r', encoding='utf-8') as f:
-            header = f.read(512)  # Only need the first few lines
-        m = re.search(r'Generated:\s*(\d{4})', header)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return None
-
-
-def check_and_update_edinet_taxonomy(taxonomy_year):
-    """Run update_edinet_taxonomy.py when the XBRL references a newer taxonomy year.
-
-    This is triggered once per session for the highest taxonomy_year encountered.
-    It compares the year embedded in edinet_taxonomy_dict.py against the year
-    found in the XBRL _pre.xml file.  If the XBRL references a newer year, the
-    update script is called as a subprocess so the dict stays current.
-
-    Args:
-        taxonomy_year (str): Four-digit year extracted from the XBRL file
-                             (e.g. '2025').
-    """
-    global _taxonomy_dict_last_checked_year
-
-    if not taxonomy_year:
-        return
-
-    # Skip if we've already checked for this year (or a newer one) this session
-    if _taxonomy_dict_last_checked_year and _taxonomy_dict_last_checked_year >= taxonomy_year:
-        return
-
-    _taxonomy_dict_last_checked_year = taxonomy_year
-
-    dict_year = get_edinet_taxonomy_dict_year()
-    debug_log(f"[TaxonomyDict] XBRL year={taxonomy_year}, dict_year={dict_year}")
-
-    # Trigger update when the XBRL references a newer year than the current dict
-    if dict_year is None or taxonomy_year > dict_year:
-        debug_log(f"[TaxonomyDict] Newer taxonomy detected ({taxonomy_year} > {dict_year}). Running update_edinet_taxonomy.py...")
-        update_script = os.path.join(SCRIPT_DIR, 'update_edinet_taxonomy.py')
-        if not os.path.exists(update_script):
-            debug_log(f"[TaxonomyDict] update_edinet_taxonomy.py not found at {update_script}, skipping.")
-            return
-        try:
-            result = subprocess.run(
-                [sys.executable, update_script],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                cwd=SCRIPT_DIR,
-            )
-            if result.returncode == 0:
-                debug_log(f"[TaxonomyDict] update_edinet_taxonomy.py completed successfully.")
-                # Reload the updated module so this session uses the new dict
-                import importlib
-                try:
-                    import edinet_taxonomy_dict
-                    importlib.reload(edinet_taxonomy_dict)
-                    # Re-bind the global EDINET_COMMON_DICT to the refreshed module
-                    global EDINET_COMMON_DICT
-                    EDINET_COMMON_DICT = edinet_taxonomy_dict.common_dict
-                    debug_log(f"[TaxonomyDict] edinet_taxonomy_dict reloaded ({len(EDINET_COMMON_DICT)} items).")
-                except Exception as e:
-                    debug_log(f"[TaxonomyDict] WARNING: Could not reload edinet_taxonomy_dict: {e}")
-            else:
-                debug_log(f"[TaxonomyDict] update_edinet_taxonomy.py exited with code {result.returncode}.")
-                if result.stderr:
-                    debug_log(f"[TaxonomyDict] stderr: {result.stderr[:500]}")
-        except subprocess.TimeoutExpired:
-            debug_log("[TaxonomyDict] update_edinet_taxonomy.py timed out after 120s.")
-        except Exception as e:
-            debug_log(f"[TaxonomyDict] ERROR running update_edinet_taxonomy.py: {e}")
-    else:
-        debug_log(f"[TaxonomyDict] Dict is up-to-date (year {dict_year} >= {taxonomy_year}), skipping update.")
-
 
 def rotate_logs_manually(log_file):
     """cronが使えない環境向け：プログラム実行時にログをチェックし、1週間単位でローテーション・圧縮を行う"""
@@ -409,7 +310,7 @@ IFRS_LABEL_MAPPING = {
     'jpigp_cor_RevenueIFRS': '売上高',
     'jpigp_cor_Revenue': '売上高',
     'jpigp_cor_ProfitLossBeforeTaxIFRS': '税引前当期利益',
-    'jpigp_cor_ProfitLossAttributableToOwnersOfParentIFRS': '親会社の所有者に帰属する当期利益',
+    'jpigp_cor_ProfitLossAttributableToOwnersOfParentIFRS': '親会社の所有者',
     'jpigp_cor_ProfitLossAttributableToNonControllingInterestsIFRS': '非支配持分',
     'jpigp_cor_AssetsIFRS': '資産合計',
     'jpigp_cor_EquityIFRS': '資本合計',
@@ -1463,8 +1364,6 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         taxonomy_year = '2021' if year_str == '2020' else year_str
             
             if taxonomy_year:
-                # Auto-update edinet_taxonomy_dict.py if XBRL references a newer taxonomy year
-                check_and_update_edinet_taxonomy(taxonomy_year)
                 std_labels, std_priorities = get_standard_labels(taxonomy_year)
                 thread_labels.update(std_labels)
                 thread_priorities.update(std_priorities)
@@ -2700,9 +2599,84 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             }
 
             # Common terminology translations as a fallback
-            # Imported from edinet_taxonomy_dict.py (1,959 items)
-            # Source: EDINET Taxonomy (https://disclosure2dl.edinet-fsa.go.jp/guide/static/disclosure/download/ESE140115.xlsx)
-            common_dict = EDINET_COMMON_DICT
+            common_dict = {
+                'CashAndDeposits': '現金及び預金',
+                'NotesAndAccountsReceivableTrade': '受取手形及び売掛金',
+                'MerchandiseAndFinishedGoods': '商品及び製品',
+                'Notes': '注記',
+                'Inventory': '棚卸資産',
+                'Inventories': '棚卸資産',
+                'PropertyPlantAndEquipment': '有形固定資産',
+                'IntangibleAssets': '無形固定資産',
+                'ConsolidatedBalanceSheet': '連結貸借対照表',
+                'ConsolidatedStatementOfIncome': '連結損益計算書',
+                'ConsolidatedStatementOfCashFlows': '連結キャッシュ・フロー計算書',
+                'ConsolidatedStatementOfChangesInEquity': '連結株主資本等変動計算書',
+                'ConsolidatedStatementOfFinancialPosition': '連結財政状態計算書',
+                'ConsolidatedStatementOfProfitOrLoss': '連結損益計算書',
+                'ConsolidatedStatementOfFinancialPositionIFRS': '連結財政状態計算書',
+                'ConsolidatedStatementOfProfitOrLossIFRS': '連結損益計算書',
+                'ConsolidatedStatementOfCashFlowsIFRS': '連結キャッシュ・フロー計算書',
+                'ConsolidatedStatementOfChangesInEquityIFRS': '連結株主資本等変動計算書',
+                'ConsolidatedStatementOfComprehensiveIncomeIFRS': '連結包括利益計算書',
+                'InvestmentsAndOtherAssets': '投資その他の資産',
+                'Assets': '資産合計',
+                'CurrentLiabilities': '流動負債',
+                'NoncurrentLiabilities': '固定負債',
+                'Liabilities': '負債合計',
+                'NetAssets': '純資産合計',
+                'LiabilitiesAndNetAssets': '負債純資産合計',
+                'NetSales': '売上高',
+                'Revenue': '売上収益',
+                'NetSalesIFRS': '売上収益', 
+                'RevenueIFRS': '売上収益',
+                'CostOfSales': '売上原価',
+                'GrossProfit': '売上総利益',
+                'SellingGeneralAndAdministrativeExpenses': '販売費及び一般管理費',
+                'SellingGeneralAndAdministrativeExpense': '販売費及び一般管理費',
+                'OtherOperatingIncome': 'その他の営業収益',
+                'OtherOperatingExpenses': 'その他の営業費用',
+                'OtherOperatingExpense': 'その他の営業費用',
+                'OtherIncomeIFRS': 'その他の収益', 
+                'OtherExpensesIFRS': 'その他の費用',
+                'OtherOperatingIncomeIFRS': 'その他の営業収益',
+                'OtherOperatingExpensesIFRS': 'その他の営業費用',
+                'ShareOfProfitLossOfAssociatesAndJointVenturesAccountedForUsingEquityMethod': '持分法による投資利益',
+                'OperatingIncome': '営業利益',
+                'OperatingProfit': '営業利益',
+                'OrdinaryIncome': '経常利益',
+                'FinanceIncome': '金融収益',
+                'FinancialIncome': '金融収益',
+                'FinanceCosts': '金融費用',
+                'FinancialExpenses': '金融費用',
+                'FinanceExpenses': '金融費用',
+                'ProfitBeforeTax': '税引前利益',
+                'IncomeTaxExpense': '法人所得税費用',
+                'Profit': '当期利益',
+                'NetIncome': '当期利益',
+                'ProfitLossAttributableToAbstract': '当期利益の帰属',
+                'ProfitAttributableToOwnersOfParent': '親会社の所有者',
+                'ProfitLossAttributableToOwnersOfParent': '親会社の所有者',
+                'ProfitAttributableToNoncontrollingInterests': '非支配持分',
+                'ProfitLossAttributableToNoncontrollingInterests': '非支配持分',
+                'BasicEarningsPerShare': '基本的１株当たり当期利益（円）',
+                'BasicEarningsLossPerShare': '基本的１株当たり当期利益（円）',
+                
+                # Priority IFRS items
+                'CostOfSalesIFRS': '売上原価',
+                'GrossProfitIFRS': '売上総利益',
+                'SellingGeneralAndAdministrativeExpensesIFRS': '販売費及び一般管理費',
+                'ShareOfProfitLossOfInvestmentsAccountedForUsingEquityMethodIFRS': '持分法による投資利益',
+                'OperatingProfitLossIFRS': '営業利益',
+                'FinanceIncomeIFRS': '金融収益',
+                'FinanceCostsIFRS': '金融費用',
+                'ProfitLossBeforeTaxIFRS': '（税引前当期損益）',
+                'IncomeTaxExpenseIFRS': '法人所得税費用',
+                'ProfitLossIFRS': '当期利益',
+                'ProfitLossAttributableToOwnersOfParentIFRS': '親会社の所有者',
+                'ProfitLossAttributableToNonControllingInterestsIFRS': '非支配持分',
+                'BasicEarningsPerShareIFRS': '基本的１株当たり当期利益（円）'
+            }
             
             parts = el.split('_')
             base_name = parts[-1] if len(parts) > 1 else el
