@@ -1202,12 +1202,12 @@ def create_hierarchy(parent_child_arcs):
         if p not in adj: adj[p] = []
         adj[p].append(arc)
     
-    # Sort children by appearance order (index) to preserve natural XBRL order
+    # Sort children by presentation order (order attribute from linkbase)
     for p in adj:
-        # Primary: index (appearance order in XBRL)
-        # Secondary: order (explicit ordering from presentation linkbase, if defined)
+        # Primary: order (explicit ordering from presentation linkbase, if defined)
+        # Secondary: index (appearance order in XBRL)
         # Tertiary: child name (for stable sorting)
-        adj[p].sort(key=lambda x: (x.get('index', 0), x.get('order', 0), x['child']))
+        adj[p].sort(key=lambda x: (x.get('order', 0), x.get('index', 0), x['child']))
         
     roots = set(arc['parent'] for arc in parent_child_arcs)
     children = set(arc['child'] for arc in parent_child_arcs)
@@ -1901,8 +1901,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         tree_arcs = [{'parent': p, 'child': c, 'order': o_i[0], 'index': o_i[1], 'preferredLabel': pl}
                      for (p, c, pl), o_i in pd_dict.items()]
 
-        # Use original appearance order (index) for hierarchy creation
-        # This preserves the natural order defined in XBRL without ad-hoc manipulation
+        # Create hierarchy using presentation order (order attribute from linkbase)
+        # This preserves the proper display order defined in XBRL presentation linkbase
         ordered_items = create_hierarchy(tree_arcs)
 
         # Determine this role's statement type for filtering
