@@ -2006,6 +2006,93 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         # This preserves the proper display order defined in XBRL presentation linkbase
         ordered_items = create_hierarchy(tree_arcs)
 
+        # FIX: For Cash Flow statements, ensure section totals appear AFTER their detail items
+        # When merging multiple years, detail items from older years may have higher order values
+        # than the total from the newest year, causing the total to appear before details
+        base_name = role.split('_')[-1]
+        if 'CashFlow' in base_name:
+            # Define Cash Flow section total elements that must appear last within their sections
+            # We identify sections by the total element itself, and find its siblings
+            cf_section_totals = [
+                'NetCashProvidedByUsedInOperatingActivities',
+                'NetCashProvidedByUsedInInvestingActivities',
+                'NetCashProvidedByUsedInFinancingActivities',
+            ]
+
+            # For each section total element, ensure it appears after all its sibling detail items
+            for total_element_suffix in cf_section_totals:
+                # Find the total element
+                total_item = None
+                total_item_index = None
+                total_parent_path = None
+
+                for i, (el, full_path, depth, pref_label) in enumerate(ordered_items):
+                    # Check if this is the total element (ends with the total element name)
+                    if el.endswith(total_element_suffix):
+                        total_item = (el, full_path, depth, pref_label)
+                        total_item_index = i
+                        # Extract parent path (everything before the last "::")
+                        if '::' in full_path:
+                            total_parent_path = '::'.join(full_path.split('::')[:-1])
+                        break
+
+                # If we found a total element, find all its siblings (same parent, same or higher depth)
+                if total_item and total_item_index is not None and total_parent_path is not None:
+                    sibling_items = []
+
+                    for i, (el, full_path, depth, pref_label) in enumerate(ordered_items):
+                        # Skip the total element itself
+                        if i == total_item_index:
+                            continue
+
+                        # Check if this item has the same parent path (i.e., it's a sibling)
+                        # We identify siblings as items that have the total's parent in their path
+                        # and are at the same or deeper level
+                        if total_parent_path in full_path:
+                            # Make sure it's a detail item, not a sub-section total
+                            # (e.g., it shouldn't be another section's total or abstract)
+                            is_detail = True
+                            for other_total in cf_section_totals:
+                                if other_total != total_element_suffix and el.endswith(other_total):
+                                    is_detail = False
+                                    break
+
+                            if is_detail:
+                                sibling_items.append(i)
+
+                    # If there are siblings after the total, we need to move the total to the end
+                    if sibling_items:
+                        last_sibling_index = max(sibling_items)
+
+                        # If the total appears before the last sibling, move it
+                        if total_item_index < last_sibling_index:
+                            # Remove the total from its current position
+                            ordered_items.pop(total_item_index)
+
+                            # Recalculate sibling positions after removal
+                            new_sibling_items = []
+                            for i, (el, full_path, depth, pref_label) in enumerate(ordered_items):
+                                if i == total_item_index:
+                                    continue
+
+                                if total_parent_path in full_path:
+                                    is_detail = True
+                                    for other_total in cf_section_totals:
+                                        if other_total != total_element_suffix and el.endswith(other_total):
+                                            is_detail = False
+                                            break
+
+                                    if is_detail:
+                                        new_sibling_items.append(i)
+
+                            # Insert the total after the last sibling
+                            if new_sibling_items:
+                                insert_pos = max(new_sibling_items) + 1
+                                ordered_items.insert(insert_pos, total_item)
+                            else:
+                                # If no siblings found after removal, just append at the end
+                                ordered_items.append(total_item)
+
         # Determine this role's statement type for filtering
         current_role_type = None
         base_name = role.split('_')[-1]
