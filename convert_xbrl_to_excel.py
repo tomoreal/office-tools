@@ -2810,6 +2810,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             display_label = display_label.replace(' [目次項目]', '').replace(' [タイトル項目]', '')
             display_label = display_label.replace('（IFRS）', '').replace('(IFRS)', '')
             display_label = display_label.replace('、経営指標等', '')
+            # Remove IFRS classification suffixes
+            display_label = display_label.replace('、流動資産', '').replace('、非流動資産', '')
+            display_label = display_label.replace('、流動負債', '').replace('、非流動負債', '')
             # Remove Cash Flow activity suffixes for IFRS
             display_label = display_label.replace('、営業活動によるキャッシュ・フロー', '')
             display_label = display_label.replace('、投資活動によるキャッシュ・フロー', '')
@@ -2923,6 +2926,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     pref_label and pref_label.endswith(('periodEndLabel', 'totalLabel'))):
                     # Create beginning balance row
                     beginning_label = label.replace('（期末残高）', '（期首残高）')
+                    # Clean up IFRS suffixes from beginning label
+                    beginning_label = beginning_label.replace('（IFRS）', '').replace('(IFRS)', '')
+                    beginning_label = beginning_label.replace('、流動資産', '').replace('、非流動資産', '')
+                    beginning_label = beginning_label.replace('、流動負債', '').replace('、非流動負債', '')
+                    beginning_label = beginning_label.strip()
+
                     beginning_row = [indent_prefix + beginning_label, el]
 
                     # For each column, use the prior period's value
@@ -3180,6 +3189,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 display_label = display_label.replace(' [目次項目]', '').replace(' [タイトル項目]', '')
                 display_label = display_label.replace('（IFRS）', '').replace('(IFRS)', '')
                 display_label = display_label.replace('、経営指標等', '')
+                display_label = display_label.replace('、流動資産', '').replace('、非流動資産', '')
+                display_label = display_label.replace('、流動負債', '').replace('、非流動負債', '')
                 display_label = display_label.strip()
 
                 # For each year, create a row
