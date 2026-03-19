@@ -2029,6 +2029,25 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Stop only when a mapped element has a different statement type
             should_stop = False
 
+            # --- STRICT FILTER: Explicit P/L element blacklist for Balance Sheet ---
+            # Some XBRL files incorrectly include specific P/L items in balance sheet roles
+            # Use explicit element name matching to filter these out (avoids false positives)
+            if current_role_type == 'BalanceSheet':
+                # Explicit P/L element patterns that should never appear in balance sheet
+                # These are complete element name patterns (not substrings) to avoid false positives
+                pl_element_patterns = (
+                    'OperatingRevenue1', 'OperatingRevenue2',  # 営業収益
+                    'NetSales', 'OrdinaryIncome', 'OrdinaryLoss',  # 売上高、経常利益/損失
+                    'OperatingProfit', 'OperatingLoss',  # 営業利益/損失
+                    'GrossProfit', 'GrossLoss',  # 売上総利益/損失
+                    'ProfitBeforeTax', 'LossBeforeTax',  # 税引前利益/損失
+                    'BasicEarningsPerShare', 'DilutedEarningsPerShare',  # 1株当たり利益
+                )
+                # Check if element name ends with any of these patterns (to catch prefixed variants)
+                if any(el.endswith(pattern) for pattern in pl_element_patterns):
+                    debug_log(f"  [BS-Filter] Skipping P/L element '{el}' in BalanceSheet role '{role}'")
+                    should_stop = True
+
             if current_role_type and el in element_to_statement_type:
                 element_type = element_to_statement_type[el]
 
