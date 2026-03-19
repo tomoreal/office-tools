@@ -396,6 +396,7 @@ COMMON_DIMENSION_MAPPING = {
     'BusinessSegmentsMember': '事業セグメント',
     'ReportableSegmentsAxis': '報告セグメント',
     'ReportableSegmentsMember': '報告セグメント',
+    'OtherReportableSegmentsMember': 'その他事業',
     'EntityInformationAxis': '提出者情報',
     # Business Segment Standard Members (2024 Taxonomy)
     'OperatingSegmentsNotIncludedInReportableSegmentsAndOtherRevenueGeneratingBusinessActivitiesMember': '報告セグメント以外の全てのセグメント',
