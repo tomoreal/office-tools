@@ -554,8 +554,10 @@ def write_dictionary_file(final_dict, edinet_count, custom_count):
             f.write('# Maps element names to Japanese account labels\n')
             f.write('common_dict = {\n')
 
-            # Sort and write entries
-            for key in sorted(final_dict.keys()):
+            # Write entries in insertion order (preserves Excel's semantic order)
+            # This maintains the original accounting structure from EDINET taxonomy
+            # (Balance Sheet: Assets -> Liabilities -> Equity, etc.)
+            for key in final_dict.keys():
                 value = final_dict[key]
                 # Escape single quotes
                 value_escaped = value.replace("'", "\\'")
