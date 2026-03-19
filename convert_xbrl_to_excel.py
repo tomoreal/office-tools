@@ -3082,64 +3082,6 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
                 ws.append(row_data)
 
-                # --- INSERT MISSING TOTAL ITEMS (IFRS Balance Sheet) ---
-                # Some IFRS files don't have AssetsIFRS and EquityIFRS in presentation tree
-                # Insert them manually after specific items
-                if 'IFRS' in sheet_name and '貸借対照表' in sheet_name:
-                    # Insert AssetsIFRS after NonCurrentAssetsIFRS
-                    if el == 'jpigp_cor_NonCurrentAssetsIFRS' and pref_label and 'totalLabel' in pref_label:
-                        assets_total_row = ['　　　資産合計', 'jpigp_cor_AssetsIFRS']
-                        # Try to get values from global_element_period_values
-                        has_assets_values = 'jpigp_cor_AssetsIFRS' in global_element_period_values
-                        for col_key in sorted_role_cols:
-                            val = ""
-                            # Check if AssetsIFRS has values
-                            if has_assets_values:
-                                # col_key is (std, dim, period) for role columns
-                                # global_element_period_values keys are also (std, dim, period)
-                                if col_key in global_element_period_values['jpigp_cor_AssetsIFRS']:
-                                    val = global_element_period_values['jpigp_cor_AssetsIFRS'][col_key]
-
-                            # Clean numeric values (same logic as main data processing)
-                            if val:
-                                import unicodedata
-                                val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
-                                try:
-                                    if val_clean and not any(c.isalpha() for c in val_clean):
-                                        val = float(val_clean)
-                                except Exception:
-                                    pass
-
-                            assets_total_row.append(val)
-                        ws.append(assets_total_row)
-
-                    # Insert EquityIFRS after NonControllingInterestsIFRS
-                    if el == 'jpigp_cor_NonControllingInterestsIFRS':
-                        equity_total_row = ['　　　　資本合計', 'jpigp_cor_EquityIFRS']
-                        # Try to get values from global_element_period_values
-                        has_equity_values = 'jpigp_cor_EquityIFRS' in global_element_period_values
-                        for col_key in sorted_role_cols:
-                            val = ""
-                            # Check if EquityIFRS has values
-                            if has_equity_values:
-                                # col_key is (std, dim, period) for role columns
-                                # global_element_period_values keys are also (std, dim, period)
-                                if col_key in global_element_period_values['jpigp_cor_EquityIFRS']:
-                                    val = global_element_period_values['jpigp_cor_EquityIFRS'][col_key]
-
-                            # Clean numeric values (same logic as main data processing)
-                            if val:
-                                import unicodedata
-                                val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
-                                try:
-                                    if val_clean and not any(c.isalpha() for c in val_clean):
-                                        val = float(val_clean)
-                                except Exception:
-                                    pass
-
-                            equity_total_row.append(val)
-                        ws.append(equity_total_row)
-
                 # --- TAXONOMY STRUCTURE-BASED: Stop at appropriate end items ---
                 # Use hierarchy depth and preferredLabel to determine natural end points
 
