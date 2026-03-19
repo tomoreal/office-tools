@@ -1292,16 +1292,8 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
 
 
 
-def create_hierarchy(parent_child_arcs, element_to_statement_type=None):
-    """Create a flattened list representing the hierarchy traversal.
-
-    Args:
-        parent_child_arcs: List of parent-child arc dictionaries
-        element_to_statement_type: Optional mapping of element names to statement types
-
-    Returns:
-        List of tuples: (node_name, full_path, depth, pref_label, statement_type)
-    """
+def create_hierarchy(parent_child_arcs):
+    """Create a flattened list representing the hierarchy traversal."""
     # Group by parent to easily find children
     adj = {}
     for arc in parent_child_arcs:
@@ -1328,24 +1320,19 @@ def create_hierarchy(parent_child_arcs, element_to_statement_type=None):
     seen = set()
     
     def traverse(node_name, path, depth, pref_label=None):
-        # Use a tuple of (node_name, pref_label) to allow the same element
-        # to appear multiple times if it has different preferred labels
+        # Use a tuple of (node_name, pref_label) to allow the same element 
+        # to appear multiple times if it has different preferred labels 
         # (common in Cash Flow for beginning/ending balance)
         node_id = (node_name, pref_label, depth)
         if node_id in seen: return
         seen.add(node_id)
-
+        
         full_path = path + "::" + node_name
         if pref_label:
             full_path += f"|{pref_label}"
-
-        # Lookup statement type for this element
-        statement_type = None
-        if element_to_statement_type:
-            statement_type = element_to_statement_type.get(node_name)
-
-        ordered_items.append((node_name, full_path, depth, pref_label, statement_type))
-
+            
+        ordered_items.append((node_name, full_path, depth, pref_label))
+        
         if node_name in adj:
             for arc in adj[node_name]:
                 traverse(arc['child'], full_path, depth + 1, arc.get('preferredLabel'))
@@ -1600,8 +1587,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             rn_lower = role_name.lower()
                             # Broaden detection to include Japanese terms and variants
                             if 'segment' in rn_lower or 'セグメント' in role_name or '事業' in role_name:
-                                items = create_hierarchy(arcs)  # No mapping needed for segments
-                                for el, path, depth, pref, *_ in items:  # *_ ignores optional statement_type
+                                items = create_hierarchy(arcs)
+                                for el, path, depth, pref in items:
                                     parts = el.split('_')
                                     base = parts[-1]
                                     label = None
@@ -2017,15 +2004,14 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
         # Create hierarchy using presentation order (order attribute from linkbase)
         # This preserves the proper display order defined in XBRL presentation linkbase
-        ordered_items = create_hierarchy(tree_arcs, element_to_statement_type)
+        ordered_items = create_hierarchy(tree_arcs)
 
         # Determine this role's statement type for filtering
         current_role_type = None
         base_name = role.split('_')[-1]
-        # FinancialPosition is the IFRS term for Balance Sheet
-        if 'ConsolidatedBalanceSheet' in base_name or 'BalanceSheet' in base_name or 'FinancialPosition' in base_name:
+        if 'ConsolidatedBalanceSheet' in base_name or 'BalanceSheet' in base_name:
             current_role_type = 'BalanceSheet'
-        elif 'ConsolidatedStatementOfIncome' in base_name or 'StatementOfIncome' in base_name or 'ProfitOrLoss' in base_name:
+        elif 'ConsolidatedStatementOfIncome' in base_name or 'StatementOfIncome' in base_name:
             current_role_type = 'StatementOfIncome'
         elif 'ConsolidatedStatementOfCashFlows' in base_name or 'StatementOfCashFlows' in base_name:
             current_role_type = 'StatementOfCashFlows'
@@ -2037,38 +2023,78 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         all_years_data[role] = {}
         role_to_order[role] = []
 
-        for el, full_path, depth, pref_label, element_statement_type in ordered_items:
-            # --- NEW APPROACH: Filter by statement_type instead of breaking early ---
-            # Skip elements that don't match the current role's statement type
-            # Allow unmapped elements (not in element_to_statement_type) and shared elements (value is None) to pass through
+        for el, full_path, depth, pref_label in ordered_items:
+            # Filter elements based on statement type mapping (FIX V9 - SKIP UNMAPPED, BREAK ON MISMATCH)
+            # Skip elements not in mapping (shared/structural elements)
+            # Stop only when a mapped element has a different statement type
+            should_stop = False
 
-            should_skip = False
+            # --- STRICT FILTER: Explicit cross-statement element blacklist ---
+            # Some XBRL files incorrectly include elements from other statements
+            # Use explicit element name matching to filter these out (avoids false positives)
 
-            # DISABLED: Early filtering removed because it was too aggressive
-            # All filtering now happens at sheet generation time (lines 2745-2753)
-            # This allows Balance Sheet elements to pass through even if mapped to other statements
+            # P/L elements that should never appear in Balance Sheet
+            if current_role_type == 'BalanceSheet':
+                pl_element_patterns = (
+                    'OperatingRevenue1', 'OperatingRevenue2',  # 営業収益
+                    'NetSales', 'OrdinaryIncome', 'OrdinaryLoss',  # 売上高、経常利益/損失
+                    'OperatingProfit', 'OperatingLoss',  # 営業利益/損失
+                    'GrossProfit', 'GrossLoss',  # 売上総利益/損失
+                    'ProfitBeforeTax', 'LossBeforeTax',  # 税引前利益/損失
+                    'BasicEarningsPerShare', 'DilutedEarningsPerShare',  # 1株当たり利益
+                )
+                if any(el.endswith(pattern) for pattern in pl_element_patterns):
+                    debug_log(f"  [BS-Filter] Skipping P/L element '{el}' in BalanceSheet role '{role}'")
+                    should_stop = True
 
-            # if current_role_type and el in element_to_statement_type:
-            #     mapped_type = element_to_statement_type[el]
-            #     if mapped_type is not None:
-            #         if mapped_type != current_role_type and mapped_type != 'Notes':
-            #             debug_log(f"  [Statement-Filter] Skipping {mapped_type} element '{el}' in {current_role_type} role '{role}'")
-            #             should_skip = True
+            # Balance Sheet elements that should never appear in P/L
+            elif current_role_type == 'StatementOfIncome':
+                bs_element_patterns = (
+                    'CashAndDeposits', 'CashAndCashEquivalents',  # 現金預金
+                    'NotesAndAccountsReceivable', 'AccountsReceivable',  # 受取手形・売掛金
+                    'Inventories', 'MerchandiseAndFinishedGoods',  # 棚卸資産
+                    'PropertyPlantAndEquipment', 'IntangibleAssets',  # 有形固定資産、無形固定資産
+                    'TotalAssets', 'TotalLiabilities',  # 資産合計、負債合計
+                    'NotesAndAccountsPayable', 'AccountsPayable',  # 支払手形・買掛金
+                    'TotalEquity', 'ShareCapital', 'RetainedEarnings',  # 純資産、資本金、利益剰余金
+                )
+                if any(el.endswith(pattern) for pattern in bs_element_patterns):
+                    debug_log(f"  [PL-Filter] Skipping BS element '{el}' in StatementOfIncome role '{role}'")
+                    should_stop = True
 
-            # if should_skip:
-            #     continue
+            if current_role_type and el in element_to_statement_type:
+                element_type = element_to_statement_type[el]
 
-            # Store statement_type alongside path and label
-            role_to_order[role].append((full_path, pref_label, element_statement_type))
+                if element_type is None:
+                    # Element is not in mapping (shared/structural) - skip judgment, continue output
+                    debug_log(f"  [Skip-Judgment] Element '{el}' not in mapping (shared) - skipping judgment, continuing output")
+                    # Do NOT stop, just continue to next element
+                elif element_type != current_role_type and element_type != 'Notes':
+                    # Element belongs to a different specific statement type - stop here
+                    # EXCEPTION: Do NOT stop for P/L elements (GrossProfit, OperatingProfit, etc.)
+                    # These may appear in multiple roles due to XBRL structure, but should not cause early termination
+                    pl_element_suffixes = (
+                        'GrossProfit', 'GrossLoss', 'OperatingProfit', 'OperatingLoss',
+                        'OrdinaryIncome', 'OrdinaryLoss', 'ProfitBeforeTax', 'LossBeforeTax',
+                        'NetSales', 'OperatingRevenue', 'Revenue',
+                        'SellingGeneralAndAdministrativeExpenses',  # 販売費及び一般管理費
+                        'NonOperatingIncome', 'NonOperatingExpenses',  # 営業外損益
+                        'ExtraordinaryIncome', 'ExtraordinaryLosses'  # 特別損益
+                    )
+                    if any(el.endswith(suffix) for suffix in pl_element_suffixes):
+                        debug_log(f"  [Type-Filter-Skip] P/L element '{el}' type mismatch ignored (expected: {current_role_type}, mapped: {element_type})")
+                    else:
+                        debug_log(f"  [Type-Filter] Found {element_type} element '{el}' in {current_role_type} role '{role}' - stopping output")
+                        should_stop = True
 
-            # Store statement_type with values
-            all_years_data[role][full_path] = {
-                'statement_type': element_statement_type,
-                'values': {}
-            }
+            if should_stop:
+                break
+
+            role_to_order[role].append((full_path, pref_label))
+            all_years_data[role][full_path] = {}
             if el in global_element_period_values:
                 for period, val in global_element_period_values[el].items():
-                    all_years_data[role][full_path]['values'][period] = val
+                    all_years_data[role][full_path][period] = val
 
     # --- Deduplicate overlapping roles (Fix B - Refined) ---
     # Group roles by their fundamental base name (ignoring prefixes like jppfs_cor_ and suffixes like -indirect)
@@ -2127,13 +2153,13 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         for r in roles:
             if r == primary: continue
             # Merge structure paths
-            existing_paths = {p for p, *_ in role_to_order[primary]}  # Extract path, ignore label and statement_type
-            major_roles = ('ConsolidatedBalanceSheet', 'ConsolidatedStatementOfIncome', 'ConsolidatedStatementOfCashFlows', 'ConsolidatedStatementOfChangesInEquity',
+            existing_paths = {p for p, _ in role_to_order[primary]}
+            major_roles = ('ConsolidatedBalanceSheet', 'ConsolidatedStatementOfIncome', 'ConsolidatedStatementOfCashFlows', 'ConsolidatedStatementOfChangesInEquity', 
                            'BalanceSheet', 'StatementOfIncome', 'StatementOfCashFlows', 'StatementOfChangesInEquity')
             is_major = any(mr in primary for mr in major_roles)
-
+            
             for full_path_data in role_to_order[r]:
-                fp, pl, st = full_path_data  # Unpack path, label, statement_type
+                fp, pl = full_path_data
                 if fp not in existing_paths:
                     # Conservative Merge (V4):
                     # With fallback cleanup, fallback roles should not contaminate taxonomy roles.
@@ -2165,7 +2191,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     role_to_order[primary].append(full_path_data)
                     existing_paths.add(fp)
             # Merge data values
-            for fp, data_dict in all_years_data.get(r, {}).items():
+            for fp, period_vals in all_years_data.get(r, {}).items():
                 # No filtering needed here for now - data should follow structure
                 # The structure merge above handles filtering
 
@@ -2182,14 +2208,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         continue  # Skip non-CF data values
 
                 if fp not in all_years_data[primary]:
-                    all_years_data[primary][fp] = {
-                        'statement_type': data_dict.get('statement_type'),
-                        'values': {}
-                    }
-                # Merge period values
-                for period, val in data_dict.get('values', {}).items():
-                    if period not in all_years_data[primary][fp]['values']:
-                        all_years_data[primary][fp]['values'][period] = val
+                    all_years_data[primary][fp] = {}
+                for period, val in period_vals.items():
+                    if period not in all_years_data[primary][fp]:
+                        all_years_data[primary][fp][period] = val
             roles_to_remove.add(r)
             debug_log(f"[Dedup] Merged {r} into primary {primary} (Base: {match_base})")
             
@@ -2236,8 +2258,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     # Identify periods that are standalone (not consolidated)
     periods_with_standalone = set()
     for role, ordered_keys_dict in all_years_data.items():
-        for full_path, data_dict in ordered_keys_dict.items():
-            for c in data_dict.get('values', {}).keys():
+        for full_path, p_dict in ordered_keys_dict.items():
+            for c in p_dict.keys():
                 # c is now (standard, dim, period)
                 std, dim, period = c if len(c) == 3 else ("JP", c[0], c[1])
                 if dim == '単体':
@@ -2314,7 +2336,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         # --- Role-Based Standard Detection (V13) ---
         # 1. Scan elements in this role to see which standards are explicitly used
         role_detected_stds = set()
-        for full_path, *_ in ordered_keys:  # Ignore label and statement_type
+        for full_path, _ in ordered_keys:
             el_name = full_path.split('/')[-1]
             if el_name.startswith('jpigp_cor'): role_detected_stds.add('IFRS')
             elif el_name.startswith('jppfs_cor'): role_detected_stds.add('JP')
@@ -2524,7 +2546,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         # Check if role contains only TextBlock, Abstract, Heading, Table, Axis, Member elements
         structural_suffixes = ('TextBlock', 'Abstract', 'Heading', 'Table', 'Axis', 'Member', 'LineItems')
         has_data_element = False
-        for full_path, *_ in ordered_keys:  # Extract path, ignore label and statement_type
+        for full_path, _ in ordered_keys:
             # Extract element name from full path (last component)
             element_name = full_path.split('::')[-1]
             # Remove dimension suffix if present (e.g., "ElementName|DimensionName")
@@ -2545,15 +2567,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Merged dimensions for standalone: prioritize '単体' over '全体'
             period_to_best_dim = {}
             for full_path_data in ordered_keys:
-                full_path, *_ = full_path_data  # Extract path, ignore label and statement_type
+                full_path, _ = full_path_data
                 if full_path in all_years_data[role]:
-                    for c in all_years_data[role][full_path].get('values', {}).keys():
+                    for c in all_years_data[role][full_path].keys():
                         # c is (std, dim, period)
                         std, dim, period = c if len(c) == 3 else ("JP", c[0], c[1])
-
+                        
                         if dim == '連結': continue
                         if dim not in ('全体', '単体'): continue
-
+                        
                         if period not in period_to_best_dim:
                             period_to_best_dim[period] = (std, dim)
                         elif dim == '単体':
@@ -2561,9 +2583,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             role_columns = set((s, d, p) for p, (s, d) in period_to_best_dim.items())
         else:
             for full_path_data in ordered_keys:
-                full_path, *_ = full_path_data  # Extract path, ignore label and statement_type
+                full_path, pref_label = full_path_data
                 if full_path in all_years_data[role]:
-                    for c in all_years_data[role][full_path].get('values', {}).keys():
+                    for c in all_years_data[role][full_path].keys():
                         # c is (std, dim, period)
                         std, dim, period = c if len(c) == 3 else ("JP", c[0], c[1])
                         
@@ -2686,7 +2708,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 ws.append(["勘定科目", "項目（英名）"] + [c[2] for c in sorted_role_cols])
         
         for full_path_data in ordered_keys:
-            full_path, pref_label, *_ = full_path_data  # Extract path and label, ignore statement_type
+            full_path, pref_label = full_path_data
             # Extract element name to get label
             el = full_path.split('::')[-1]
             if '|' in el: el = el.split('|')[0]
@@ -2696,59 +2718,6 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Skip only TextBlock, Axis, Member, Table, LineItems
             if el.endswith(("TextBlock","Axis","Member","Table","LineItems")):
                 continue
-
-            # --- 財務諸表フィルタリング: 注記情報の要素を除外 ---
-            # 注記シートは除外（注記シートでは販管費内訳などの詳細情報を表示すべき）
-            is_notes_sheet = sheet_name.startswith('注記_')
-            is_consolidated_sheet = '連結' in sheet_name
-            is_financial_statement_sheet = any(kw in sheet_name for kw in ('貸借対照表', '損益計算書', '包括利益', 'キャッシュ・フロー', '株主資本'))
-
-            # 連結財務諸表のみに注記情報フィルタリングを適用
-            # 単体財務諸表では販管費内訳を表示（日本の会計実務では一般的）
-            if is_financial_statement_sheet and is_consolidated_sheet and not is_notes_sheet:
-                # 1. 注記情報の要素パターンを除外
-                notes_keywords = [
-                    'NumberOfConsolidatedSubsidiaries',  # 連結子会社の数
-                    'NumberOfUnconsolidatedSubsidiaries',  # 非連結子会社の数
-                    'NumberOfAffiliates',  # 関連会社の数
-                    'SummaryOfBusinessResults',  # 経営指標等
-                    'DescriptionOfFactAndReason',  # 記載を省略している旨
-                    'RetirementBenefitExpensesSGA',  # 退職給付費用（販管費内訳）
-                    'ResearchStudyExpensesSGA',  # 調査研究費（販管費内訳）
-                    'ProvisionOfAllowanceForDoubtfulAccountsSGA',  # 貸倒引当金繰入額（販管費内訳）
-                    'AmortizationOfGoodwillSGA',  # のれん償却額（販管費内訳）
-                    'DepreciationSGA',  # 減価償却費（販管費内訳）
-                    'ProvisionForBonusesSGA',  # 賞与引当金繰入額（販管費内訳）
-                    'RecruitmentExpensesSGA',  # 採用教育費（販管費内訳）
-                    'AdvertisingExpensesSGA',  # 広告宣伝費（販管費内訳）
-                ]
-                if any(keyword in el for keyword in notes_keywords):
-                    continue
-
-                # 2. element_to_statement_typeを使ってフィルタリング
-                # DISABLED: This filtering was too aggressive because elements can appear in multiple statement types
-                # For example, FinanceIncomeIFRS appears in both P/L and Notes
-                # Rely on keyword filtering above and early termination logic instead
-
-                # element_statement_type = element_to_statement_type.get(el)
-                # current_sheet_type = None
-                # if '貸借対照表' in sheet_name:
-                #     current_sheet_type = 'BalanceSheet'
-                # elif '損益計算書' in sheet_name:
-                #     current_sheet_type = 'StatementOfIncome'
-                # elif 'キャッシュ・フロー' in sheet_name:
-                #     current_sheet_type = 'StatementOfCashFlows'
-                # elif '株主資本' in sheet_name or '純資産' in sheet_name:
-                #     current_sheet_type = 'StatementOfChangesInEquity'
-                # elif '包括利益' in sheet_name:
-                #     current_sheet_type = 'StatementOfComprehensiveIncome'
-                #
-                # if (element_statement_type is not None and
-                #     current_sheet_type is not None and
-                #     current_sheet_type != 'BalanceSheet' and
-                #     element_statement_type != current_sheet_type and
-                #     not el.endswith(("Abstract", "Heading"))):
-                #     continue
 
             # Determine if this element is a heading (Abstract or Heading suffix)
             is_heading = el.endswith(("Abstract", "Heading"))
@@ -2945,14 +2914,14 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
                 # Only use fallback if this isn't a CF start row (to avoid pulling ending balance)
                 if val == "" and not (is_cf_sheet and is_start_row):
-                    val = all_years_data[role][full_path].get('values', {}).get(col_key, "")
+                    val = all_years_data[role][full_path].get(col_key, "")
                     if val == "" and (is_segment and 'AnalysisOfOperatingResults' in base_name):
                         # Fallback for analysis roles: if exact standard fails, try others for this dim/period
                         # because these roles are often sparsely populated across standards in some XBRL sets
                         for s in ['JP', 'IFRS', 'US', 'JMIS']:
                             if s == col_key[0]: continue
                             test_key = (s, col_key[1], col_key[2])
-                            v = all_years_data[role][full_path].get('values', {}).get(test_key, "")
+                            v = all_years_data[role][full_path].get(test_key, "")
                             if v != "":
                                 val = v
                                 break
@@ -2974,9 +2943,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
             # Display heading elements even if they have no data (for hierarchy structure)
             # Display data elements only if they have at least one value
-            # ALSO display total items (with totalLabel) even if they have no data (for user to add formulas)
-            is_total_item = pref_label and 'totalLabel' in pref_label
-            if has_data or is_heading or is_total_item:
+            if has_data or is_heading:
                 # --- セグメント情報や財務諸表の文字情報の除外 (Current Refinement) ---
                 # Remove unwanted text blocks like *FinancialInformation or long descriptions
                 # But keep heading elements for hierarchy structure
@@ -3098,7 +3065,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
                     # Look ahead to see if we're returning to parent level
                     for next_idx in range(current_idx + 1, len(ordered_keys_list)):
-                        next_fp, *_ = ordered_keys_list[next_idx]  # Extract path, ignore label and statement_type
+                        next_fp, _ = ordered_keys_list[next_idx]
                         next_el_name = next_fp.split('::')[-1]
                         if '|' in next_el_name:
                             next_el_name = next_el_name.split('|')[0]
@@ -3128,7 +3095,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         # Check if there are more CashAndCash items with periodStartLabel ahead
                         has_more_cash_items = False
                         for next_idx in range(current_idx + 1, len(ordered_keys)):
-                            next_fp, next_pref, *_ = ordered_keys[next_idx]  # Extract path and label, ignore statement_type
+                            next_fp, next_pref = ordered_keys[next_idx]
                             next_el = next_fp.split('::')[-1]
                             if '|' in next_el:
                                 next_el = next_el.split('|')[0]
@@ -3146,52 +3113,20 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             break
 
                 # Profit/Loss Statement: Stop at final profit or EPS items
-                # Track if we should stop after THIS iteration
-                should_stop_after_this = False
-
                 if is_pl_sheet:
                     # Look for final profit or EPS items with totalLabel or at natural end
                     # IMPORTANT: Only match FINAL profit items, not intermediate ones like GrossProfit, OperatingProfit
                     is_profit_item = any(keyword in el for keyword in ['ProfitLoss', 'NetIncome']) and not any(kw in el for kw in ['Gross', 'Operating', 'Ordinary'])
                     is_eps_item = any(keyword in el for keyword in ['EarningsPerShare', 'EarningsLossPerShare'])
 
-                    # FIX: Check for specific final profit items (to avoid notes info mixing in)
-                    final_profit_elements = [
-                        'ProfitLossAttributableToOwnersOfParent',  # 親会社株主に帰属する当期純利益
-                        'ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults',
-                    ]
-                    is_final_profit = any(el.endswith(final_el) for final_el in final_profit_elements)
-
-                    if is_final_profit:
-                        # Stop AFTER displaying this item
-                        should_stop_after_this = True
-
                     if is_profit_item or is_eps_item:
                         # If this has totalLabel OR is at end of hierarchy, consider it as endpoint
                         if pref_label and 'totalLabel' in pref_label:
                             if is_end_of_statement(current_idx, ordered_keys):
-                                should_stop_after_this = True
+                                break
                         # Even without totalLabel, if it's a key final item at natural end
                         elif is_eps_item and is_end_of_statement(current_idx, ordered_keys):
-                            should_stop_after_this = True
-
-                # Balance Sheet: Stop at final total items
-                is_bs_sheet = '貸借対照表' in sheet_name
-                if is_bs_sheet:
-                    # FIX: Stop at specific final balance sheet items
-                    final_bs_elements = [
-                        'LiabilitiesAndNetAssets',  # 負債及び純資産合計
-                        'LiabilitiesAndEquityIFRS',  # 負債及び資本合計（IFRS）
-                    ]
-                    is_final_bs_total = any(el.endswith(final_el) for final_el in final_bs_elements)
-
-                    if is_final_bs_total and pref_label and 'totalLabel' in pref_label:
-                        # Stop AFTER displaying this item
-                        should_stop_after_this = True
-
-                # Break at the end of the loop iteration if needed
-                if should_stop_after_this:
-                    break
+                            break
 
         # Apply formatting and column widths
         ratio_elements = {
@@ -3272,7 +3207,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             seen_rows_analysis = set()
             
             for full_path_data in ordered_keys:
-                full_path, pref_label, *_ = full_path_data  # Extract path and label, ignore statement_type
+                full_path, pref_label = full_path_data
                 el = full_path.split('::')[-1]
                 if '|' in el: el = el.split('|')[0]
 
@@ -3317,7 +3252,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         found_v = ""
                         stds_to_check = [current_standard] if current_standard != 'JP_ALL' else ['IFRS', 'JP', 'US', 'JMIS']
                         for s in stds_to_check:
-                            v = all_years_data[role][full_path].get('values', {}).get((s, dim, period))
+                            v = all_years_data[role][full_path].get((s, dim, period))
                             if v is not None:
                                 found_v = v
                                 break
@@ -3359,7 +3294,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         # Check if there are more CashAndCash items ahead
                         has_more_cash_items = False
                         for next_idx in range(current_idx + 1, len(ordered_keys)):
-                            next_fp, *_ = ordered_keys[next_idx]  # Extract path, ignore label and statement_type
+                            next_fp, _ = ordered_keys[next_idx]
                             next_el_name = next_fp.split('::')[-1]
                             if '|' in next_el_name:
                                 next_el_name = next_el_name.split('|')[0]
@@ -3378,7 +3313,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         current_depth = len(full_path.split('::')) - 1
                         is_at_end = True
                         for next_idx in range(current_idx + 1, len(ordered_keys)):
-                            next_fp, *_ = ordered_keys[next_idx]  # Extract path, ignore label and statement_type
+                            next_fp, _ = ordered_keys[next_idx]
                             next_el_name = next_fp.split('::')[-1]
                             if '|' in next_el_name:
                                 next_el_name = next_el_name.split('|')[0]
