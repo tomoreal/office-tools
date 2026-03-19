@@ -42,6 +42,15 @@ import openpyxl
 import json
 import logging
 from datetime import datetime
+from contextlib import contextmanager
+
+# Import fcntl for file locking (Unix/Linux/Mac)
+# Fallback to no-op lock on Windows
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
 
 # Logging configuration
 LOG_FILE = "update_edinet_taxonomy.log"
@@ -81,9 +90,62 @@ TAXONOMY_FILE = "edinet_taxonomy_elements.xlsx"
 OUTPUT_FILE = "edinet_taxonomy_dict.py"
 HASH_FILE = ".edinet_taxonomy.hash"
 METADATA_FILE = ".edinet_taxonomy.meta"  # Stores ETag and Last-Modified
+LOCK_FILE = ".edinet_taxonomy_update.lock"  # Process-level lock for update operations
 
 # Logger will be initialized in main()
 logger = None
+
+@contextmanager
+def file_lock(lock_path):
+    """
+    Cross-process file lock using fcntl (Unix/Linux/Mac).
+
+    This prevents race conditions when multiple processes try to update
+    the taxonomy dictionary simultaneously (e.g., cron jobs, manual runs).
+
+    Args:
+        lock_path: Path to lock file
+
+    Yields:
+        None
+
+    Note:
+        On Windows (where fcntl is unavailable), this becomes a no-op.
+        Windows users should avoid running multiple update processes simultaneously.
+    """
+    lock_file = None
+    try:
+        if HAS_FCNTL:
+            # Create lock file if it doesn't exist
+            lock_file = open(lock_path, 'w')
+
+            # Acquire exclusive lock (blocks until available)
+            # LOCK_EX: exclusive lock
+            # This will wait if another process holds the lock
+            try:
+                logger.debug(f"Acquiring file lock: {lock_path}")
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                logger.debug(f"File lock acquired: {lock_path}")
+            except IOError as e:
+                logger.warning(f"Could not acquire file lock: {e}")
+                # Continue anyway (non-fatal)
+
+            yield
+        else:
+            # Windows: no file lock available
+            # User must ensure no concurrent update processes
+            logger.debug("fcntl not available, skipping file lock (ensure no concurrent updates on Windows)")
+            yield
+    finally:
+        if lock_file:
+            try:
+                # Release lock and close file
+                if HAS_FCNTL:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    logger.debug(f"File lock released: {lock_path}")
+                lock_file.close()
+            except:
+                pass
 
 def check_remote_update():
     """
@@ -202,6 +264,7 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
 
                 # Atomic rename: only replace original file if download succeeded
                 # This prevents partial/corrupted files
+                backup_path = None
                 if os.path.exists(TAXONOMY_FILE):
                     # Backup old file before replacing (optional safety measure)
                     backup_path = TAXONOMY_FILE + '.bak'
@@ -213,7 +276,7 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
                 os.rename(temp_path, TAXONOMY_FILE)
 
                 # Remove backup if everything succeeded
-                if os.path.exists(backup_path):
+                if backup_path and os.path.exists(backup_path):
                     os.remove(backup_path)
 
                 logger.info(f"✓ Downloaded: {TAXONOMY_FILE}")
@@ -233,6 +296,14 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
             if e.code == 304:
                 # 304 Not Modified - no need to download
                 logger.info("✓ Remote file unchanged (304 Not Modified)")
+
+                # Update metadata even on 304 to track last check time
+                # The metadata passed in contains the latest ETag/Last-Modified from HEAD request
+                if metadata:
+                    updated_metadata = metadata.copy()
+                    updated_metadata['checked_at'] = datetime.now().isoformat()
+                    save_metadata(updated_metadata)
+
                 # Clean up temp file
                 try:
                     os.close(temp_fd)
@@ -382,6 +453,13 @@ def generate_dictionary():
 
             # Namespace filtering: Use BLACKLIST instead of whitelist
             # This allows IFRS, extensions, and future taxonomies
+            #
+            # Design rationale:
+            # - EDINET taxonomy may add new namespaces in the future (jpigp_cor, ifrs_full, etc.)
+            # - Whitelist approach would require code changes for each taxonomy update
+            # - Blacklist approach automatically accepts valid namespaces from EDINET
+            # - Company-specific extensions (e.g., jpcrp030000-asr_E01225-000) won't match
+            #   during XBRL parsing anyway (element names differ)
             NAMESPACE_BLACKLIST = {
                 '名前空間プレフィックス',  # Header itself (not actual data)
                 None,                      # Empty namespace
@@ -588,6 +666,18 @@ def main():
     logger.info("=" * 80)
     logger.info("")
 
+    # Acquire file lock to prevent concurrent update processes
+    # This protects against race conditions when:
+    # - Multiple cron jobs run simultaneously
+    # - Manual update runs while cron job is active
+    # - convert_xbrl_to_excel.py reads files being updated
+    with file_lock(LOCK_FILE):
+        return _main_locked(force, debug)
+
+def _main_locked(force, debug):
+    """Main function implementation (runs under file lock)"""
+    global logger
+
     # Step 1: Check for remote updates (unless file doesn't exist)
     needs_download = False
     remote_metadata = None
@@ -606,6 +696,9 @@ def main():
             needs_download = True
         else:
             logger.info("Remote file unchanged - no download needed")
+            # Save metadata even when no update needed to track last check time
+            if remote_metadata:
+                save_metadata(remote_metadata)
 
     # Step 2: Download if needed
     file_changed = False
