@@ -126,6 +126,7 @@ def check_remote_update():
 def download_taxonomy(use_conditional_request=False, metadata=None):
     """
     Download EDINET taxonomy file with optional conditional request.
+    Uses atomic rename to prevent partial file corruption.
 
     Args:
         use_conditional_request: If True, use If-None-Match or If-Modified-Since headers
@@ -135,6 +136,10 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
         tuple: (success: bool, was_modified: bool)
     """
     print(f"Downloading EDINET taxonomy from: {EDINET_TAXONOMY_URL}")
+
+    # Use temporary file for atomic download
+    import tempfile
+    temp_fd, temp_path = tempfile.mkstemp(suffix='.xlsx', prefix='edinet_taxonomy_')
 
     try:
         req = urllib.request.Request(EDINET_TAXONOMY_URL)
@@ -150,9 +155,29 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
 
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
-                # Download the file
-                with open(TAXONOMY_FILE, 'wb') as f:
+                # Download to temporary file first (atomic operation)
+                with os.fdopen(temp_fd, 'wb') as f:
                     f.write(response.read())
+
+                # Verify file was written successfully
+                if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+                    raise IOError("Downloaded file is empty or missing")
+
+                # Atomic rename: only replace original file if download succeeded
+                # This prevents partial/corrupted files
+                if os.path.exists(TAXONOMY_FILE):
+                    # Backup old file before replacing (optional safety measure)
+                    backup_path = TAXONOMY_FILE + '.bak'
+                    if os.path.exists(backup_path):
+                        os.remove(backup_path)
+                    os.rename(TAXONOMY_FILE, backup_path)
+
+                # Atomic rename from temp to final location
+                os.rename(temp_path, TAXONOMY_FILE)
+
+                # Remove backup if everything succeeded
+                if os.path.exists(backup_path):
+                    os.remove(backup_path)
 
                 print(f"✓ Downloaded: {TAXONOMY_FILE}")
 
@@ -171,12 +196,29 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
             if e.code == 304:
                 # 304 Not Modified - no need to download
                 print("✓ Remote file unchanged (304 Not Modified)")
+                # Clean up temp file
+                try:
+                    os.close(temp_fd)
+                except:
+                    pass
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
                 return True, False
             else:
                 raise
 
     except Exception as e:
         print(f"✗ Download failed: {e}")
+        # Clean up temp file on error
+        try:
+            os.close(temp_fd)
+        except:
+            pass
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except:
+            pass
         return False, False
 
 def save_metadata(metadata):
