@@ -251,6 +251,22 @@ def save_hash():
         f.write(current_hash)
     print(f"✓ Saved taxonomy hash: {current_hash[:16]}...")
 
+def get_column_index_map(ws, header_row=2):
+    """
+    Create column name to index mapping from header row.
+    This makes the code resilient to column reordering.
+
+    Args:
+        ws: openpyxl worksheet
+        header_row: Row number containing headers (1-indexed)
+
+    Returns:
+        dict: {column_name: index}
+    """
+    headers = [cell.value for cell in ws[header_row]]
+    idx_map = {name: i for i, name in enumerate(headers) if name}
+    return idx_map
+
 def generate_dictionary():
     """Generate dictionary from EDINET taxonomy (all industry sheets)"""
     print(f"Generating dictionary from: {TAXONOMY_FILE}")
@@ -273,10 +289,22 @@ def generate_dictionary():
             ws = wb[sheet_name]
             sheet_count = 0
 
+            # Build column index map from header (row 2)
+            # This makes code resilient to column reordering
+            idx_map = get_column_index_map(ws, header_row=2)
+
+            # Validate required columns exist
+            required_columns = ['要素名', '名前空間プレフィックス', '標準ラベル（日本語）']
+            missing_columns = [col for col in required_columns if col not in idx_map]
+            if missing_columns:
+                print(f"  ⚠ Skipping sheet '{sheet_name}': Missing columns {missing_columns}")
+                continue
+
             for row in ws.iter_rows(min_row=3, values_only=True):
-                element_name = row[8]  # Column I: Element name
-                namespace = row[7]     # Column H: Namespace
-                jp_label = row[1]      # Column B: Japanese standard label
+                # Use header-based indexing instead of hard-coded positions
+                element_name = row[idx_map['要素名']]
+                namespace = row[idx_map['名前空間プレフィックス']]
+                jp_label = row[idx_map['標準ラベル（日本語）']]
 
                 if element_name and jp_label and namespace in ('jppfs_cor', 'jpigp_cor'):
                     # Skip if already exists (first occurrence wins - usually from '一般商工業')
