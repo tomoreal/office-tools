@@ -2029,12 +2029,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Stop only when a mapped element has a different statement type
             should_stop = False
 
-            # --- STRICT FILTER: Explicit P/L element blacklist for Balance Sheet ---
-            # Some XBRL files incorrectly include specific P/L items in balance sheet roles
+            # --- STRICT FILTER: Explicit cross-statement element blacklist ---
+            # Some XBRL files incorrectly include elements from other statements
             # Use explicit element name matching to filter these out (avoids false positives)
+
+            # P/L elements that should never appear in Balance Sheet
             if current_role_type == 'BalanceSheet':
-                # Explicit P/L element patterns that should never appear in balance sheet
-                # These are complete element name patterns (not substrings) to avoid false positives
                 pl_element_patterns = (
                     'OperatingRevenue1', 'OperatingRevenue2',  # 営業収益
                     'NetSales', 'OrdinaryIncome', 'OrdinaryLoss',  # 売上高、経常利益/損失
@@ -2043,9 +2043,23 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     'ProfitBeforeTax', 'LossBeforeTax',  # 税引前利益/損失
                     'BasicEarningsPerShare', 'DilutedEarningsPerShare',  # 1株当たり利益
                 )
-                # Check if element name ends with any of these patterns (to catch prefixed variants)
                 if any(el.endswith(pattern) for pattern in pl_element_patterns):
                     debug_log(f"  [BS-Filter] Skipping P/L element '{el}' in BalanceSheet role '{role}'")
+                    should_stop = True
+
+            # Balance Sheet elements that should never appear in P/L
+            elif current_role_type == 'StatementOfIncome':
+                bs_element_patterns = (
+                    'CashAndDeposits', 'CashAndCashEquivalents',  # 現金預金
+                    'NotesAndAccountsReceivable', 'AccountsReceivable',  # 受取手形・売掛金
+                    'Inventories', 'MerchandiseAndFinishedGoods',  # 棚卸資産
+                    'PropertyPlantAndEquipment', 'IntangibleAssets',  # 有形固定資産、無形固定資産
+                    'TotalAssets', 'TotalLiabilities',  # 資産合計、負債合計
+                    'NotesAndAccountsPayable', 'AccountsPayable',  # 支払手形・買掛金
+                    'TotalEquity', 'ShareCapital', 'RetainedEarnings',  # 純資産、資本金、利益剰余金
+                )
+                if any(el.endswith(pattern) for pattern in bs_element_patterns):
+                    debug_log(f"  [PL-Filter] Skipping BS element '{el}' in StatementOfIncome role '{role}'")
                     should_stop = True
 
             if current_role_type and el in element_to_statement_type:
@@ -2057,8 +2071,21 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     # Do NOT stop, just continue to next element
                 elif element_type != current_role_type and element_type != 'Notes':
                     # Element belongs to a different specific statement type - stop here
-                    debug_log(f"  [Type-Filter] Found {element_type} element '{el}' in {current_role_type} role '{role}' - stopping output")
-                    should_stop = True
+                    # EXCEPTION: Do NOT stop for P/L elements (GrossProfit, OperatingProfit, etc.)
+                    # These may appear in multiple roles due to XBRL structure, but should not cause early termination
+                    pl_element_suffixes = (
+                        'GrossProfit', 'GrossLoss', 'OperatingProfit', 'OperatingLoss',
+                        'OrdinaryIncome', 'OrdinaryLoss', 'ProfitBeforeTax', 'LossBeforeTax',
+                        'NetSales', 'OperatingRevenue', 'Revenue',
+                        'SellingGeneralAndAdministrativeExpenses',  # 販売費及び一般管理費
+                        'NonOperatingIncome', 'NonOperatingExpenses',  # 営業外損益
+                        'ExtraordinaryIncome', 'ExtraordinaryLosses'  # 特別損益
+                    )
+                    if any(el.endswith(suffix) for suffix in pl_element_suffixes):
+                        debug_log(f"  [Type-Filter-Skip] P/L element '{el}' type mismatch ignored (expected: {current_role_type}, mapped: {element_type})")
+                    else:
+                        debug_log(f"  [Type-Filter] Found {element_type} element '{el}' in {current_role_type} role '{role}' - stopping output")
+                        should_stop = True
 
             if should_stop:
                 break
@@ -3088,7 +3115,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 # Profit/Loss Statement: Stop at final profit or EPS items
                 if is_pl_sheet:
                     # Look for final profit or EPS items with totalLabel or at natural end
-                    is_profit_item = any(keyword in el for keyword in ['ProfitLoss', 'Profit', 'NetIncome'])
+                    # IMPORTANT: Only match FINAL profit items, not intermediate ones like GrossProfit, OperatingProfit
+                    is_profit_item = any(keyword in el for keyword in ['ProfitLoss', 'NetIncome']) and not any(kw in el for kw in ['Gross', 'Operating', 'Ordinary'])
                     is_eps_item = any(keyword in el for keyword in ['EarningsPerShare', 'EarningsLossPerShare'])
 
                     if is_profit_item or is_eps_item:
