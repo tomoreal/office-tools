@@ -6,7 +6,7 @@ EDINET Taxonomy Dictionary
 Auto-generated from EDINET Official Taxonomy:
 https://disclosure2dl.edinet-fsa.go.jp/guide/static/disclosure/download/ESE140115.xlsx
 
-Generated: 2026-03-18 23:48:57
+Generated: 2026-03-19 10:03:36
 Total: 1,959 items
 - EDINET Official Taxonomy: 1,907 items
 - Custom Mappings (IFRS variants, etc.): 53 items
