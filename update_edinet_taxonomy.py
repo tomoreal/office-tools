@@ -22,11 +22,12 @@ Update Detection Strategy (Hybrid Approach):
     6. Regenerate dictionary only if hash changed
 
 Usage:
-    python3 update_edinet_taxonomy.py [--force]
+    python3 update_edinet_taxonomy.py [--force] [--debug]
 
 Options:
     --force    Force update even if the file hasn't changed
                (skips remote check and hash verification)
+    --debug    Enable debug-level logging (verbose output)
 
 Exit Codes:
     0 - Success (updated or no update needed)
@@ -39,7 +40,40 @@ import urllib.request
 import hashlib
 import openpyxl
 import json
+import logging
 from datetime import datetime
+
+# Logging configuration
+LOG_FILE = "update_edinet_taxonomy.log"
+
+def setup_logging(debug=False):
+    """Setup logging configuration with file and console output"""
+    log_level = logging.DEBUG if debug else logging.INFO
+
+    # Create formatters
+    file_formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    console_formatter = logging.Formatter('%(message)s')
+
+    # File handler (always INFO or DEBUG)
+    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(file_formatter)
+
+    # Console handler (INFO or DEBUG)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(console_formatter)
+
+    # Configure root logger
+    logger = logging.getLogger()
+    logger.setLevel(log_level)
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logging.getLogger(__name__)
 
 # EDINET Taxonomy URL
 EDINET_TAXONOMY_URL = "https://disclosure2dl.edinet-fsa.go.jp/guide/static/disclosure/download/ESE140115.xlsx"
@@ -48,13 +82,16 @@ OUTPUT_FILE = "edinet_taxonomy_dict.py"
 HASH_FILE = ".edinet_taxonomy.hash"
 METADATA_FILE = ".edinet_taxonomy.meta"  # Stores ETag and Last-Modified
 
+# Logger will be initialized in main()
+logger = None
+
 def check_remote_update():
     """
     Check if remote file has been updated using ETag or Last-Modified headers.
     Returns:
         tuple: (needs_update: bool, metadata: dict)
     """
-    print("Checking for remote updates...")
+    logger.info("Checking for remote updates...")
 
     try:
         # Send HEAD request to get metadata without downloading
@@ -71,9 +108,9 @@ def check_remote_update():
                 'checked_at': datetime.now().isoformat()
             }
 
-            print(f"  Remote ETag: {remote_etag or 'N/A'}")
-            print(f"  Remote Last-Modified: {remote_last_modified or 'N/A'}")
-            print(f"  Remote Size: {remote_content_length or 'N/A'} bytes")
+            logger.debug(f"  Remote ETag: {remote_etag or 'N/A'}")
+            logger.debug(f"  Remote Last-Modified: {remote_last_modified or 'N/A'}")
+            logger.debug(f"  Remote Size: {remote_content_length or 'N/A'} bytes")
 
             # Load local metadata if exists
             if os.path.exists(METADATA_FILE):
@@ -84,43 +121,43 @@ def check_remote_update():
                     # Compare ETag (most reliable)
                     if remote_etag and local_metadata.get('etag'):
                         if remote_etag == local_metadata['etag']:
-                            print("  ✓ ETag matches - no remote update")
+                            logger.info("  ✓ ETag matches - no remote update")
                             return False, remote_metadata
                         else:
-                            print("  ✗ ETag changed - remote update detected")
+                            logger.info("  ✗ ETag changed - remote update detected")
                             return True, remote_metadata
 
                     # Fallback to Last-Modified
                     if remote_last_modified and local_metadata.get('last_modified'):
                         if remote_last_modified == local_metadata['last_modified']:
-                            print("  ✓ Last-Modified matches - no remote update")
+                            logger.info("  ✓ Last-Modified matches - no remote update")
                             return False, remote_metadata
                         else:
-                            print("  ✗ Last-Modified changed - remote update detected")
+                            logger.info("  ✗ Last-Modified changed - remote update detected")
                             return True, remote_metadata
 
                     # Fallback to Content-Length
                     if remote_content_length and local_metadata.get('content_length'):
                         if remote_content_length != local_metadata['content_length']:
-                            print("  ✗ File size changed - remote update detected")
+                            logger.info("  ✗ File size changed - remote update detected")
                             return True, remote_metadata
                         else:
-                            print("  ⚠ No ETag/Last-Modified, but size unchanged - assuming no update")
+                            logger.warning("  ⚠ No ETag/Last-Modified, but size unchanged - assuming no update")
                             return False, remote_metadata
 
                 except json.JSONDecodeError:
-                    print("  ⚠ Local metadata corrupted, assuming update needed")
+                    logger.warning("  ⚠ Local metadata corrupted, assuming update needed")
                     return True, remote_metadata
             else:
-                print("  ⚠ No local metadata found - first run or forced update")
+                logger.warning("  ⚠ No local metadata found - first run or forced update")
                 return True, remote_metadata
 
             # If we reach here, metadata exists but couldn't determine - assume update needed
-            print("  ⚠ Could not determine update status - assuming update needed")
+            logger.warning("  ⚠ Could not determine update status - assuming update needed")
             return True, remote_metadata
 
     except Exception as e:
-        print(f"  ⚠ Remote check failed ({e}), will proceed with download")
+        logger.warning(f"  ⚠ Remote check failed ({e}), will proceed with download")
         return True, {}
 
 def download_taxonomy(use_conditional_request=False, metadata=None):
@@ -135,7 +172,7 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
     Returns:
         tuple: (success: bool, was_modified: bool)
     """
-    print(f"Downloading EDINET taxonomy from: {EDINET_TAXONOMY_URL}")
+    logger.info(f"Downloading EDINET taxonomy from: {EDINET_TAXONOMY_URL}")
 
     # Use temporary file for atomic download
     import tempfile
@@ -148,10 +185,10 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
         if use_conditional_request and metadata:
             if metadata.get('etag'):
                 req.add_header('If-None-Match', metadata['etag'])
-                print(f"  Using If-None-Match: {metadata['etag']}")
+                logger.debug(f"  Using If-None-Match: {metadata['etag']}")
             elif metadata.get('last_modified'):
                 req.add_header('If-Modified-Since', metadata['last_modified'])
-                print(f"  Using If-Modified-Since: {metadata['last_modified']}")
+                logger.debug(f"  Using If-Modified-Since: {metadata['last_modified']}")
 
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
@@ -179,7 +216,7 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
                 if os.path.exists(backup_path):
                     os.remove(backup_path)
 
-                print(f"✓ Downloaded: {TAXONOMY_FILE}")
+                logger.info(f"✓ Downloaded: {TAXONOMY_FILE}")
 
                 # Save new metadata
                 new_metadata = {
@@ -195,7 +232,7 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
         except urllib.error.HTTPError as e:
             if e.code == 304:
                 # 304 Not Modified - no need to download
-                print("✓ Remote file unchanged (304 Not Modified)")
+                logger.info("✓ Remote file unchanged (304 Not Modified)")
                 # Clean up temp file
                 try:
                     os.close(temp_fd)
@@ -208,7 +245,7 @@ def download_taxonomy(use_conditional_request=False, metadata=None):
                 raise
 
     except Exception as e:
-        print(f"✗ Download failed: {e}")
+        logger.error(f"✗ Download failed: {e}")
         # Clean up temp file on error
         try:
             os.close(temp_fd)
@@ -226,9 +263,9 @@ def save_metadata(metadata):
     try:
         with open(METADATA_FILE, 'w') as f:
             json.dump(metadata, f, indent=2)
-        print(f"✓ Saved remote metadata")
+        logger.debug(f"✓ Saved remote metadata")
     except Exception as e:
-        print(f"⚠ Could not save metadata: {e}")
+        logger.warning(f"⚠ Could not save metadata: {e}")
 
 def load_metadata():
     """Load saved remote file metadata"""
@@ -262,22 +299,22 @@ def check_if_file_changed_after_download(old_hash):
         bool: True if file has changed (or is new), False if unchanged
     """
     if not os.path.exists(TAXONOMY_FILE):
-        print("✗ Downloaded file not found (unexpected error)")
+        logger.error("✗ Downloaded file not found (unexpected error)")
         return False
 
     new_hash = calculate_file_hash(TAXONOMY_FILE)
 
     if old_hash is None:
-        print("✓ New file downloaded (no previous version)")
+        logger.info("✓ New file downloaded (no previous version)")
         return True
 
     if new_hash == old_hash:
-        print("✓ Downloaded file is identical to previous version (hash match)")
+        logger.info("✓ Downloaded file is identical to previous version (hash match)")
         return False
 
-    print(f"✓ File content changed")
-    print(f"  Old hash: {old_hash[:16]}...")
-    print(f"  New hash: {new_hash[:16]}...")
+    logger.info(f"✓ File content changed")
+    logger.debug(f"  Old hash: {old_hash[:16]}...")
+    logger.debug(f"  New hash: {new_hash[:16]}...")
     return True
 
 def get_current_file_hash():
@@ -291,7 +328,7 @@ def save_hash():
     current_hash = calculate_file_hash(TAXONOMY_FILE)
     with open(HASH_FILE, 'w') as f:
         f.write(current_hash)
-    print(f"✓ Saved taxonomy hash: {current_hash[:16]}...")
+    logger.debug(f"✓ Saved taxonomy hash: {current_hash[:16]}...")
 
 def get_column_index_map(ws, header_row=2):
     """
@@ -311,7 +348,7 @@ def get_column_index_map(ws, header_row=2):
 
 def generate_dictionary():
     """Generate dictionary from EDINET taxonomy (all industry sheets)"""
-    print(f"Generating dictionary from: {TAXONOMY_FILE}")
+    logger.info(f"Generating dictionary from: {TAXONOMY_FILE}")
 
     try:
         wb = openpyxl.load_workbook(TAXONOMY_FILE, data_only=True)
@@ -340,7 +377,7 @@ def generate_dictionary():
             required_columns = ['要素名', '名前空間プレフィックス', '標準ラベル（日本語）']
             missing_columns = [col for col in required_columns if col not in idx_map]
             if missing_columns:
-                print(f"  ⚠ Skipping sheet '{sheet_name}': Missing columns {missing_columns}")
+                logger.warning(f"  ⚠ Skipping sheet '{sheet_name}': Missing columns {missing_columns}")
                 continue
 
             # Namespace filtering: Use BLACKLIST instead of whitelist
@@ -382,20 +419,20 @@ def generate_dictionary():
             if sheet_count > 0:
                 sheets_processed.append(f"{sheet_name}({sheet_count})")
 
-        print(f"✓ Extracted {len(edinet_dict)} items from EDINET taxonomy")
-        print(f"  Processed {len(sheets_processed)} sheets:")
+        logger.info(f"✓ Extracted {len(edinet_dict)} items from EDINET taxonomy")
+        logger.info(f"  Processed {len(sheets_processed)} sheets:")
         # Show detailed sheet statistics
         for i, sheet_info in enumerate(sheets_processed):
             if i < 10:  # Show first 10 sheets
-                print(f"    - {sheet_info}")
+                logger.info(f"    - {sheet_info}")
         if len(sheets_processed) > 10:
-            print(f"    ... and {len(sheets_processed) - 10} more sheets")
+            logger.info(f"    ... and {len(sheets_processed) - 10} more sheets")
 
         # Show namespace statistics (for transparency)
         if namespace_stats:
-            print(f"  Namespaces found:")
+            logger.debug(f"  Namespaces found:")
             for ns, count in sorted(namespace_stats.items(), key=lambda x: x[1], reverse=True):
-                print(f"    - {ns}: {count} elements")
+                logger.debug(f"    - {ns}: {count} elements")
 
         # Custom mappings (IFRS variants, abbreviations, etc.)
         custom_mappings = {
@@ -481,21 +518,21 @@ def generate_dictionary():
                 # Key already exists in EDINET - skip to preserve official definition
                 custom_skipped += 1
 
-        print(f"✓ Total items: {len(final_dict)} (EDINET: {len(edinet_dict)}, Custom: {custom_added})")
+        logger.info(f"✓ Total items: {len(final_dict)} (EDINET: {len(edinet_dict)}, Custom: {custom_added})")
         if custom_skipped > 0:
-            print(f"  ⚠ Skipped {custom_skipped} custom mappings (already defined in EDINET)")
+            logger.warning(f"  ⚠ Skipped {custom_skipped} custom mappings (already defined in EDINET)")
 
         return final_dict, len(edinet_dict), len(custom_mappings)
 
     except Exception as e:
-        print(f"✗ Dictionary generation failed: {e}")
+        logger.error(f"✗ Dictionary generation failed: {e}")
         import traceback
         traceback.print_exc()
         return None, 0, 0
 
 def write_dictionary_file(final_dict, edinet_count, custom_count):
     """Write dictionary to Python file"""
-    print(f"Writing dictionary to: {OUTPUT_FILE}")
+    logger.info(f"Writing dictionary to: {OUTPUT_FILE}")
 
     try:
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
@@ -526,47 +563,54 @@ def write_dictionary_file(final_dict, edinet_count, custom_count):
 
             f.write('}\n')
 
-        print(f"✓ Dictionary written to: {OUTPUT_FILE}")
+        logger.info(f"✓ Dictionary written to: {OUTPUT_FILE}")
         return True
 
     except Exception as e:
-        print(f"✗ File write failed: {e}")
+        logger.error(f"✗ File write failed: {e}")
         return False
 
 def main():
     """Main function"""
-    print("=" * 80)
-    print("EDINET Taxonomy Dictionary Auto-Update")
-    print("=" * 80)
-    print()
+    global logger
 
+    # Parse command-line arguments
     force = '--force' in sys.argv
+    debug = '--debug' in sys.argv
+
+    # Setup logging (must be done first)
+    logger = setup_logging(debug=debug)
+
+    logger.info("=" * 80)
+    logger.info("EDINET Taxonomy Dictionary Auto-Update")
+    logger.info("=" * 80)
+    logger.info("")
 
     # Step 1: Check for remote updates (unless file doesn't exist)
     needs_download = False
     remote_metadata = None
 
     if not os.path.exists(TAXONOMY_FILE):
-        print("Local taxonomy file not found - download required")
+        logger.info("Local taxonomy file not found - download required")
         needs_download = True
     elif force:
-        print("Force update requested - skipping remote check")
+        logger.info("Force update requested - skipping remote check")
         needs_download = True
     else:
         # Check if remote file has been updated
         needs_remote_update, remote_metadata = check_remote_update()
         if needs_remote_update:
-            print("Remote update detected - download required")
+            logger.info("Remote update detected - download required")
             needs_download = True
         else:
-            print("Remote file unchanged - no download needed")
+            logger.info("Remote file unchanged - no download needed")
 
     # Step 2: Download if needed
     file_changed = False
     if needs_download:
         # CRITICAL: Save hash of old file BEFORE download
         old_hash = get_current_file_hash()
-        print(f"Old file hash: {old_hash[:16] + '...' if old_hash else 'N/A (no previous file)'}")
+        logger.debug(f"Old file hash: {old_hash[:16] + '...' if old_hash else 'N/A (no previous file)'}")
 
         # Load existing metadata for conditional request (304 optimization)
         existing_metadata = load_metadata()
@@ -576,54 +620,54 @@ def main():
         )
 
         if not success:
-            print("\n✗ Update failed: Could not download taxonomy file")
+            logger.error("\n✗ Update failed: Could not download taxonomy file")
             return 1
 
         if not was_modified and not force:
-            print("\n✓ No update needed (304 Not Modified)")
+            logger.info("\n✓ No update needed (304 Not Modified)")
             return 0
 
         # Step 3: Verify if downloaded file differs from old file (hash comparison)
         if force:
-            print("\nForce mode: Skipping hash verification")
+            logger.info("\nForce mode: Skipping hash verification")
             file_changed = True  # Force regeneration
         else:
-            print("\nVerifying downloaded file...")
+            logger.info("\nVerifying downloaded file...")
             file_changed = check_if_file_changed_after_download(old_hash)
 
             if not file_changed:
-                print("\n✓ No update needed (downloaded file is identical to previous version)")
+                logger.info("\n✓ No update needed (downloaded file is identical to previous version)")
                 return 0
 
     # If we didn't download, check if we even have a file
     elif not os.path.exists(TAXONOMY_FILE):
-        print("\n✗ No taxonomy file found and no download performed")
+        logger.error("\n✗ No taxonomy file found and no download performed")
         return 1
     else:
         # No download needed, file exists, assume it's already processed
-        print("\n✓ No update needed (remote unchanged, local file exists)")
+        logger.info("\n✓ No update needed (remote unchanged, local file exists)")
         return 0
 
     # Step 4: Generate dictionary (only if file changed or force)
-    print()
-    print("Generating dictionary from updated taxonomy file...")
+    logger.info("")
+    logger.info("Generating dictionary from updated taxonomy file...")
     final_dict, edinet_count, custom_count = generate_dictionary()
     if final_dict is None:
-        print("\n✗ Update failed: Could not generate dictionary")
+        logger.error("\n✗ Update failed: Could not generate dictionary")
         return 1
 
     # Step 5: Write dictionary file
     if not write_dictionary_file(final_dict, edinet_count, custom_count):
-        print("\n✗ Update failed: Could not write dictionary file")
+        logger.error("\n✗ Update failed: Could not write dictionary file")
         return 1
 
     # Step 6: Save hash of new file
     save_hash()
 
-    print()
-    print("=" * 80)
-    print("✓ Dictionary update completed successfully!")
-    print("=" * 80)
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("✓ Dictionary update completed successfully!")
+    logger.info("=" * 80)
 
     return 0
 
