@@ -252,30 +252,57 @@ def save_hash():
     print(f"✓ Saved taxonomy hash: {current_hash[:16]}...")
 
 def generate_dictionary():
-    """Generate dictionary from EDINET taxonomy"""
+    """Generate dictionary from EDINET taxonomy (all industry sheets)"""
     print(f"Generating dictionary from: {TAXONOMY_FILE}")
 
     try:
         wb = openpyxl.load_workbook(TAXONOMY_FILE, data_only=True)
-        ws = wb['一般商工業']
 
-        # Extract taxonomy dictionary
+        # Skip metadata sheets (not taxonomy data)
+        SKIP_SHEETS = ['目次', '勘定科目リストについて']
+
+        # Extract from ALL industry sheets (not just '一般商工業')
+        # This ensures we capture industry-specific elements (banking, insurance, etc.)
         edinet_dict = {}
-        for row in ws.iter_rows(min_row=3, values_only=True):
-            element_name = row[8]  # Column I: Element name
-            namespace = row[7]     # Column H: Namespace
-            jp_label = row[1]      # Column B: Japanese standard label
+        sheets_processed = []
 
-            if element_name and jp_label and namespace in ('jppfs_cor', 'jpigp_cor'):
-                label = str(jp_label)
-                # Shorten labels with "or loss" notation
-                if '又は' in label and ('損失' in label or '損' in label) and '（△）' in label:
-                    parts = label.split('又は')
-                    if len(parts) == 2:
-                        label = parts[0].strip()
-                edinet_dict[element_name] = label
+        for sheet_name in wb.sheetnames:
+            if sheet_name in SKIP_SHEETS:
+                continue
+
+            ws = wb[sheet_name]
+            sheet_count = 0
+
+            for row in ws.iter_rows(min_row=3, values_only=True):
+                element_name = row[8]  # Column I: Element name
+                namespace = row[7]     # Column H: Namespace
+                jp_label = row[1]      # Column B: Japanese standard label
+
+                if element_name and jp_label and namespace in ('jppfs_cor', 'jpigp_cor'):
+                    # Skip if already exists (first occurrence wins - usually from '一般商工業')
+                    if element_name in edinet_dict:
+                        continue
+
+                    label = str(jp_label)
+                    # Shorten labels with "or loss" notation
+                    if '又は' in label and ('損失' in label or '損' in label) and '（△）' in label:
+                        parts = label.split('又は')
+                        if len(parts) == 2:
+                            label = parts[0].strip()
+                    edinet_dict[element_name] = label
+                    sheet_count += 1
+
+            if sheet_count > 0:
+                sheets_processed.append(f"{sheet_name}({sheet_count})")
 
         print(f"✓ Extracted {len(edinet_dict)} items from EDINET taxonomy")
+        print(f"  Processed {len(sheets_processed)} sheets:")
+        # Show detailed sheet statistics
+        for i, sheet_info in enumerate(sheets_processed):
+            if i < 10:  # Show first 10 sheets
+                print(f"    - {sheet_info}")
+        if len(sheets_processed) > 10:
+            print(f"    ... and {len(sheets_processed) - 10} more sheets")
 
         # Custom mappings (IFRS variants, abbreviations, etc.)
         custom_mappings = {
