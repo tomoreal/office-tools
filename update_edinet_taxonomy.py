@@ -419,12 +419,29 @@ def generate_dictionary():
             'ShareOfProfitLossOfAssociatesAndJointVenturesAccountedForUsingEquityMethod': '持分法による投資利益',
         }
 
-        # Merge dictionaries
+        # Merge dictionaries with priority control
+        # IMPORTANT: EDINET official definitions take priority over custom mappings
+        # Custom mappings are only used when EDINET doesn't define the element
         final_dict = {}
-        final_dict.update(edinet_dict)
-        final_dict.update(custom_mappings)
 
-        print(f"✓ Total items: {len(final_dict)} (EDINET: {len(edinet_dict)}, Custom: {len(custom_mappings)})")
+        # Step 1: Add all EDINET definitions (highest priority)
+        final_dict.update(edinet_dict)
+
+        # Step 2: Add custom mappings only if NOT already defined by EDINET
+        # This prevents custom mappings from overwriting official definitions
+        custom_added = 0
+        custom_skipped = 0
+        for key, value in custom_mappings.items():
+            if key not in final_dict:
+                final_dict[key] = value
+                custom_added += 1
+            else:
+                # Key already exists in EDINET - skip to preserve official definition
+                custom_skipped += 1
+
+        print(f"✓ Total items: {len(final_dict)} (EDINET: {len(edinet_dict)}, Custom: {custom_added})")
+        if custom_skipped > 0:
+            print(f"  ⚠ Skipped {custom_skipped} custom mappings (already defined in EDINET)")
 
         return final_dict, len(edinet_dict), len(custom_mappings)
 
