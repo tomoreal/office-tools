@@ -281,6 +281,7 @@ def generate_dictionary():
         # This ensures we capture industry-specific elements (banking, insurance, etc.)
         edinet_dict = {}
         sheets_processed = []
+        namespace_stats = {}  # Track namespace usage for transparency
 
         for sheet_name in wb.sheetnames:
             if sheet_name in SKIP_SHEETS:
@@ -300,25 +301,41 @@ def generate_dictionary():
                 print(f"  ⚠ Skipping sheet '{sheet_name}': Missing columns {missing_columns}")
                 continue
 
+            # Namespace filtering: Use BLACKLIST instead of whitelist
+            # This allows IFRS, extensions, and future taxonomies
+            NAMESPACE_BLACKLIST = {
+                '名前空間プレフィックス',  # Header itself (not actual data)
+                None,                      # Empty namespace
+                '',                        # Empty string
+                # Add more here if needed (e.g., internal test namespaces)
+            }
+
             for row in ws.iter_rows(min_row=3, values_only=True):
                 # Use header-based indexing instead of hard-coded positions
                 element_name = row[idx_map['要素名']]
                 namespace = row[idx_map['名前空間プレフィックス']]
                 jp_label = row[idx_map['標準ラベル（日本語）']]
 
-                if element_name and jp_label and namespace in ('jppfs_cor', 'jpigp_cor'):
-                    # Skip if already exists (first occurrence wins - usually from '一般商工業')
-                    if element_name in edinet_dict:
-                        continue
+                # Apply blacklist filter (more permissive than whitelist)
+                # This captures: jppfs_cor, jpigp_cor, ifrs_full, jpcrp_cor, extensions, etc.
+                if not element_name or not jp_label or namespace in NAMESPACE_BLACKLIST:
+                    continue
 
-                    label = str(jp_label)
-                    # Shorten labels with "or loss" notation
-                    if '又は' in label and ('損失' in label or '損' in label) and '（△）' in label:
-                        parts = label.split('又は')
-                        if len(parts) == 2:
-                            label = parts[0].strip()
-                    edinet_dict[element_name] = label
-                    sheet_count += 1
+                # Skip if already exists (first occurrence wins - usually from '一般商工業')
+                if element_name in edinet_dict:
+                    continue
+
+                label = str(jp_label)
+                # Shorten labels with "or loss" notation
+                if '又は' in label and ('損失' in label or '損' in label) and '（△）' in label:
+                    parts = label.split('又は')
+                    if len(parts) == 2:
+                        label = parts[0].strip()
+                edinet_dict[element_name] = label
+                sheet_count += 1
+
+                # Track namespace usage
+                namespace_stats[namespace] = namespace_stats.get(namespace, 0) + 1
 
             if sheet_count > 0:
                 sheets_processed.append(f"{sheet_name}({sheet_count})")
@@ -331,6 +348,12 @@ def generate_dictionary():
                 print(f"    - {sheet_info}")
         if len(sheets_processed) > 10:
             print(f"    ... and {len(sheets_processed) - 10} more sheets")
+
+        # Show namespace statistics (for transparency)
+        if namespace_stats:
+            print(f"  Namespaces found:")
+            for ns, count in sorted(namespace_stats.items(), key=lambda x: x[1], reverse=True):
+                print(f"    - {ns}: {count} elements")
 
         # Custom mappings (IFRS variants, abbreviations, etc.)
         custom_mappings = {
