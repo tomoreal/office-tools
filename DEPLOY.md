@@ -1,104 +1,83 @@
-# サーバー構築手順
+# 本番環境デプロイ手順
 
-このディレクトリを webサーバーに配置し、Webアプリケーションとして公開する手順です。
+## 前提条件
+- 本番サーバー: XREA/CoreServerなどのCGI対応サーバー
+- Python 3.9以上
+- 仮想環境（venv）が利用可能
 
-## 1. 必要な環境のインストール
-サーバー上でPython環境（venv）を作成し、必要なライブラリをインストールします。
+## デプロイ手順
 
-```bash
-# プロジェクトディレクトリに移動
-cd /path/to/directory
+### 1. ファイルのアップロード
 
-# 仮想環境の作成と有効化
-python3 -m venv venv
-source venv/bin/activate
+以下のファイルを本番サーバーにアップロード：
+- index.cgi
+- app.py
+- edinet_api.py
+- convert_xbrl_to_excel.py
+- csv_converter.html
+- templates/ (全ファイル)
+- venv/ (全体)
+- requirements.txt
 
-# 必須ライブラリのインストール
-pip install -r requirements.txt
-```
-
-## 2. アプリケーションの仮起動テスト
-設定に問題がないか、手動で起動してみます。
-```bash
-python app.py
-```
-エラーなく起動したら `Ctrl+C` で終了します。
-
-## 3. 本番環境での運用 (Gunicorn)
-Flask内蔵サーバーは開発用のため、本番向けには `gunicorn` を使用します。
-```bash
-pip install gunicorn
-
-# Gunicornでアプリをデーモン化して起動（例: 8000ポート、ワーカー4つ）
-gunicorn -w 4 -b 127.0.0.1:8000 app:app --daemon
-```
-
----
-# コアサーバー（V1）への配置手順
-
-コアサーバーには標準で `python3.10` がインストールされているため、これを利用して環境構築を行います。
-
-## 1. サーバー上での準備 (venv)
-
-SSHでサーバーにログインし、以下の順にコマンドを実行してください。
+### 2. パーミッション設定
 
 ```bash
-# 1. プロジェクトディレクトリの作成と移動
-mkdir -p ~/public_html/xbrl2excel
-cd ~/public_html/xbrl2excel
-
-# 2. 仮想環境の作成 (システムのpython3.10を使用)
-python3.10 -m venv venv
-
-# 3. 仮想環境を有効化してライブラリをインストール
-source venv/bin/activate
-pip install -r requirements.txt
+chmod 755 index.cgi app.py edinet_api.py convert_xbrl_to_excel.py
+chmod -R 755 venv/
+chmod -R 755 templates/
+mkdir -p temp_uploads edinet_downloads edinet_taxonomies
+chmod 777 temp_uploads edinet_downloads
 ```
 
-## 2. ファイルの転送とパーミッション
+### 3. venvパッケージ確認
 
-以下のファイルを `public_html/xbrl2excel` に配置してください。
-- `app.py`
-- `convert_xbrl_to_excel.py`
-- `index.cgi`
-- `.htaccess`
-- `index.html`
-- `app2.js`
-- `style.css`
-- `requirements.txt`
-- `templates/` (ディレクトリごと)
-- `edinet_taxonomies/` (ディレクトリごと)
+必須パッケージ:
+- Flask==3.0.3
+- beautifulsoup4==4.12.3
+- lxml==5.2.2
+- pandas==2.2.2
+- openpyxl==3.1.5
+- requests==2.32.5
 
-転送後、CGIの実行権限を付与します：
+不足がある場合:
 ```bash
-chmod 755 index.cgi
+venv/bin/pip install -r requirements.txt
 ```
 
-## 3. ファイルの修正
+## 動作確認手順
 
-### index.cgi
-1行目のパスをサーバーの実際のユーザー名と設置パスに合わせて書き換えてください。
-```python
-#!/home/（あなたのユーザー名）/public_html/xbrl2excel/venv/bin/python3
-```
+### 1. ブラウザでアクセス
+https://xbrl.xtomo.com/ (または該当URL)
 
-## 4. 動作確認
+### 2. EDINET API検索テスト
+1. 企業名入力（例: トヨタ）
+2. 検索ボタンクリック
+3. 企業選択
+4. 報告書選択
+5. ダウンロード＆変換実行
+6. Excelファイルダウンロード確認
 
-ブラウザで webサーバー にアクセスし、画面が表示されるか確認してください。
-動かない場合は、SSHで以下を実行してエラーを確認します：
+### 3. D&D方式テスト
+1. EDINETから手動でZIPダウンロード
+2. 方法2にD&D
+3. 変換実行
+4. Excelファイルダウンロード確認
+
+## トラブルシューティング
+
+### 500エラー
+- shebangパス確認（index.cgi 1行目）
+- パーミッション確認
+- パッケージインストール確認
+
+### ModuleNotFoundError
 ```bash
-cd ~/public_html/xbrl2excel
-./index.cgi
+venv/bin/pip install --target=venv/lib/python3.9/site-packages パッケージ名
 ```
 
-### .htaccess
-リライト設定が有効であることを確認してください。
+### EDINET API動作しない
+- APIキー確認（app.py 59行目）
+- requests確認
+- ネットワーク確認
 
-## 4. 動作確認
-
-ブラウザで `https://yourserver.com/xbrl2excel/` にアクセスし、画面が表示されるか確認してください。
-動かない場合は、SSHで以下を実行してエラーを確認します：
-```bash
-cd ~/public_html/xbrl2excel
-./index.cgi
-```
+最終更新: 2026-03-20

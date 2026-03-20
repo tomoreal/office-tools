@@ -41,6 +41,7 @@ import os
 import tempfile
 import urllib.parse
 import shutil
+import json
 
 # ========================================================================
 # APPLICATION SETUP
@@ -53,6 +54,9 @@ from flask import Flask, render_template, request, send_file, flash, redirect, u
 
 app = Flask(__name__)
 app.secret_key = 'xbrl_to_excel_secret'
+
+# EDINET APIキー（環境変数または直接指定）
+EDINET_API_KEY = os.environ.get('EDINET_API_KEY', '6ea174edf112439da66798a6d863a95d')
 
 # ========================================================================
 # MAIN ROUTE - ファイルアップロードと変換処理
@@ -128,6 +132,113 @@ def index():
     return render_template('index.html')
 
 # ========================================================================
+# EDINET API ROUTES - EDINET API連携機能
+# ========================================================================
+# 【将来の分割先】web/routes/edinet.py
+
+@app.route('/api/edinet/search', methods=['POST'])
+def edinet_search_company():
+    """企業名でEDINET企業を検索"""
+    from edinet_api import EdinetAPI
+
+    try:
+        data = request.get_json()
+        company_name = data.get('company_name', '')
+
+        if not company_name:
+            return {'error': '企業名を入力してください'}, 400
+
+        api = EdinetAPI(EDINET_API_KEY)
+        results = api.search_company(company_name)
+
+        return {'results': results}, 200
+
+    except Exception as e:
+        app.logger.error(f"Error in edinet_search_company: {e}")
+        return {'error': str(e)}, 500
+
+
+@app.route('/api/edinet/reports', methods=['POST'])
+def edinet_get_reports():
+    """指定企業の有価証券報告書一覧を取得"""
+    from edinet_api import EdinetAPI
+
+    try:
+        data = request.get_json()
+        edinet_code = data.get('edinet_code', '')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+
+        if not edinet_code:
+            return {'error': 'EDINETコードを指定してください'}, 400
+
+        api = EdinetAPI(EDINET_API_KEY)
+        results = api.get_securities_reports(edinet_code, start_date, end_date)
+
+        return {'results': results}, 200
+
+    except Exception as e:
+        app.logger.error(f"Error in edinet_get_reports: {e}")
+        return {'error': str(e)}, 500
+
+
+@app.route('/api/edinet/convert', methods=['POST'])
+def edinet_download_and_convert():
+    """EDINET APIからXBRLをダウンロードしてExcelに変換"""
+    from edinet_api import EdinetAPI
+    import convert_xbrl_to_excel
+
+    try:
+        data = request.get_json()
+        doc_ids = data.get('doc_ids', [])
+
+        if not doc_ids:
+            return {'error': '書類IDを指定してください'}, 400
+
+        # 一時ディレクトリ作成
+        base_temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
+        if not os.path.exists(base_temp_dir):
+            os.makedirs(base_temp_dir, exist_ok=True)
+
+        temp_dir = tempfile.mkdtemp(dir=base_temp_dir)
+
+        # EDINET APIからXBRLをダウンロード
+        api = EdinetAPI(EDINET_API_KEY)
+        downloaded_paths = []
+
+        for doc_id in doc_ids:
+            file_path = os.path.join(temp_dir, f"{doc_id}.zip")
+            if api.download_xbrl(doc_id, file_path):
+                downloaded_paths.append(file_path)
+
+        if not downloaded_paths:
+            return {'error': 'XBRLファイルのダウンロードに失敗しました'}, 500
+
+        # Excelに変換
+        out_excel = convert_xbrl_to_excel.process_xbrl_zips(downloaded_paths, output_dir=temp_dir)
+
+        if out_excel and os.path.exists(out_excel):
+            # ファイルを送信
+            filename = os.path.basename(out_excel)
+            encoded_filename = urllib.parse.quote(filename)
+
+            response = send_file(
+                out_excel,
+                as_attachment=True,
+                download_name=filename
+            )
+
+            response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+            return response
+        else:
+            return {'error': 'Excelファイルの生成に失敗しました'}, 500
+
+    except Exception as e:
+        app.logger.error(f"Error in edinet_download_and_convert: {e}")
+        return {'error': str(e)}, 500
+
+
+# ========================================================================
 # BOOKMARKLET ROUTES - ブックマークレット用ページ
 # ========================================================================
 # 【将来の分割先】web/routes/bookmarklets.py
@@ -139,6 +250,11 @@ def bookmarklets():
 @app.route('/csv_bookmarklets')
 def csv_bookmarklets():
     return render_template('csv_bookmarklets.html')
+
+@app.route('/csv_converter.html')
+def csv_converter():
+    """CSV変換ツールのページ"""
+    return send_file('csv_converter.html')
 
 # ========================================================================
 # TEMP CLEAR ROUTE - 一時ファイルクリア

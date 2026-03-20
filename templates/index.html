@@ -321,7 +321,7 @@ XBRL to Excel Converter - Main UI Template
                     style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
                     <i class="fas fa-bookmark" style="margin-right: 8px;"></i>EDINET用ブックマークレットの追加
                 </a>
-                <a href="./index.html"
+                <a href="./csv_converter.html"
                     style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
                     <i class="fas fa-exchange-alt" style="margin-right: 8px;"></i>CSV変換ツールへ
                 </a>
@@ -332,9 +332,54 @@ XBRL to Excel Converter - Main UI Template
                  【将来の分割先】templates/converter/upload_form.html
                  ================================================================== -->
             <h1>XBRL・Excel 変換ツール</h1>
-            <p>EDINET（<a href="https://disclosure2.edinet-fsa.go.jp/weee0050.aspx" target="_blank"
-                    style="color: var(--primary-color);">https://disclosure2.edinet-fsa.go.jp/weee0050.aspx</a>）で、ダウンロードしたXBRLファイル(zip)をアップロードしてください。
+            <p>方法1: EDINET APIで企業を検索してダウンロード（推奨）<br>
+               方法2: EDINETから手動でダウンロードしたXBRLファイル(zip)をアップロード
             </p>
+
+            <!-- ==================================================================
+                 EDINET API SEARCH SECTION - 企業検索とXBRLダウンロード
+                 【将来の分割先】templates/converter/edinet_search.html
+                 ================================================================== -->
+            <div style="background: var(--drop-bg); border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; border: 1px solid var(--border-color);">
+                <h2 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--primary-color);">
+                    <i class="fas fa-search" style="margin-right: 8px;"></i>方法1: EDINET APIで検索
+                </h2>
+
+                <!-- 企業名入力 -->
+                <div style="margin-bottom: 1rem;">
+                    <input type="text" id="companyNameInput" placeholder="企業名を入力（例: トヨタ自動車）"
+                        style="width: 100%; padding: 0.75rem; background: var(--container-bg); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-main); font-size: 0.95rem;">
+                </div>
+
+                <button id="searchBtn" class="btn" style="margin-bottom: 1rem;">
+                    <i class="fas fa-search" style="margin-right: 8px;"></i>
+                    <span id="searchBtnText">企業を検索</span>
+                    <div class="loader" id="searchLoader" style="display: none;"></div>
+                </button>
+
+                <!-- 検索結果表示 -->
+                <div id="searchResults" style="display: none; margin-bottom: 1rem;">
+                    <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">検索結果:</h3>
+                    <div id="companyList" style="max-height: 200px; overflow-y: auto;"></div>
+                </div>
+
+                <!-- 有価証券報告書一覧 -->
+                <div id="reportsSection" style="display: none; margin-bottom: 1rem;">
+                    <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">有価証券報告書:</h3>
+                    <div id="reportsList" style="max-height: 300px; overflow-y: auto;"></div>
+                </div>
+
+                <!-- ダウンロード＆変換ボタン -->
+                <button id="convertBtn" class="btn" style="display: none;">
+                    <i class="fas fa-download" style="margin-right: 8px;"></i>
+                    <span id="convertBtnText">選択した報告書をダウンロード＆変換</span>
+                    <div class="loader" id="convertLoader" style="display: none;"></div>
+                </button>
+            </div>
+
+            <div style="text-align: center; margin: 1.5rem 0; color: var(--text-muted); font-size: 0.9rem;">
+                ━━━ または ━━━
+            </div>
 
             {% with messages = get_flashed_messages() %}
             {% if messages %}
@@ -344,21 +389,32 @@ XBRL to Excel Converter - Main UI Template
             {% endif %}
             {% endwith %}
 
-            <form method="POST" enctype="multipart/form-data" id="uploadForm">
-                <button type="submit" class="btn" id="submitBtn" style="margin-bottom: 1rem;">
-                    <span id="btnText">Excelに変換してダウンロード</span>
-                    <div class="loader" id="loader"></div>
-                </button>
+            <div style="background: var(--drop-bg); border-radius: 12px; padding: 1.5rem; border: 1px solid var(--border-color);">
+                <h2 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--primary-color);">
+                    <i class="fas fa-upload" style="margin-right: 8px;"></i>方法2: ZIPファイルをアップロード
+                </h2>
 
-                <div class="upload-area" id="dropZone">
-                    <i class="fas fa-file-archive upload-icon"></i>
-                    <div style="margin-bottom: 0.5rem;">ZIPファイルをドラッグ＆ドロップ</div>
-                    <div style="font-size: 0.85rem; color: var(--text-muted);">または、クリックしてファイルを選択</div>
-                    <input type="file" name="files" id="fileInput" class="file-input" accept=".zip" multiple required>
-                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                    EDINET（<a href="https://disclosure2.edinet-fsa.go.jp/weee0050.aspx" target="_blank"
+                        style="color: var(--primary-color);">https://disclosure2.edinet-fsa.go.jp/weee0050.aspx</a>）で手動ダウンロードしたXBRLファイルをアップロード
+                </p>
 
-                <div class="file-list" id="fileList"></div>
-            </form>
+                <form method="POST" enctype="multipart/form-data" id="uploadForm">
+                    <button type="submit" class="btn" id="submitBtn" style="margin-bottom: 1rem;">
+                        <span id="btnText">Excelに変換してダウンロード</span>
+                        <div class="loader" id="loader"></div>
+                    </button>
+
+                    <div class="upload-area" id="dropZone">
+                        <i class="fas fa-file-archive upload-icon"></i>
+                        <div style="margin-bottom: 0.5rem;">ZIPファイルをドラッグ＆ドロップ</div>
+                        <div style="font-size: 0.85rem; color: var(--text-muted);">または、クリックしてファイルを選択</div>
+                        <input type="file" name="files" id="fileInput" class="file-input" accept=".zip" multiple required>
+                    </div>
+
+                    <div class="file-list" id="fileList"></div>
+                </form>
+            </div>
 
             <!-- ==================================================================
                  CLEAR FORM - サーバーファイルクリア
@@ -525,6 +581,221 @@ XBRL to Excel Converter - Main UI Template
                 console.error(error);
                 alert('エラーが発生しました: ' + error.message);
                 resetUI();
+            }
+        });
+    </script>
+
+    <!-- ======================================================================
+         JAVASCRIPT - EDINET API SEARCH
+         【将来の分割先】static/js/edinet_search.js
+         ====================================================================== -->
+    <script>
+        // EDINET API検索機能
+        const companyNameInput = document.getElementById('companyNameInput');
+        const searchBtn = document.getElementById('searchBtn');
+        const searchBtnText = document.getElementById('searchBtnText');
+        const searchLoader = document.getElementById('searchLoader');
+        const searchResults = document.getElementById('searchResults');
+        const companyList = document.getElementById('companyList');
+        const reportsSection = document.getElementById('reportsSection');
+        const reportsList = document.getElementById('reportsList');
+        const convertBtn = document.getElementById('convertBtn');
+        const convertBtnText = document.getElementById('convertBtnText');
+        const convertLoader = document.getElementById('convertLoader');
+
+        let selectedCompany = null;
+        let selectedReports = [];
+
+        // 企業検索
+        searchBtn.addEventListener('click', async () => {
+            const companyName = companyNameInput.value.trim();
+            if (!companyName) {
+                alert('企業名を入力してください');
+                return;
+            }
+
+            searchBtnText.style.display = 'none';
+            searchLoader.style.display = 'block';
+            searchBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/edinet/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ company_name: companyName })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    alert('エラー: ' + data.error);
+                    return;
+                }
+
+                if (data.results.length === 0) {
+                    alert('企業が見つかりませんでした');
+                    return;
+                }
+
+                // 検索結果を表示
+                companyList.innerHTML = data.results.map((company, index) => `
+                    <div style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--container-bg); border-radius: 8px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s;"
+                         onmouseover="this.style.borderColor='var(--primary-color)'"
+                         onmouseout="this.style.borderColor='var(--border-color)'"
+                         onclick="selectCompany(${index})">
+                        <div style="font-weight: 600; margin-bottom: 0.25rem;">${company.filerName}</div>
+                        <div style="font-size: 0.85rem; color: var(--text-muted);">
+                            EDINETコード: ${company.edinetCode} | 証券コード: ${company.secCode || 'N/A'}
+                        </div>
+                    </div>
+                `).join('');
+
+                searchResults.style.display = 'block';
+                reportsSection.style.display = 'none';
+                convertBtn.style.display = 'none';
+
+                // グローバル変数に保存
+                window.companiesData = data.results;
+
+            } catch (error) {
+                alert('エラーが発生しました: ' + error.message);
+            } finally {
+                searchBtnText.style.display = 'block';
+                searchLoader.style.display = 'none';
+                searchBtn.disabled = false;
+            }
+        });
+
+        // 企業選択
+        window.selectCompany = async function(index) {
+            selectedCompany = window.companiesData[index];
+
+            // 有価証券報告書を取得
+            convertBtnText.style.display = 'none';
+            convertLoader.style.display = 'block';
+            convertBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/edinet/reports', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ edinet_code: selectedCompany.edinetCode })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    alert('エラー: ' + data.error);
+                    return;
+                }
+
+                if (data.results.length === 0) {
+                    alert('有価証券報告書が見つかりませんでした');
+                    return;
+                }
+
+                // 報告書一覧を表示（デフォルトで全てチェック）
+                reportsList.innerHTML = data.results.map((report, index) => `
+                    <div style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
+                        <label style="display: flex; align-items: start; cursor: pointer;">
+                            <input type="checkbox" value="${report.docID}" style="margin-right: 10px; margin-top: 4px;"
+                                   onchange="toggleReport('${report.docID}')" checked>
+                            <div style="flex: 1;">
+                                <div style="font-weight: 500; margin-bottom: 0.25rem;">${report.docDescription}</div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">
+                                    提出日: ${report.submitDateTime} | 対象期間: ${report.periodStart} ～ ${report.periodEnd}
+                                </div>
+                            </div>
+                        </label>
+                    </div>
+                `).join('');
+
+                reportsSection.style.display = 'block';
+                convertBtn.style.display = 'block';
+
+                window.reportsData = data.results;
+
+                // デフォルトで全ての報告書を選択状態にする
+                selectedReports = data.results.map(r => r.docID);
+
+            } catch (error) {
+                alert('エラーが発生しました: ' + error.message);
+            } finally {
+                convertBtnText.style.display = 'block';
+                convertLoader.style.display = 'none';
+                convertBtn.disabled = false;
+            }
+        };
+
+        // 報告書選択トグル
+        window.toggleReport = function(docID) {
+            const index = selectedReports.indexOf(docID);
+            if (index > -1) {
+                selectedReports.splice(index, 1);
+            } else {
+                selectedReports.push(docID);
+            }
+        };
+
+        // ダウンロード＆変換
+        convertBtn.addEventListener('click', async () => {
+            if (selectedReports.length === 0) {
+                alert('少なくとも1つの報告書を選択してください');
+                return;
+            }
+
+            convertBtnText.style.display = 'none';
+            convertLoader.style.display = 'block';
+            convertBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/edinet/convert', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_ids: selectedReports })
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'サーバーエラーが発生しました');
+                }
+
+                const blob = await response.blob();
+
+                // ファイル名を取得
+                let filename = 'converted_xbrl.xlsx';
+                const disposition = response.headers.get('Content-Disposition');
+                if (disposition) {
+                    const filenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i) ||
+                                          disposition.match(/filename="?([^";]+)"?/i);
+                    if (filenameMatch && filenameMatch[1]) {
+                        filename = decodeURIComponent(filenameMatch[1]);
+                    }
+                }
+
+                // ダウンロード
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+            } catch (error) {
+                alert('エラーが発生しました: ' + error.message);
+            } finally {
+                convertBtnText.style.display = 'block';
+                convertLoader.style.display = 'none';
+                convertBtn.disabled = false;
+            }
+        });
+
+        // Enterキーで検索
+        companyNameInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                searchBtn.click();
             }
         });
     </script>
