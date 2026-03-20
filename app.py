@@ -109,14 +109,16 @@ def index():
             if out_excel and os.path.exists(out_excel):
                 # Send the Excel file back to the browser
                 filename = os.path.basename(out_excel)
+                # Remove newline characters from filename
+                filename = filename.replace('\n', '').replace('\r', '')
                 encoded_filename = urllib.parse.quote(filename)
-                
+
                 response = send_file(
                     out_excel,
                     as_attachment=True,
                     download_name=filename
                 )
-                
+
                 # Make sure the Japanese filename displays correctly in the browser download prompt
                 response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
                 return response
@@ -309,6 +311,8 @@ def edinet_download_and_convert():
         if out_excel and os.path.exists(out_excel):
             # ファイルを送信
             filename = os.path.basename(out_excel)
+            # Remove newline characters from filename
+            filename = filename.replace('\n', '').replace('\r', '')
             encoded_filename = urllib.parse.quote(filename)
 
             response = send_file(

@@ -17,12 +17,18 @@ import os
 class EdinetCache:
     """EDINET 有価証券報告書のローカルキャッシュ"""
 
-    def __init__(self, db_path: str = "edinet_cache.db"):
+    def __init__(self, db_path: str = None):
         """
         Args:
-            db_path: SQLiteデータベースファイルのパス
+            db_path: SQLiteデータベースファイルのパス（Noneの場合はモジュールと同じディレクトリのedinet_cache.dbを使用）
         """
-        self.db_path = db_path
+        if db_path is None:
+            # モジュールの場所を基準に絶対パスを生成
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.db_path = os.path.join(base_dir, "edinet_cache.db")
+        else:
+            self.db_path = db_path
+            
         self._init_db()
 
     def _init_db(self):

@@ -1,0 +1,20 @@
+# FTP接続情報設定ファイル（テンプレート）
+#
+# 使い方:
+#   1. このファイルを .ftp_config にコピー
+#   2. パスワードを実際のものに変更
+#   3. chmod 600 .ftp_config で保護
+#
+# 注意: このファイルはGitにコミットしないこと！（.gitignoreに追加済み）
+
+# s211 FTP設定
+S211_HOST="s211.xrea.com"
+S211_USER="tomo"
+S211_PASS="YOUR_S211_PASSWORD_HERE"
+S211_PATH="/virtual/tomo/public_html/xbrl2.xtomo.com"
+
+# s217 FTP設定
+S217_HOST="s217.xrea.com"
+S217_USER="tomo"
+S217_PASS="YOUR_S217_PASSWORD_HERE"
+S217_PATH="/virtual/tomo/public_html/xbrl.xtomo.com"

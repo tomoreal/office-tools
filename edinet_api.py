@@ -19,7 +19,7 @@ from edinet_cache import EdinetCache
 class EdinetAPI:
     """EDINET API クライアント（キャッシュベース）"""
 
-    def __init__(self, api_key: str, cache_db_path: str = "edinet_cache.db"):
+    def __init__(self, api_key: str, cache_db_path: str = None):
         """
         Args:
             api_key: EDINET APIキー
