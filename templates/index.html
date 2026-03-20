@@ -369,6 +369,17 @@ XBRL to Excel Converter - Main UI Template
                     <div id="reportsList" style="max-height: 300px; overflow-y: auto;"></div>
                 </div>
 
+                <!-- ダウンロード進捗表示 -->
+                <div id="downloadProgress" style="display: none; margin-bottom: 1rem; padding: 0.75rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                        <span style="font-size: 0.9rem;">ダウンロード進捗</span>
+                        <span id="progressText" style="font-size: 0.9rem; color: var(--primary-color);">0 / 0</span>
+                    </div>
+                    <div style="width: 100%; height: 8px; background: var(--border-color); border-radius: 4px; overflow: hidden;">
+                        <div id="progressBarFill" style="height: 100%; width: 0%; background: var(--primary-color); transition: width 0.3s ease;"></div>
+                    </div>
+                </div>
+
                 <!-- ダウンロード＆変換ボタン -->
                 <button id="convertBtn" class="btn" style="display: none;">
                     <i class="fas fa-download" style="margin-right: 8px;"></i>
@@ -605,6 +616,9 @@ XBRL to Excel Converter - Main UI Template
 
         let selectedCompany = null;
         let selectedReports = [];
+        let sessionId = null;
+        let downloadedFiles = [];
+        let isDownloading = false;
 
         // 企業検索
         searchBtn.addEventListener('click', async () => {
@@ -694,6 +708,11 @@ XBRL to Excel Converter - Main UI Template
                     return;
                 }
 
+                window.reportsData = data.results;
+
+                // デフォルトで全ての報告書を選択状態にする
+                selectedReports = data.results.map(r => r.docID);
+
                 // 報告書一覧を表示（デフォルトで全てチェック）
                 reportsList.innerHTML = data.results.map((report, index) => `
                     <div style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
@@ -705,6 +724,9 @@ XBRL to Excel Converter - Main UI Template
                                 <div style="font-size: 0.8rem; color: var(--text-muted);">
                                     提出日: ${report.submitDateTime} | 対象期間: ${report.periodStart} ～ ${report.periodEnd}
                                 </div>
+                                <div id="download-status-${report.docID}" style="font-size: 0.75rem; margin-top: 0.25rem; color: var(--text-muted);">
+                                    <i class="fas fa-clock"></i> ダウンロード待機中...
+                                </div>
                             </div>
                         </label>
                     </div>
@@ -713,19 +735,112 @@ XBRL to Excel Converter - Main UI Template
                 reportsSection.style.display = 'block';
                 convertBtn.style.display = 'block';
 
-                window.reportsData = data.results;
-
-                // デフォルトで全ての報告書を選択状態にする
-                selectedReports = data.results.map(r => r.docID);
+                // 先読みダウンロード開始
+                startPreloadDownload(selectedReports);
 
             } catch (error) {
+                console.error('企業選択エラー:', error);
                 alert('エラーが発生しました: ' + error.message);
-            } finally {
                 convertBtnText.style.display = 'block';
                 convertLoader.style.display = 'none';
                 convertBtn.disabled = false;
             }
         };
+
+        // 先読みダウンロード開始
+        async function startPreloadDownload(docIds) {
+            isDownloading = true;
+            convertBtnText.textContent = `ダウンロード中 (0/${docIds.length})...`;
+
+            // 進捗バー表示
+            const progressContainer = document.getElementById('downloadProgress');
+            const progressText = document.getElementById('progressText');
+            const progressBarFill = document.getElementById('progressBarFill');
+
+            if (progressContainer) {
+                progressContainer.style.display = 'block';
+                progressText.textContent = `0 / ${docIds.length}`;
+                progressBarFill.style.width = '0%';
+            }
+
+            try {
+                const response = await fetch('/api/edinet/preload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ doc_ids: docIds })
+                });
+
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    console.error('Non-JSON response:', text.substring(0, 500));
+                    throw new Error('サーバーから不正なレスポンスが返されました');
+                }
+
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || 'ダウンロードに失敗しました');
+                }
+
+                sessionId = data.session_id;
+                downloadedFiles = data.downloaded_files;
+
+                console.log(`⚡ 並行ダウンロード完了: ${data.total_elapsed}秒 (成功: ${data.success_count}, 失敗: ${data.failed_count}, ${data.parallel_workers}並列)`);
+
+                // ダウンロード状態を表示
+                downloadedFiles.forEach((file, index) => {
+                    const statusEl = document.getElementById(`download-status-${file.doc_id}`);
+                    if (statusEl) {
+                        if (file.status === 'success') {
+                            const retryText = file.retry_count > 0 ? ` (${file.retry_count}回リトライ)` : '';
+                            statusEl.innerHTML = `<i class="fas fa-check-circle" style="color: #10b981;"></i> ダウンロード完了 (${file.elapsed}s)${retryText}`;
+                        } else {
+                            statusEl.innerHTML = '<i class="fas fa-exclamation-circle" style="color: #ef4444;"></i> ダウンロード失敗';
+                        }
+                    }
+
+                    // 進捗バー更新
+                    if (progressContainer) {
+                        const progress = Math.round(((index + 1) / docIds.length) * 100);
+                        progressText.textContent = `${index + 1} / ${docIds.length}`;
+                        progressBarFill.style.width = `${progress}%`;
+                    }
+                });
+
+                // ボタンテキスト更新
+                if (data.failed_count > 0) {
+                    convertBtnText.textContent = `選択した報告書を変換してダウンロード (${data.success_count}/${data.count}件成功)`;
+                    alert(`警告: ${data.failed_count}件のダウンロードに失敗しました。成功した${data.success_count}件で変換を続行できます。`);
+                } else {
+                    convertBtnText.textContent = `選択した報告書を変換してダウンロード (${data.total_elapsed}秒で完了)`;
+                }
+
+                convertBtn.disabled = false;
+                isDownloading = false;
+
+                // 3秒後に進捗バーを非表示
+                setTimeout(() => {
+                    if (progressContainer) {
+                        progressContainer.style.display = 'none';
+                    }
+                }, 3000);
+
+            } catch (error) {
+                console.error('Preload error:', error);
+                alert('ダウンロードエラー: ' + error.message);
+                convertBtnText.textContent = '選択した報告書をダウンロード＆変換';
+                convertBtn.disabled = false;
+                isDownloading = false;
+
+                if (progressContainer) {
+                    progressContainer.style.display = 'none';
+                }
+            } finally {
+                convertLoader.style.display = 'none';
+                convertBtnText.style.display = 'block';
+            }
+        }
 
         // 報告書選択トグル
         window.toggleReport = function(docID) {
@@ -744,6 +859,11 @@ XBRL to Excel Converter - Main UI Template
                 return;
             }
 
+            if (!sessionId) {
+                alert('セッションが見つかりません。企業を再度選択してください。');
+                return;
+            }
+
             convertBtnText.style.display = 'none';
             convertLoader.style.display = 'block';
             convertBtn.disabled = true;
@@ -752,7 +872,10 @@ XBRL to Excel Converter - Main UI Template
                 const response = await fetch('/api/edinet/convert', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ doc_ids: selectedReports })
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        doc_ids: selectedReports
+                    })
                 });
 
                 if (!response.ok) {

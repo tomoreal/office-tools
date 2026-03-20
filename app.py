@@ -182,37 +182,126 @@ def edinet_get_reports():
         return {'error': str(e)}, 500
 
 
-@app.route('/api/edinet/convert', methods=['POST'])
-def edinet_download_and_convert():
-    """EDINET APIからXBRLをダウンロードしてExcelに変換"""
+@app.route('/api/edinet/preload', methods=['POST'])
+def edinet_preload():
+    """EDINET APIからXBRLを先読みダウンロード（並行処理・最大5並列・リトライ機能付き）"""
     from edinet_api import EdinetAPI
-    import convert_xbrl_to_excel
+    from flask import jsonify
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
 
     try:
         data = request.get_json()
         doc_ids = data.get('doc_ids', [])
 
         if not doc_ids:
-            return {'error': '書類IDを指定してください'}, 400
+            return jsonify({'error': '書類IDを指定してください'}), 400
 
-        # 一時ディレクトリ作成
+        # セッション用の一時ディレクトリ作成
         base_temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
         if not os.path.exists(base_temp_dir):
             os.makedirs(base_temp_dir, exist_ok=True)
 
         temp_dir = tempfile.mkdtemp(dir=base_temp_dir)
+        session_id = os.path.basename(temp_dir)
 
-        # EDINET APIからXBRLをダウンロード
+        # EDINET APIからXBRLを並行ダウンロード
         api = EdinetAPI(EDINET_API_KEY)
-        downloaded_paths = []
+        downloaded_files = []
 
+        def download_single_xbrl(doc_id, retry_count=2):
+            """単一XBRLをダウンロードする関数（リトライ機能付き）"""
+            file_path = os.path.join(temp_dir, f"{doc_id}.zip")
+            start_time = time.time()
+
+            for attempt in range(retry_count + 1):
+                success = api.download_xbrl(doc_id, file_path)
+
+                if success:
+                    elapsed = time.time() - start_time
+                    return {
+                        'doc_id': doc_id,
+                        'file_path': file_path,
+                        'status': 'success',
+                        'elapsed': round(elapsed, 2),
+                        'retry_count': attempt
+                    }
+
+                # リトライ前に少し待機
+                if attempt < retry_count:
+                    time.sleep(1)
+
+            elapsed = time.time() - start_time
+            return {
+                'doc_id': doc_id,
+                'status': 'failed',
+                'elapsed': round(elapsed, 2),
+                'retry_count': retry_count
+            }
+
+        # 並行ダウンロード実行（最大6並列 - リトライ機能でカバー）
+        start_time = time.time()
+        max_workers = min(6, len(doc_ids))  # 最大6並列、またはファイル数
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(download_single_xbrl, doc_id): doc_id for doc_id in doc_ids}
+
+            for future in as_completed(futures):
+                result = future.result()
+                downloaded_files.append(result)
+
+        total_elapsed = time.time() - start_time
+
+        # 成功・失敗の統計
+        success_count = sum(1 for f in downloaded_files if f['status'] == 'success')
+        failed_count = len(downloaded_files) - success_count
+
+        return jsonify({
+            'session_id': session_id,
+            'temp_dir': temp_dir,
+            'downloaded_files': downloaded_files,
+            'total_elapsed': round(total_elapsed, 2),
+            'count': len(doc_ids),
+            'success_count': success_count,
+            'failed_count': failed_count,
+            'parallel_workers': max_workers
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error in edinet_preload: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/edinet/convert', methods=['POST'])
+def edinet_download_and_convert():
+    """先読みダウンロード済みのXBRLをExcelに変換"""
+    import convert_xbrl_to_excel
+    from flask import jsonify
+
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        doc_ids = data.get('doc_ids', [])
+
+        if not session_id or not doc_ids:
+            return jsonify({'error': 'セッションIDと書類IDを指定してください'}), 400
+
+        # セッションディレクトリを取得
+        base_temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
+        temp_dir = os.path.join(base_temp_dir, session_id)
+
+        if not os.path.exists(temp_dir):
+            return jsonify({'error': 'セッションが見つかりません'}), 404
+
+        # ダウンロード済みファイルを確認
+        downloaded_paths = []
         for doc_id in doc_ids:
             file_path = os.path.join(temp_dir, f"{doc_id}.zip")
-            if api.download_xbrl(doc_id, file_path):
+            if os.path.exists(file_path):
                 downloaded_paths.append(file_path)
 
         if not downloaded_paths:
-            return {'error': 'XBRLファイルのダウンロードに失敗しました'}, 500
+            return jsonify({'error': 'ダウンロード済みファイルが見つかりません'}), 404
 
         # Excelに変換
         out_excel = convert_xbrl_to_excel.process_xbrl_zips(downloaded_paths, output_dir=temp_dir)
@@ -231,11 +320,11 @@ def edinet_download_and_convert():
             response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
             return response
         else:
-            return {'error': 'Excelファイルの生成に失敗しました'}, 500
+            return jsonify({'error': 'Excelファイルの生成に失敗しました'}), 500
 
     except Exception as e:
         app.logger.error(f"Error in edinet_download_and_convert: {e}")
-        return {'error': str(e)}, 500
+        return jsonify({'error': str(e)}), 500
 
 
 # ========================================================================
