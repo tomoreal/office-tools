@@ -1,5 +1,62 @@
 <!DOCTYPE html>
 <html lang="ja">
+<!--
+========================================================================
+EDINET Bookmarklets - Collection Page
+========================================================================
+
+【テンプレート構成】
+このファイルは以下のセクションで構成されています:
+
+1. HEAD SECTION (1-10行)
+   - メタタグ設定
+   - 外部CSS読み込み（Google Fonts, Font Awesome）
+   - 将来の分割先: templates/base.html + templates/bookmarklets/index.html
+
+2. CSS STYLES (10-176行)
+   - CSS変数定義（カラースキーム）
+   - ブックマークレットカードのスタイル
+   - XREA広告対応（左寄せ強制）
+   - 将来の分割先: static/css/main.css + static/css/pages/bookmarklets.css
+
+3. BODY - HEADER & INSTRUCTION (179-189行)
+   - ページタイトル
+   - 使用方法の説明
+   - 将来の分割先: templates/bookmarklets/header.html
+
+4. BODY - BOOKMARKLET ITEMS (191-210行)
+   - 3つのブックマークレット
+     - EDINETへ移動（外部リンク）
+     - 有報全期間（書類種別・期間の自動設定）
+     - 有報xbrlDL（XBRLファイル一括ダウンロード）
+   - 将来の分割先: templates/bookmarklets/items.html
+
+5. BODY - NAVIGATION & FOOTER (212-220行)
+   - 変換ツールへの戻るリンク
+   - フッター（著作権表示）
+   - 将来の分割先: templates/components/footer.html
+
+6. JAVASCRIPT - XREA AD HANDLER (223-252行)
+   - XREA広告の左寄せ強制スクリプト
+   - MutationObserver による動的監視
+   - 将来の分割先: static/js/ad_handler.js
+
+【設計思想】
+- ブックマークレットをドラッグ&ドロップで追加可能なUI
+- EDINET操作を自動化（書類種別選択、期間設定、XBRL一括ダウンロード）
+- モダンなカードベースのレイアウト
+- XREA無料サーバーの広告表示に対応（左寄せ強制）
+
+【ブックマークレット機能】
+1. EDINETへ移動: EDINET書類検索画面を別タブで開く
+2. 有報全期間: 書類種別を「有価証券報告書」、期間を「全期間」に自動設定
+3. 有報xbrlDL: 検索結果からXBRLファイルを順次ダウンロード（訂正版を除外）
+
+【依存関係】
+- app.py (Flask Route: bookmarklets)
+- Google Fonts (Inter)
+- Font Awesome 6.0.0
+-->
 
 <head>
     <meta charset="UTF-8">
@@ -7,6 +64,11 @@
     <title>EDINET用ブックマークレットの追加 | XBRL・Excel 変換ツール</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <!-- ======================================================================
+         CSS STYLES - カラースキーム、レイアウト、ブックマークレットカード
+         【将来の分割先】static/css/main.css + static/css/pages/bookmarklets.css
+         ====================================================================== -->
     <style>
         :root {
             --bg-color: #0f172a;
@@ -177,8 +239,15 @@
 </head>
 
 <body>
+    <!-- ======================================================================
+         BODY - ページコンテナ
+         ====================================================================== -->
     <div class="page-wrapper">
         <div class="container">
+            <!-- ==================================================================
+                 HEADER & INSTRUCTION
+                 【将来の分割先】templates/bookmarklets/header.html
+                 ================================================================== -->
             <div class="header">
                 <h1>EDINET用ブックマークレットの追加</h1>
             </div>
@@ -188,6 +257,10 @@
                 EDINETの検索結果画面で使用することで、データの取得がスムーズになります。
             </div>
 
+            <!-- ==================================================================
+                 BOOKMARKLET ITEMS - 3つのブックマークレット
+                 【将来の分割先】templates/bookmarklets/items.html
+                 ================================================================== -->
             <div class="bookmarklet-item">
                 <div class="bookmarklet-name">EDINETへ移動</div>
                 <div class="bookmarklet-desc">EDINETの書類検索画面を別タブで開きます。</div>
@@ -209,6 +282,10 @@
                     href='javascript:(function(){var rows=[...document.querySelectorAll("table tr")];var targets=[];rows.forEach(r=>{var t=r.innerText;if(t.includes("有価証券報告書")&&!t.includes("訂正")){var a=[...r.querySelectorAll("a")].find(x=>x.innerText.trim()=="XBRL");if(a)targets.push(a);}});if(!targets.length){alert("有価証券報告書のXBRLが見つかりません");return;}let i=0;function next(){if(i>=targets.length)return;targets[i].click();i++;setTimeout(next,1500);}next();})();'>有報xbrlDL</a>
             </div>
 
+            <!-- ==================================================================
+                 NAVIGATION & FOOTER
+                 【将来の分割先】templates/components/footer.html
+                 ================================================================== -->
             <div style="text-align: left;">
                 <a href="./" class="back-link">
                     <i class="fas fa-arrow-left"></i> 変換ツールに戻る
@@ -220,6 +297,11 @@
             </div>
         </div>
     </div>
+
+    <!-- ======================================================================
+         JAVASCRIPT - XREA AD HANDLER
+         【将来の分割先】static/js/ad_handler.js
+         ====================================================================== -->
     <!-- XREA Ad Alignment Enforcement -->
     <script>
         (function () {

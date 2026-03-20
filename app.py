@@ -1,7 +1,51 @@
+"""
+XBRL to Excel Converter - Web Application
+
+【プログラム構成】
+このファイルは以下の機能ブロックで構成されています:
+
+1. APPLICATION SETUP (1-11行)
+   - Flask アプリケーション初期化
+   - 環境変数設定
+   - 将来の分割先: web/app.py または api/app.py
+
+2. MAIN ROUTE (13-79行)
+   - メインページの表示とファイル変換処理
+   - convert_xbrl_to_excel.py の process_xbrl_zips を呼び出し
+   - 将来の分割先: web/routes/converter.py
+
+3. BOOKMARKLET ROUTES (81-87行)
+   - ブックマークレット用ページ表示
+   - 将来の分割先: web/routes/bookmarklets.py
+
+4. TEMP CLEAR ROUTE (89-99行)
+   - 一時ファイルクリア機能
+   - 将来の分割先: web/routes/admin.py
+
+5. LOCAL TESTING ENTRY POINT (101-103行)
+   - ローカル開発用のエントリポイント
+   - 将来の分割先: dev/run_local.py
+
+【設計思想】
+- convert_xbrl_to_excel.py の薄いラッパー
+- 既存のコマンドライン機能をWebインターフェースとして提供
+- 後方互換性を維持したまま、将来的にはRESTful APIとして分離可能
+
+【依存関係】
+- convert_xbrl_to_excel.py (Core Logic)
+- templates/index.html, bookmarklets.html, csv_bookmarklets.html (Views)
+- index.cgi (CGI Entry Point)
+"""
+
 import os
 import tempfile
 import urllib.parse
 import shutil
+
+# ========================================================================
+# APPLICATION SETUP
+# ========================================================================
+# 【将来の分割先】web/app.py または api/app.py
 
 # LiteSpeedサーバー（コアサーバー等）でのマルチスレッド問題を回避
 os.environ['OPENBLAS_NUM_THREADS'] = "1"
@@ -9,6 +53,11 @@ from flask import Flask, render_template, request, send_file, flash, redirect, u
 
 app = Flask(__name__)
 app.secret_key = 'xbrl_to_excel_secret'
+
+# ========================================================================
+# MAIN ROUTE - ファイルアップロードと変換処理
+# ========================================================================
+# 【将来の分割先】web/routes/converter.py
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -77,7 +126,12 @@ def index():
             return redirect(request.url)
             
     return render_template('index.html')
-    
+
+# ========================================================================
+# BOOKMARKLET ROUTES - ブックマークレット用ページ
+# ========================================================================
+# 【将来の分割先】web/routes/bookmarklets.py
+
 @app.route('/bookmarklets')
 def bookmarklets():
     return render_template('bookmarklets.html')
@@ -85,6 +139,11 @@ def bookmarklets():
 @app.route('/csv_bookmarklets')
 def csv_bookmarklets():
     return render_template('csv_bookmarklets.html')
+
+# ========================================================================
+# TEMP CLEAR ROUTE - 一時ファイルクリア
+# ========================================================================
+# 【将来の分割先】web/routes/admin.py
 
 @app.route('/clear', methods=['POST'])
 def clear_temp():
@@ -97,6 +156,11 @@ def clear_temp():
     except Exception as e:
         flash(f'クリア中にエラーが発生しました: {str(e)}')
     return redirect(url_for('index'))
+
+# ========================================================================
+# LOCAL TESTING ENTRY POINT
+# ========================================================================
+# 【将来の分割先】dev/run_local.py
 
 if __name__ == '__main__':
     # Run dynamically for local testing. In production, use Gunicorn e.g., gunicorn -w 4 app:app

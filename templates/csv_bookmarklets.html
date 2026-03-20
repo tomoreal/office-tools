@@ -1,5 +1,63 @@
 <!DOCTYPE html>
 <html lang="ja">
+<!--
+========================================================================
+EOL CSV Conversion Bookmarklet - Collection Page
+========================================================================
+
+【テンプレート構成】
+このファイルは以下のセクションで構成されています:
+
+1. HEAD SECTION (1-10行)
+   - メタタグ設定
+   - 外部CSS読み込み（Google Fonts, Font Awesome）
+   - 将来の分割先: templates/base.html + templates/bookmarklets/csv.html
+
+2. CSS STYLES (10-168行)
+   - CSS変数定義（カラースキーム - 青系）
+   - ブックマークレットカードのスタイル
+   - XREA広告対応（左寄せ強制）
+   - 将来の分割先: static/css/main.css + static/css/pages/csv_bookmarklets.css
+
+3. BODY - HEADER & INSTRUCTION (171-181行)
+   - ページタイトル
+   - 使用方法の説明（EOL専用）
+   - 将来の分割先: templates/bookmarklets/csv_header.html
+
+4. BODY - BOOKMARKLET ITEM (183-190行)
+   - eol_check ブックマークレット
+     - 指定年数分の「通期」データにチェック
+     - 「縦形式」に自動設定
+   - 将来の分割先: templates/bookmarklets/csv_items.html
+
+5. BODY - NAVIGATION & FOOTER (192-200行)
+   - 変換ツールへの戻るリンク
+   - フッター（著作権表示）
+   - 将来の分割先: templates/components/footer.html
+
+6. JAVASCRIPT - XREA AD HANDLER (203-232行)
+   - XREA広告の左寄せ強制スクリプト
+   - MutationObserver による動的監視
+   - 将来の分割先: static/js/ad_handler.js
+
+【設計思想】
+- ブックマークレットをドラッグ&ドロップで追加可能なUI
+- EOL（Economic Online）の操作を自動化
+- GitHub風の青系カラースキーム
+- XREA無料サーバーの広告表示に対応（左寄せ強制）
+
+【ブックマークレット機能】
+eol_check:
+  - ユーザーに年数を入力させる（デフォルト10年）
+  - 「通期」データの行を検索
+  - チェックボックス（csv_1, csv_2, csv_6）を自動チェック
+  - ダウンロード形式を「縦形式」に設定
+
+【依存関係】
+- app.py (Flask Route: csv_bookmarklets)
+- Google Fonts (Inter)
+- Font Awesome 6.0.0
+-->
 
 <head>
     <meta charset="UTF-8">
@@ -7,6 +65,11 @@
     <title>CSV変換用ブックマークレット | 財務データ変換ツール</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <!-- ======================================================================
+         CSS STYLES - カラースキーム（青系）、レイアウト、ブックマークレットカード
+         【将来の分割先】static/css/main.css + static/css/pages/csv_bookmarklets.css
+         ====================================================================== -->
     <style>
         :root {
             --bg-color: #0f172a;
@@ -169,8 +232,15 @@
 </head>
 
 <body>
+    <!-- ======================================================================
+         BODY - ページコンテナ
+         ====================================================================== -->
     <div class="page-wrapper">
         <div class="container">
+            <!-- ==================================================================
+                 HEADER & INSTRUCTION
+                 【将来の分割先】templates/bookmarklets/csv_header.html
+                 ================================================================== -->
             <div class="header">
                 <h1>CSV変換用ブックマークレット</h1>
             </div>
@@ -180,6 +250,10 @@
                 EOLの「原文（財務データCSV）」画面で使用することで、チェックボックスの操作が自動化されます。
             </div>
 
+            <!-- ==================================================================
+                 BOOKMARKLET ITEM - eol_check
+                 【将来の分割先】templates/bookmarklets/csv_items.html
+                 ================================================================== -->
             <div class="bookmarklet-item">
                 <div class="bookmarklet-name">eol_check</div>
                 <div class="bookmarklet-desc">
@@ -189,6 +263,10 @@
                     href='javascript:(function(){var n=parseInt(prompt("チェックする年数","10"),10)||10,c=0;document.querySelectorAll("tr").forEach(function(tr){if(c>=n)return;var td=tr.querySelector("td:nth-child(2)");if(td&&td.textContent.trim()==="通期"){tr.querySelectorAll("input.csv_1,input.csv_2,input.csv_6").forEach(function(cb){cb.checked=true});c++}});document.querySelectorAll(&#39;input[name="csv_style"][value="vertical"],input[name="xlsx_style"][value="vertical"]&#39;).forEach(function(r){r.checked=true});})();'>eol_check</a>
             </div>
 
+            <!-- ==================================================================
+                 NAVIGATION & FOOTER
+                 【将来の分割先】templates/components/footer.html
+                 ================================================================== -->
             <div style="text-align: left;">
                 <a href="./index.html" class="back-link">
                     <i class="fas fa-arrow-left"></i> 変換ツールに戻る
@@ -200,6 +278,11 @@
             </div>
         </div>
     </div>
+
+    <!-- ======================================================================
+         JAVASCRIPT - XREA AD HANDLER
+         【将来の分割先】static/js/ad_handler.js
+         ====================================================================== -->
     <!-- XREA Ad Alignment Enforcement -->
     <script>
         (function () {

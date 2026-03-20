@@ -3,6 +3,55 @@
 """
 EDINET Taxonomy Dictionary Auto-Update Script
 
+このスクリプトは、EDINETタクソノミを自動更新し、edinet_taxonomy_dict.py を再生成します。
+
+【現在の状態】
+- 総行数: 770行
+- 機能: 完成・動作確認済み
+- 分割: 不要（将来必要になった時のみ実施）
+
+【プログラム構成】
+このファイルは以下の機能ブロックで構成されています：
+
+1. LOGGING SETUP (56-85行)
+   - ロガー設定
+   - 将来の分割先: infra/logging.py と統合可能
+
+2. FILE LOCK (98-148行)
+   - ファイルロック（並行実行防止）
+   - 将来の分割先: infra/file.py と統合可能
+
+3. REMOTE UPDATE CHECK (150-223行)
+   - リモートファイルの更新チェック（ETag/Last-Modified）
+   - 将来の分割先: taxonomy/updater.py
+
+4. DOWNLOAD & HASH (225-395行)
+   - タクソノミファイルのダウンロード
+   - ハッシュ検証
+   - 将来の分割先: taxonomy/updater.py
+
+5. DICTIONARY GENERATION (404-609行)
+   - Excelファイルからタクソノミ辞書を生成
+   - カスタムマッピングの追加
+   - 将来の分割先: taxonomy/updater.py
+
+6. FILE WRITER (611-651行)
+   - edinet_taxonomy_dict.py の書き込み
+   - 将来の分割先: taxonomy/updater.py
+
+7. MAIN FUNCTION (653-770行)
+   - メイン処理フロー
+   - 将来の分割先: cli.py または統合後のラッパー
+
+【将来の分割について】
+convert_xbrl_to_excel.py と統合する際は、以下のように分割：
+- taxonomy/updater.py: ダウンロード・辞書生成ロジック
+- update_edinet_taxonomy.py: CLIラッパー（50行程度）
+
+詳細は「将来の分割案.md」を参照してください。
+
+---
+
 This script automatically downloads the latest EDINET taxonomy from FSA
 and regenerates the edinet_taxonomy_dict.py file.
 
@@ -52,6 +101,12 @@ try:
 except ImportError:
     HAS_FCNTL = False
 
+# ============================================================================
+# LOGGING SETUP
+# ============================================================================
+# 【将来の分割先】infra/logging.py（convert_xbrl_to_excel.py と統合）
+# ============================================================================
+
 # Logging configuration
 LOG_FILE = "update_edinet_taxonomy.log"
 
@@ -94,6 +149,15 @@ LOCK_FILE = ".edinet_taxonomy_update.lock"  # Process-level lock for update oper
 
 # Logger will be initialized in main()
 logger = None
+
+# ============================================================================
+# FILE LOCK
+# ============================================================================
+# 【将来の分割先】infra/file.py（convert_xbrl_to_excel.py と統合）
+#
+# 並行実行防止のためのファイルロック
+# convert_xbrl_to_excel.py の file_lock() と統合可能
+# ============================================================================
 
 @contextmanager
 def file_lock(lock_path):
@@ -146,6 +210,15 @@ def file_lock(lock_path):
                 lock_file.close()
             except:
                 pass
+
+# ============================================================================
+# REMOTE UPDATE CHECK
+# ============================================================================
+# 【将来の分割先】taxonomy/updater.py
+#
+# ETag/Last-Modified ヘッダーを使った効率的な更新チェック
+# 304 Not Modified レスポンスによる帯域節約
+# ============================================================================
 
 def check_remote_update():
     """
@@ -221,6 +294,15 @@ def check_remote_update():
     except Exception as e:
         logger.warning(f"  ⚠ Remote check failed ({e}), will proceed with download")
         return True, {}
+
+# ============================================================================
+# DOWNLOAD & HASH VERIFICATION
+# ============================================================================
+# 【将来の分割先】taxonomy/updater.py
+#
+# タクソノミファイルのダウンロードとハッシュ検証
+# アトミック操作による安全な更新
+# ============================================================================
 
 def download_taxonomy(use_conditional_request=False, metadata=None):
     """
@@ -417,6 +499,22 @@ def get_column_index_map(ws, header_row=2):
     idx_map = {name: i for i, name in enumerate(headers) if name}
     return idx_map
 
+# ============================================================================
+# DICTIONARY GENERATION
+# ============================================================================
+# 【将来の分割先】taxonomy/updater.py
+#
+# Excelファイル（ESE140115.xlsx）からPython辞書を生成
+#
+# 処理フロー:
+# 1. 全業種シートから要素名とラベルを抽出（業種横断的に収集）
+# 2. カスタムマッピング追加（IFRS対応、略称など）
+# 3. EDINET公式定義を優先（カスタムは補完のみ）
+#
+# 注意: convert_xbrl_to_excel.py の IFRS_LABEL_MAPPING と重複する部分あり
+#       将来的に output/mappings.py で統合
+# ============================================================================
+
 def generate_dictionary():
     """Generate dictionary from EDINET taxonomy (all industry sheets)"""
     logger.info(f"Generating dictionary from: {TAXONOMY_FILE}")
@@ -608,6 +706,15 @@ def generate_dictionary():
         traceback.print_exc()
         return None, 0, 0
 
+# ============================================================================
+# FILE WRITER
+# ============================================================================
+# 【将来の分割先】taxonomy/updater.py
+#
+# edinet_taxonomy_dict.py ファイルの生成
+# 自動生成されるファイルのため、手動編集禁止
+# ============================================================================
+
 def write_dictionary_file(final_dict, edinet_count, custom_count):
     """Write dictionary to Python file"""
     logger.info(f"Writing dictionary to: {OUTPUT_FILE}")
@@ -649,6 +756,22 @@ def write_dictionary_file(final_dict, edinet_count, custom_count):
     except Exception as e:
         logger.error(f"✗ File write failed: {e}")
         return False
+
+# ============================================================================
+# MAIN FUNCTION
+# ============================================================================
+# 【将来の分割先】CLIラッパー（50行程度に縮小）
+#
+# 統合後のイメージ:
+# ```python
+# from xbrl_converter.taxonomy.updater import check_and_update_taxonomy
+#
+# def main():
+#     force = '--force' in sys.argv
+#     debug = '--debug' in sys.argv
+#     return check_and_update_taxonomy(force=force, debug=debug)
+# ```
+# ============================================================================
 
 def main():
     """Main function"""

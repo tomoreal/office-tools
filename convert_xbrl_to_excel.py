@@ -1,3 +1,48 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+XBRL to Excel Converter
+
+このスクリプトは、EDINETからダウンロードしたXBRLファイルをExcelに変換します。
+
+【現在の状態】
+- 総行数: 3680行（コメント追加後）
+- 機能: 完成・動作確認済み
+- 分割: 不要（将来必要になった時のみ実施）
+
+【プログラム構成】
+このファイルは以下の5つの層で構成されています：
+
+1. INFRASTRUCTURE LAYER (61-380行)
+   - ログ管理、ファイル操作、セキュリティチェック
+   - 将来の分割先: infra/logging.py, infra/file.py
+
+2. TAXONOMY LAYER (108-905行)
+   - タクソノミ管理・更新・解析
+   - 将来の分割先: taxonomy/repository.py, parser.py, updater.py
+
+3. XBRL LAYER (383-1412行)
+   - XBRL解析・階層構築
+   - 将来の分割先: xbrl/loader.py, parser.py, context.py
+
+4. CORE LAYER (1413-3650行)
+   - メイン処理パイプライン（process_xbrl_zips）
+   - 将来の分割先: core/processor.py, pipeline.py, model/xbrl_data.py
+
+5. CLI LAYER (3652-3680行)
+   - コマンドライン引数処理
+   - 将来の分割先: cli.py
+
+【将来の分割について】
+分割が必要になる条件（以下のいずれか）:
+- 保守が困難になった時（バグ修正に3日以上）
+- 複数人で開発する時（gitコンフリクト頻発）
+- 大規模な機能追加（PDF出力、API化など）
+- テスト自動化が必要になった時
+
+詳細は「将来の分割案.md」を参照してください。
+"""
+
 import os
 import sys
 import zipfile
@@ -57,6 +102,21 @@ _RE_TAXONOMY_ZIP = re.compile(r'(/search/\d+/1c_Taxonomy\.zip)')
 # This provides better performance (buffering) and thread safety compared to manual file I/O
 _LOG_FILE = os.path.join(SCRIPT_DIR, 'convert_xbrl_debug.log')
 
+# ============================================================================
+# INFRASTRUCTURE LAYER - Logging & File Operations
+# ============================================================================
+# 【将来の分割先】infra/logging.py, infra/file.py
+#
+# このセクションには以下が含まれます:
+# - TimestampFormatter (61-87行): ログフォーマッタ
+# - rotate_logs_manually (184-222行): ログローテーション
+# - debug_log (224-238行): デバッグログ出力
+# - vprint (342-347行): 詳細ログ出力
+# - validate_zip_path (240-248行): ZIPパス検証
+# - check_zip_bomb (249-264行): ZIP爆弾チェック
+# - file_lock (266-316行): ファイルロック
+# ============================================================================
+
 # Custom formatter that includes timestamp
 class TimestampFormatter(logging.Formatter):
     def formatTime(self, record, datefmt=None):
@@ -89,6 +149,25 @@ _log_rotation_checked = False
 # Flag to ensure EDINET taxonomy dict update is checked at most once per session
 # (keyed by the highest taxonomy_year seen so far)
 _taxonomy_dict_last_checked_year = None
+
+# ============================================================================
+# TAXONOMY LAYER - Taxonomy Management & Updates
+# ============================================================================
+# 【将来の分割先】taxonomy/repository.py, taxonomy/parser.py, taxonomy/updater.py
+#
+# このセクションには以下が含まれます:
+# - get_edinet_taxonomy_dict_year (93-116行): タクソノミ年度取得
+# - check_and_update_edinet_taxonomy (118-182行): タクソノミ更新チェック
+# - fetch_taxonomy_url (479-534行): タクソノミURL取得
+# - get_standard_labels (536-730行): タクソノミラベル取得（メイン）
+# - parse_labels_file (732-850行): ラベルファイル解析
+# - build_suffix_index (318-340行): サフィックスインデックス構築
+#
+# 分割時の注意:
+# - repository.py: I/O処理のみ（キャッシュ・取得）
+# - parser.py: 純粋な解析ロジック
+# - updater.py: 更新処理（副作用）
+# ============================================================================
 
 def get_edinet_taxonomy_dict_year():
     """Read the taxonomy year embedded in edinet_taxonomy_dict.py's docstring.
@@ -346,6 +425,28 @@ def vprint(*args, **kwargs):
        _logger.debug(f"[VERBOSE] {msg}")
 
 
+# ============================================================================
+# XBRL LAYER - XBRL Parsing & Data Extraction
+# ============================================================================
+# 【将来の分割先】xbrl/loader.py, xbrl/parser.py, xbrl/context.py
+#
+# このセクションには以下が含まれます:
+# - safe_xpath (349-430行): XPath実行ヘルパー
+# - find_xbrl_files (432-478行): XBRLファイル検出
+# - clean_label (852-874行): ラベルクリーンアップ
+# - convert_camel_case_to_title (876-880行): キャメルケース変換
+# - parse_presentation_linkbase (882-1004行): プレゼンテーション解析
+# - parse_instance_contexts_and_units (1006-1142行): コンテキスト・単位解析
+# - parse_ixbrl_facts (1144-1294行): iXBRL事実値抽出
+# - create_hierarchy (1296-1344行): 階層構築
+# - merge_sequences (1346-1355行): シーケンスマージ
+#
+# 分割時の注意:
+# - loader.py: ZIP展開、ファイル検出
+# - parser.py: XBRLパースのメインロジック（500行程度は許容）
+# - context.py: Context/Unit処理（XBRLの鬼門）
+# ============================================================================
+
 def safe_xpath(tree_or_elem, query, namespaces=None):
     """Safe XPath helper that works with both lxml and standard xml.etree.ElementTree.
     Note: ElementTree supports only a subset of XPath.
@@ -404,6 +505,19 @@ COMMON_DIMENSION_MAPPING = {
     'UnallocatedAmountsAndEliminationMember': '全社・消去',
     'ReconcilingItemsMember': '調整項目',
 }
+
+# ============================================================================
+# CONSTANTS & MAPPINGS
+# ============================================================================
+# 【将来の分割先】output/mappings.py
+#
+# IFRS/J-GAAPのラベルマッピング、シート名マッピングなど
+# Excel生成で使用する定数を定義
+#
+# 注意: process_xbrl_zips 関数内にも SHEET_MAPPING, HEADING_DICT,
+#       SEGMENT_DICT が定義されている（2580-2960行付近）
+#       分割時はこれらも mappings.py に統合する
+# ============================================================================
 
 # IFRS account name mapping to match commercial tools
 IFRS_LABEL_MAPPING = {
@@ -1354,6 +1468,37 @@ def merge_sequences(master, new_seq):
             res.append(item)
     return res
 
+# ============================================================================
+# CORE LAYER - Main Processing Pipeline
+# ============================================================================
+# 【将来の分割先】core/processor.py, core/pipeline.py
+#
+# この巨大関数（1357-3531行、約2200行）は以下のフェーズで構成されます:
+#
+# Phase 1: ファイル展開（1357-1600行付近）
+#   - ZIP展開、ファイル検出
+#   - 並列処理（ThreadPoolExecutor）
+#   - 将来の分割先: load_phase()
+#
+# Phase 2: タクソノミ取得（1600-1700行付近）
+#   - タクソノミラベルの取得
+#   - 将来の分割先: taxonomy_phase()
+#
+# Phase 3: XBRL解析（1700-2300行付近）
+#   - プレゼンテーション、コンテキスト、事実値の解析
+#   - データマージ・重複排除
+#   - 将来の分割先: parse_phase()
+#
+# Phase 4: Excel生成（2300-3500行付近）
+#   - シート生成、データ書き込み、フォーマット
+#   - 将来の分割先: output_phase() → excel/writer.py, sheets.py, formatter.py
+#
+# 分割時の最重要原則:
+# 1. 各フェーズを完全独立関数にする
+# 2. XBRLData（統一中間モデル）でデータを受け渡す
+# 3. if文による分岐はStrategy Patternで解決（特にExcel層）
+# ============================================================================
+
 def process_xbrl_zips(zip_paths, output_dir=None):
     overall_start = time.time()
     if not zip_paths:
@@ -1394,9 +1539,24 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     # Use provided output_dir for temp files if possible to avoid permission issues in /tmp
     parent_temp_dir = output_dir if output_dir and os.path.exists(output_dir) else None
     temp_base = tempfile.mkdtemp(dir=parent_temp_dir)
-    
+
     try:
-        # Phase 3.5: Parallel processing of ZIP files
+        # ========================================================================
+        # Phase 1: ファイル展開・XBRL解析（並列処理）
+        # ========================================================================
+        # 【将来の分割先】load_phase() + parse_phase()
+        #
+        # 処理内容:
+        # - 各ZIPファイルを並列で展開
+        # - XBRLファイル（presentation, instance, iXBRL）を検出
+        # - タクソノミラベルを取得
+        # - プレゼンテーション階層、コンテキスト、事実値を解析
+        # - スレッドごとに結果を集約
+        #
+        # 分割時の注意:
+        # - ThreadPoolExecutor の管理は pipeline.py 内で隠蔽
+        # - 各ワーカーは XBRLData を返すように変更
+        # ========================================================================
         from concurrent.futures import ThreadPoolExecutor
         
         def process_single_zip(zip_idx, zip_path):
@@ -2333,7 +2493,24 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
     debug_log(f"Hierarchical data structure built in {time.time() - t_hierarchy_start:.2f}s")
 
-    # Now generate Excel
+    # ========================================================================
+    # Phase 2: Excel生成
+    # ========================================================================
+    # 【将来の分割先】output_phase() → excel/writer.py, sheets.py, formatter.py
+    #
+    # 処理内容:
+    # - Workbook作成
+    # - シート生成（ロールごと）
+    # - データ書き込み
+    # - フォーマット適用（列幅、罫線、数値書式）
+    # - ファイル保存
+    #
+    # 分割時の最重要原則:
+    # 1. if文による分岐は禁止 → Strategy Pattern で解決
+    # 2. writer.py: Workbook生成のみ
+    # 3. sheets.py: シート構築（SHEET_BUILDERS辞書で振り分け）
+    # 4. formatter.py: 見た目のみ（データ判断禁止）
+    # ========================================================================
     t_excel_start = time.time()
     print(f"Generating Excel for {company_name}...", file=sys.stderr)
     # Note: write_only=True is faster but incompatible with sheet merging and formatting
@@ -3529,6 +3706,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     debug_log(f"SUCCESS: Excel saved to {out_file} in {time.time() - t_excel_start:.2f}s")
     debug_log(f"TOTAL: process_xbrl_zips completed in {time.time() - overall_start:.2f}s")
     return out_file
+
+# ============================================================================
+# CLI ENTRY POINT
+# ============================================================================
+# 【将来の分割先】cli.py
+#
+# コマンドライン引数の解析とprocess_xbrl_zipsの呼び出しのみ
+# ビジネスロジックは含めない
+# ============================================================================
 
 def main():
     if len(sys.argv) < 2:

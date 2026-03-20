@@ -1,5 +1,74 @@
 <!DOCTYPE html>
 <html lang="ja">
+<!--
+========================================================================
+XBRL to Excel Converter - Main UI Template
+========================================================================
+
+【テンプレート構成】
+このファイルは以下のセクションで構成されています:
+
+1. HEAD SECTION (1-10行)
+   - メタタグ設定
+   - 外部CSS読み込み（Google Fonts, Font Awesome）
+   - 将来の分割先: templates/base.html + templates/converter/index.html
+
+2. CSS STYLES (10-232行)
+   - CSS変数定義（カラースキーム）
+   - レスポンシブデザイン
+   - ドラッグ&ドロップ UI
+   - XREA広告対応（左寄せ強制）
+   - 将来の分割先: static/css/main.css + static/css/components/
+
+3. BODY - NAVIGATION (235-247行)
+   - ブックマークレットリンク
+   - CSV変換ツールリンク
+   - 将来の分割先: templates/components/navbar.html
+
+4. BODY - MAIN FORM (248-275行)
+   - タイトル・説明
+   - フラッシュメッセージ表示（Jinja2）
+   - ファイルアップロードフォーム
+   - ドラッグ&ドロップエリア
+   - 将来の分割先: templates/converter/upload_form.html
+
+5. BODY - CLEAR FORM (277-282行)
+   - サーバーファイルクリアボタン
+   - 将来の分割先: templates/components/admin_actions.html
+
+6. BODY - PROGRESS & FOOTER (284-292行)
+   - プログレスバー
+   - フッター（著作権表示）
+   - 将来の分割先: templates/components/footer.html
+
+7. JAVASCRIPT - FILE HANDLING (294-335行)
+   - ドラッグ&ドロップ処理
+   - ファイル選択UI更新
+   - 将来の分割先: static/js/upload.js
+
+8. JAVASCRIPT - FORM SUBMISSION (336-426行)
+   - 非同期ファイルアップロード
+   - プログレスバー制御
+   - ファイルダウンロード処理
+   - 将来の分割先: static/js/converter.js
+
+9. JAVASCRIPT - XREA AD HANDLER (428-457行)
+   - XREA広告の左寄せ強制スクリプト
+   - MutationObserver による動的監視
+   - 将来の分割先: static/js/ad_handler.js
+
+【設計思想】
+- モダンなダークテーマUI（Tailwind風のカラースキーム）
+- ドラッグ&ドロップ対応のUX
+- 非同期アップロードでページリロードなし
+- XREA無料サーバーの広告表示に対応（左寄せ強制）
+
+【依存関係】
+- app.py (Flask Routes: index, clear_temp)
+- Google Fonts (Inter)
+- Font Awesome 6.0.0
+- Jinja2 (Flask Template Engine)
+-->
 
 <head>
     <meta charset="UTF-8">
@@ -7,6 +76,11 @@
     <title>財務データXBRL 横展開ツール</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <!-- ======================================================================
+         CSS STYLES - カラースキーム、レイアウト、コンポーネント
+         【将来の分割先】static/css/main.css + static/css/components/
+         ====================================================================== -->
     <style>
         :root {
             --bg-color: #0f172a;
@@ -233,8 +307,15 @@
 </head>
 
 <body>
+    <!-- ======================================================================
+         BODY - ページコンテナ
+         ====================================================================== -->
     <div class="page-wrapper">
         <div class="container">
+            <!-- ==================================================================
+                 NAVIGATION - ブックマークレット・ツールリンク
+                 【将来の分割先】templates/components/navbar.html
+                 ================================================================== -->
             <div style="display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 1.5rem;">
                 <a href="./bookmarklets"
                     style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
@@ -245,6 +326,11 @@
                     <i class="fas fa-exchange-alt" style="margin-right: 8px;"></i>CSV変換ツールへ
                 </a>
             </div>
+
+            <!-- ==================================================================
+                 MAIN FORM - ファイルアップロード UI
+                 【将来の分割先】templates/converter/upload_form.html
+                 ================================================================== -->
             <h1>XBRL・Excel 変換ツール</h1>
             <p>EDINET（<a href="https://disclosure2.edinet-fsa.go.jp/weee0050.aspx" target="_blank"
                     style="color: var(--primary-color);">https://disclosure2.edinet-fsa.go.jp/weee0050.aspx</a>）で、ダウンロードしたXBRLファイル(zip)をアップロードしてください。
@@ -274,6 +360,10 @@
                 <div class="file-list" id="fileList"></div>
             </form>
 
+            <!-- ==================================================================
+                 CLEAR FORM - サーバーファイルクリア
+                 【将来の分割先】templates/components/admin_actions.html
+                 ================================================================== -->
             <form action="{{ url_for('clear_temp') }}" method="POST" id="clearForm"
                 onsubmit="return confirm('サーバー上の一次ファイルをすべて削除しますか？');">
                 <button type="submit" class="btn btn-secondary">
@@ -281,6 +371,10 @@
                 </button>
             </form>
 
+            <!-- ==================================================================
+                 PROGRESS & FOOTER
+                 【将来の分割先】templates/components/footer.html
+                 ================================================================== -->
             <div class="progress-container" id="progressContainer">
                 <div class="progress-bar" id="progressBar"></div>
             </div>
@@ -291,6 +385,10 @@
         </div>
     </div>
 
+    <!-- ======================================================================
+         JAVASCRIPT - FILE HANDLING
+         【将来の分割先】static/js/upload.js
+         ====================================================================== -->
     <script>
         const fileInput = document.getElementById('fileInput');
         const fileList = document.getElementById('fileList');
@@ -332,7 +430,13 @@
             fileInput.files = files;
             fileInput.dispatchEvent(new Event('change'));
         });
+    </script>
 
+    <!-- ======================================================================
+         JAVASCRIPT - FORM SUBMISSION
+         【将来の分割先】static/js/converter.js
+         ====================================================================== -->
+    <script>
         function resetUI() {
             btnText.style.display = 'block';
             loader.style.display = 'none';
@@ -425,6 +529,10 @@
         });
     </script>
 
+    <!-- ======================================================================
+         JAVASCRIPT - XREA AD HANDLER
+         【将来の分割先】static/js/ad_handler.js
+         ====================================================================== -->
     <!-- XREA Ad Alignment Enforcement -->
     <script>
         (function () {
