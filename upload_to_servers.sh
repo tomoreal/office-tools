@@ -50,8 +50,3 @@ echo "✓ corem15 完了"
 echo ""
 
 echo "=== すべてのアップロード完了 ==="
-echo ""
-echo "次のステップ："
-echo "1. 各サーバーで英語辞書が正しく読み込まれるか確認"
-echo "2. cronジョブが正常に動作するか確認（daily_update_cache.py）"
-echo ""
