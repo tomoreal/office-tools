@@ -253,11 +253,13 @@ class EdinetCache:
                c.japanese_name LIKE ? OR
                c.japanese_name LIKE ? OR
                r.filer_name LIKE ? OR
-               r.filer_name LIKE ?
+               r.filer_name LIKE ? OR
+               r.edinet_code LIKE ? COLLATE NOCASE OR
+               r.sec_code LIKE ?
             )
             GROUP BY r.edinet_code
             ORDER BY latest_submit DESC
-        """, (search_raw, search_kana, search_raw, search_norm, search_raw, search_norm))
+        """, (search_raw, search_kana, search_raw, search_norm, search_raw, search_norm, search_raw, search_raw))
 
         results = []
         for row in cursor.fetchall():
