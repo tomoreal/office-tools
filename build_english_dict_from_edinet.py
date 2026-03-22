@@ -66,8 +66,9 @@ def extract_company_name(english_name: str, japanese_name: str) -> tuple:
     if len(eng_main) < 2:
         return None
 
-    # 日本語名からカタカナ部分を抽出
-    katakana_parts = re.findall(r'[ァ-ヴー]+', japanese_name)
+    # 日本語名からカタカナ・英数字・一部記号部分を抽出
+    # 完全に英字のみの企業名（例: LIXIL）も抽出できるようにする
+    katakana_parts = re.findall(r'[ァ-ヴーＡ-Ｚａ-ｚA-Za-z0-9０-９・＆\.\-\+]+', japanese_name)
     if not katakana_parts:
         return None
 
