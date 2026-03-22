@@ -627,7 +627,9 @@ XBRL to Excel Converter - Main UI Template
                 const response = await fetch('/api/edinet/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ company_name: companyName })
+                    body: JSON.stringify({ 
+                        company_name: companyName
+                    })
                 });
 
                 const data = await response.json();

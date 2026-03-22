@@ -39,15 +39,6 @@ class EdinetAPI:
 
         Returns:
             企業情報のリスト
-            [
-                {
-                    'edinetCode': 'E02144',
-                    'filerName': 'トヨタ自動車株式会社',
-                    'secCode': '72030',
-                    'latest_submit': '2026-03-13 10:08'
-                },
-                ...
-            ]
         """
         # キャッシュDBから検索
         return self.cache.search_by_company_name(company_name)

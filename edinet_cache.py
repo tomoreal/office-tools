@@ -15,8 +15,6 @@ import os
 import unicodedata
 
 
-
-
 def hiragana_to_katakana(text: str) -> str:
     """
     ひらがなをカタカナに変換
@@ -97,9 +95,9 @@ def normalize_text(text: str) -> str:
         ('バ', 'ハ'), ('ビ', 'ヒ'), ('ブ', 'フ'), ('ベ', 'ヘ'), ('ボ', 'ホ'),
         ('パ', 'ハ'), ('ピ', 'ヒ'), ('プ', 'フ'), ('ペ', 'ヘ'), ('ポ', 'ホ'),
         ('が', 'か'), ('ぎ', 'き'), ('ぐ', 'く'), ('げ', 'け'), ('ご', 'こ'),
-        ('ざ', 'さ'), ('じ', 'し'), ('ず', 'す'), ('ぜ', 'せ'), ('ぞ', 'そ'),
+        ('ざ', 'さ'), ('じ', 'シ'), ('ず', 'ス'), ('ぜ', 'セ'), ('ぞ', 'ソ'),
         ('だ', 'た'), ('ぢ', 'ち'), ('づ', 'つ'), ('で', 'て'), ('ど', 'と'),
-        ('ば', 'は'), ('び', 'ひ'), ('ぶ', 'ふ'), ('べ', 'へ'), ('ぼ', 'ほ'),
+        ('ば', 'は'), ('び', 'ひ'), ('ぶ', 'フ'), ('ベ', 'ヘ'), ('ボ', 'ホ'),
         ('ぱ', 'は'), ('ぴ', 'ひ'), ('ぷ', 'ふ'), ('ぺ', 'へ'), ('ぽ', 'ほ'),
     ]
 
@@ -242,7 +240,8 @@ class EdinetCache:
         cursor = conn.cursor()
 
         # company_masterがあればJOINし、english_name, kana_name, japanese_name全てを検索対象に入れる
-        cursor.execute("""
+        # また、書類種別を「有価証券報告書」のみに限定し、投資法人も除外する
+        cursor.execute(f"""
             SELECT DISTINCT r.edinet_code, COALESCE(c.japanese_name, r.filer_name) as display_name, r.sec_code,
                    MAX(r.submit_datetime) as latest_submit
             FROM securities_reports r
@@ -257,6 +256,9 @@ class EdinetCache:
                r.edinet_code LIKE ? COLLATE NOCASE OR
                r.sec_code LIKE ?
             )
+            AND display_name NOT LIKE '%投資法人%'
+            AND r.doc_description LIKE '有価証券報告書%' 
+            AND r.doc_description NOT LIKE '有価証券報告書（%'
             GROUP BY r.edinet_code
             ORDER BY latest_submit DESC
         """, (search_raw, search_kana, search_raw, search_norm, search_raw, search_norm, search_raw, search_raw))
@@ -293,6 +295,8 @@ class EdinetCache:
                    period_start, period_end
             FROM securities_reports
             WHERE edinet_code = ?
+              AND doc_description LIKE '有価証券報告書%'
+              AND doc_description NOT LIKE '有価証券報告書（%'
             ORDER BY submit_datetime DESC
             LIMIT ?
         """, (edinet_code, limit))

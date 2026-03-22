@@ -26,9 +26,13 @@ FILES=(
 #    "build_cache.py"
 #    "daily_update_cache.py"
 #    "convert_xbrl_to_excel.py"
-    "templates"
-    "app.py"
+#    "templates"
+#    "app.py"
+#    "convert_xbrl_to_excel.py"
+#    "edinet_api.py"
+#    "edinet_cache.py"
     "convert_xbrl_to_excel.py"
+
 )
 
 # s211へアップロード
