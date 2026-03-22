@@ -3726,7 +3726,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for out_ws in wb.worksheets:
         debug_log(f"  - {out_ws.title}: {out_ws.max_row} rows")
 
-    out_file = f'XBRL_横展開_{company_name}.xlsx'
+    out_file = f'有報_{company_name}.xlsx'
     if output_dir:
         out_file = os.path.join(output_dir, out_file)
 

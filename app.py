@@ -58,6 +58,11 @@ app.secret_key = 'xbrl_to_excel_secret'
 # EDINET APIキー
 from edinet_api_key import EDINET_API_KEY
 
+# プロジェクト内の temp_uploads ディレクトリを使用（権限問題を回避）
+BASE_TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
+if not os.path.exists(BASE_TEMP_DIR):
+    os.makedirs(BASE_TEMP_DIR, exist_ok=True)
+
 # ========================================================================
 # MAIN ROUTE - ファイルアップロードと変換処理
 # ========================================================================
@@ -107,29 +112,24 @@ def index():
             out_excel = convert_xbrl_to_excel.process_xbrl_zips(saved_paths, output_dir=temp_dir)
             
             if out_excel and os.path.exists(out_excel):
-                # Send the Excel file back to the browser
-                filename = os.path.basename(out_excel)
-                # Remove newline characters from filename
-                filename = filename.replace('\n', '').replace('\r', '')
-                encoded_filename = urllib.parse.quote(filename)
-
-                response = send_file(
-                    out_excel,
-                    as_attachment=True,
-                    download_name=filename
-                )
-
-                # Make sure the Japanese filename displays correctly in the browser download prompt
-                response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
-                return response
+                # Return JSON with the relative file path for the download API
+                relative_path = os.path.relpath(out_excel, BASE_TEMP_DIR)
+                return {
+                    "success": True,
+                    "file": relative_path
+                }
             else:
-                flash("Excelファイルの生成に失敗しました。")
-                return redirect(request.url)
+                return {
+                    "success": False,
+                    "error": "Excelファイルの生成に失敗しました。"
+                }
                 
         except Exception as e:
             app.logger.error(f"Error during conversion: {e}")
-            flash(f"エラーが発生しました: {str(e)}")
-            return redirect(request.url)
+            return {
+                "success": False,
+                "error": str(e)
+            }
             
     return render_template('index.html')
 
@@ -309,26 +309,57 @@ def edinet_download_and_convert():
         out_excel = convert_xbrl_to_excel.process_xbrl_zips(downloaded_paths, output_dir=temp_dir)
 
         if out_excel and os.path.exists(out_excel):
-            # ファイルを送信
-            filename = os.path.basename(out_excel)
-            # Remove newline characters from filename
-            filename = filename.replace('\n', '').replace('\r', '')
-            encoded_filename = urllib.parse.quote(filename)
-
-            response = send_file(
-                out_excel,
-                as_attachment=True,
-                download_name=filename
-            )
-
-            response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
-            return response
+            # Return JSON with the relative file path for the download API
+            relative_path = os.path.relpath(out_excel, BASE_TEMP_DIR)
+            return jsonify({
+                "success": True,
+                "file": relative_path
+            })
         else:
             return jsonify({'error': 'Excelファイルの生成に失敗しました'}), 500
 
     except Exception as e:
         app.logger.error(f"Error in edinet_download_and_convert: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/edinet/download')
+def download_excel():
+    """iPad等のファイル名化け対策: ブラウザのデフォルトダウンロード機能を利用"""
+    from urllib.parse import quote
+    
+    file_rel_path = request.args.get("file")
+    if not file_rel_path:
+        return "File not specified", 400
+
+    # セキュリティチェック: ディレクトリトラバーサル防止
+    if ".." in file_rel_path or file_rel_path.startswith("/") or file_rel_path.startswith("\\"):
+        return "Invalid file path", 400
+
+    file_path = os.path.normpath(os.path.join(BASE_TEMP_DIR, file_rel_path))
+    
+    # パスが BASE_TEMP_DIR 内にあることを確認
+    if not file_path.startswith(BASE_TEMP_DIR):
+        return "Access denied", 403
+
+    if not os.path.exists(file_path):
+        return "File not found", 404
+
+    filename = os.path.basename(file_path)
+    # 改行コードを除去
+    filename = filename.replace('\n', '').replace('\r', '')
+    encoded_filename = quote(filename)
+
+    response = send_file(
+        file_path,
+        as_attachment=True,
+        download_name=filename
+    )
+
+    # Content-Disposition を UTF-8 エンコードで設定（iPad等の対応）
+    response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+
+    return response
 
 
 # ========================================================================
