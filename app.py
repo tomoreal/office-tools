@@ -55,8 +55,8 @@ from flask import Flask, render_template, request, send_file, flash, redirect, u
 app = Flask(__name__)
 app.secret_key = 'xbrl_to_excel_secret'
 
-# EDINET APIキー（環境変数または直接指定）
-EDINET_API_KEY = os.environ.get('EDINET_API_KEY', '6ea174edf112439da66798a6d863a95d')
+# EDINET APIキー
+from edinet_api_key import EDINET_API_KEY
 
 # ========================================================================
 # MAIN ROUTE - ファイルアップロードと変換処理

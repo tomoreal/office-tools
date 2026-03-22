@@ -11,8 +11,8 @@ from datetime import datetime, timedelta
 import time
 from edinet_cache import EdinetCache
 
-# EDINET API設定
-API_KEY = "6ea174edf112439da66798a6d863a95d"
+# EDINET APIキー
+from edinet_api_key import EDINET_API_KEY as API_KEY
 BASE_URL = "https://api.edinet-fsa.go.jp/api/v2"
 
 def build_cache(years: int = 10, sampling_days: int = 7):
