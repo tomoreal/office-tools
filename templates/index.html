@@ -331,23 +331,21 @@ XBRL to Excel Converter - Main UI Template
                  MAIN FORM - ファイルアップロード UI
                  【将来の分割先】templates/converter/upload_form.html
                  ================================================================== -->
-            <h1>XBRL・Excel 変換ツール</h1>
-            <p>方法1: EDINET APIで企業を検索してダウンロード（推奨）<br>
-               方法2: EDINETから手動でダウンロードしたXBRLファイル(zip)をアップロード
-            </p>
+            <h1>XBRL to Excel 変換ツール</h1>
 
             <!-- ==================================================================
                  EDINET API SEARCH SECTION - 企業検索とXBRLダウンロード
                  【将来の分割先】templates/converter/edinet_search.html
                  ================================================================== -->
-            <div style="background: var(--drop-bg); border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; border: 1px solid var(--border-color);">
+            <div
+                style="background: var(--drop-bg); border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; border: 1px solid var(--border-color);">
                 <h2 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--primary-color);">
-                    <i class="fas fa-search" style="margin-right: 8px;"></i>方法1: EDINET APIで検索
+                    <i class="fas fa-search" style="margin-right: 8px;"></i>方法1: EDINET APIで企業を検索してダウンロード
                 </h2>
 
                 <!-- 企業名入力 -->
                 <div style="margin-bottom: 1rem;">
-                    <input type="text" id="companyNameInput" placeholder="企業名を入力（例: トヨタ自動車）"
+                    <input type="text" id="companyNameInput" placeholder="企業名（和・英・かな）,証券コード,EDINETコードを入力"
                         style="width: 100%; padding: 0.75rem; background: var(--container-bg); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-main); font-size: 0.95rem;">
                 </div>
 
@@ -370,13 +368,17 @@ XBRL to Excel Converter - Main UI Template
                 </div>
 
                 <!-- ダウンロード進捗表示 -->
-                <div id="downloadProgress" style="display: none; margin-bottom: 1rem; padding: 0.75rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
+                <div id="downloadProgress"
+                    style="display: none; margin-bottom: 1rem; padding: 0.75rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
                         <span style="font-size: 0.9rem;">ダウンロード進捗</span>
                         <span id="progressText" style="font-size: 0.9rem; color: var(--primary-color);">0 / 0</span>
                     </div>
-                    <div style="width: 100%; height: 8px; background: var(--border-color); border-radius: 4px; overflow: hidden;">
-                        <div id="progressBarFill" style="height: 100%; width: 0%; background: var(--primary-color); transition: width 0.3s ease;"></div>
+                    <div
+                        style="width: 100%; height: 8px; background: var(--border-color); border-radius: 4px; overflow: hidden;">
+                        <div id="progressBarFill"
+                            style="height: 100%; width: 0%; background: var(--primary-color); transition: width 0.3s ease;">
+                        </div>
                     </div>
                 </div>
 
@@ -400,14 +402,17 @@ XBRL to Excel Converter - Main UI Template
             {% endif %}
             {% endwith %}
 
-            <div style="background: var(--drop-bg); border-radius: 12px; padding: 1.5rem; border: 1px solid var(--border-color);">
+            <div
+                style="background: var(--drop-bg); border-radius: 12px; padding: 1.5rem; border: 1px solid var(--border-color);">
                 <h2 style="font-size: 1.1rem; margin-bottom: 1rem; color: var(--primary-color);">
                     <i class="fas fa-upload" style="margin-right: 8px;"></i>方法2: ZIPファイルをアップロード
                 </h2>
 
                 <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-                    EDINET（<a href="https://disclosure2.edinet-fsa.go.jp/weee0050.aspx" target="_blank"
-                        style="color: var(--primary-color);">https://disclosure2.edinet-fsa.go.jp/weee0050.aspx</a>）で手動ダウンロードしたXBRLファイルをアップロード
+                    <a href="https://disclosure2.edinet-fsa.go.jp/weee0050.aspx" target="_blank"
+                        style="color: var(--primary-color);">EDINET</a>や
+                    <a href="https://ssl.eoldb.jp/EolDb/UserLogin.php" target="_blank"
+                        style="color: var(--primary-color);">eol</a>でダウンロードしたXBRLファイルをアップロード
                 </p>
 
                 <form method="POST" enctype="multipart/form-data" id="uploadForm">
@@ -420,7 +425,8 @@ XBRL to Excel Converter - Main UI Template
                         <i class="fas fa-file-archive upload-icon"></i>
                         <div style="margin-bottom: 0.5rem;">ZIPファイルをドラッグ＆ドロップ</div>
                         <div style="font-size: 0.85rem; color: var(--text-muted);">または、クリックしてファイルを選択</div>
-                        <input type="file" name="files" id="fileInput" class="file-input" accept=".zip" multiple required>
+                        <input type="file" name="files" id="fileInput" class="file-input" accept=".zip" multiple
+                            required>
                     </div>
 
                     <div class="file-list" id="fileList"></div>
@@ -556,13 +562,13 @@ XBRL to Excel Converter - Main UI Template
                 }
 
                 const blob = await response.blob();
-                
+
                 // Get filename from Content-Disposition if possible
                 let filename = 'converted_xbrl.xlsx';
                 const disposition = response.headers.get('Content-Disposition');
                 if (disposition) {
-                    const filenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i) || 
-                                          disposition.match(/filename="?([^";]+)"?/i);
+                    const filenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i) ||
+                        disposition.match(/filename="?([^";]+)"?/i);
                     if (filenameMatch && filenameMatch[1]) {
                         filename = decodeURIComponent(filenameMatch[1]);
                     }
@@ -583,7 +589,7 @@ XBRL to Excel Converter - Main UI Template
                     progressBar.style.transition = 'width 0.2s ease-out';
                     progressBar.style.width = '100%';
                 }
-                
+
                 setTimeout(() => {
                     resetUI();
                 }, 1000);
@@ -681,7 +687,7 @@ XBRL to Excel Converter - Main UI Template
         });
 
         // 企業選択
-        window.selectCompany = async function(index) {
+        window.selectCompany = async function (index) {
             selectedCompany = window.companiesData[index];
 
             // 有価証券報告書を取得
@@ -843,7 +849,7 @@ XBRL to Excel Converter - Main UI Template
         }
 
         // 報告書選択トグル
-        window.toggleReport = function(docID) {
+        window.toggleReport = function (docID) {
             const index = selectedReports.indexOf(docID);
             if (index > -1) {
                 selectedReports.splice(index, 1);
@@ -890,7 +896,7 @@ XBRL to Excel Converter - Main UI Template
                 const disposition = response.headers.get('Content-Disposition');
                 if (disposition) {
                     const filenameMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i) ||
-                                          disposition.match(/filename="?([^";]+)"?/i);
+                        disposition.match(/filename="?([^";]+)"?/i);
                     if (filenameMatch && filenameMatch[1]) {
                         filename = decodeURIComponent(filenameMatch[1]);
                     }

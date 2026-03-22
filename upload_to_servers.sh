@@ -13,9 +13,9 @@ COREM15_DIR="/virtual/tomo/public_html/xbrl3.xtomo.com"
 
 FILES=(
 #    "README_english_dict.md"
-    "edinet_cache.py"
-    "edinet_cache.db"
-    "daily_update_cache.py"
+#    "edinet_cache.py"
+#    "edinet_cache.db"
+#    "daily_update_cache.py"
 #    "build_english_dict_from_edinet.py"
 #    "english_katakana_dict.json"
 #    "build_katakana_dict.py"
@@ -26,26 +26,27 @@ FILES=(
 #    "build_cache.py"
 #    "daily_update_cache.py"
 #    "convert_xbrl_to_excel.py"
+    "templates"
 )
 
 # s211へアップロード
 echo "--- s211 へアップロード ---"
 echo "  Uploading: ${FILES[*]}"
-scp "${FILES[@]}" "s211:${S211_DIR}/"
+scp -r "${FILES[@]}" "s211:${S211_DIR}/"
 echo "✓ s211 完了"
 echo ""
 
 # s217へアップロード
 echo "--- s217 へアップロード ---"
 echo "  Uploading: ${FILES[*]}"
-scp "${FILES[@]}" "s217:${S217_DIR}/"
+scp -r "${FILES[@]}" "s217:${S217_DIR}/"
 echo "✓ s217 完了"
 echo ""
 
 # corem15へアップロード
 echo "--- corem15 へアップロード ---"
 echo "  Uploading: ${FILES[*]}"
-scp "${FILES[@]}" "corem15:${COREM15_DIR}/"
+scp -r "${FILES[@]}" "corem15:${COREM15_DIR}/"
 echo "✓ corem15 完了"
 echo ""
 
