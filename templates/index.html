@@ -304,6 +304,11 @@ XBRL to Excel Converter - Main UI Template
             display: inline-block !important;
         }
     </style>
+    <script>
+        window.addEventListener('DOMContentLoaded', function () {
+            document.getElementById('companyNameInput').focus();
+        });
+    </script>
 </head>
 
 <body>
@@ -345,7 +350,7 @@ XBRL to Excel Converter - Main UI Template
 
                 <!-- 企業名入力 -->
                 <div style="margin-bottom: 1rem;">
-                    <input type="text" id="companyNameInput" placeholder="企業名（和・英・かな）,証券コード,EDINETコードを入力"
+                    <input type="text" id="companyNameInput" autofocus placeholder="企業名（和・英・かな）,証券コード,EDINETコードを入力"
                         style="width: 100%; padding: 0.75rem; background: var(--container-bg); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-main); font-size: 0.95rem;">
                 </div>
 
