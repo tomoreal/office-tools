@@ -11,13 +11,13 @@ S211_DIR="/virtual/tomo/public_html/xbrl2.xtomo.com"
 S217_DIR="/virtual/tomo/public_html/xbrl.xtomo.com"
 COREM15_DIR="/virtual/tomo/public_html/xbrl3.xtomo.com"
 
-# アップロードするファイル
 FILES=(
 #    "README_english_dict.md"
-#    "edinet_cache.py"
+    "edinet_cache.py"
+    "edinet_cache.db"
 #    "daily_update_cache.py"
-    "build_english_dict_from_edinet.py"
-    "english_katakana_dict.json"
+#    "build_english_dict_from_edinet.py"
+#    "english_katakana_dict.json"
 #    "build_katakana_dict.py"
 #    "katakana_company_dict.json"
 #    ".edinet_api_key_config"

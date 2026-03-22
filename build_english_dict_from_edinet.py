@@ -7,6 +7,7 @@ https://disclosure2dl.edinet-fsa.go.jp/searchdocument/codelisteng/Edinetcode.zip
 から英語名→日本語名のマッピングを抽出
 """
 
+import os
 import csv
 import json
 import re
@@ -66,14 +67,17 @@ def extract_company_name(english_name: str, japanese_name: str) -> tuple:
     if len(eng_main) < 2:
         return None
 
-    # 日本語名からカタカナ・英数字・一部記号部分を抽出
-    # 完全に英字のみの企業名（例: LIXIL）も抽出できるようにする
-    katakana_parts = re.findall(r'[ァ-ヴーＡ-Ｚａ-ｚA-Za-z0-9０-９・＆\.\-\+]+', japanese_name)
-    if not katakana_parts:
-        return None
-
-    # 最も長いカタカナ部分を使用
-    kata_main = max(katakana_parts, key=len)
+    # 会社法人等格を表す言葉を削除し、日本語の企業名全体を採用する
+    # カタカナのみを抽出すると、漢字主体の企業（本田技研工業など）が漏れるため
+    jp_exclude = [
+        '株式会社', '有限会社', '合同会社', '合名会社', '合資会社', 
+        '相互会社', '特定目的会社', '投資法人', '一般社団法人', '公益財団法人',
+        '（株）', '（有）'
+    ]
+    kata_main = japanese_name
+    for term in jp_exclude:
+        kata_main = kata_main.replace(term, '')
+    kata_main = kata_main.strip()
 
     # 短すぎる場合はスキップ
     if len(kata_main) < 2:
@@ -91,6 +95,7 @@ def build_english_dict_from_edinet(csv_path: str = 'EdinetcodeDlInfo.csv') -> di
     """
     english_dict = {}
     english_dict_metadata = {}  # 優先度管理用
+    all_candidates = defaultdict(list)  # 共通プレフィックス探索用
     stats = defaultdict(int)
 
     with open(csv_path, 'r', encoding='cp932', errors='ignore') as f:
@@ -125,10 +130,10 @@ def build_english_dict_from_edinet(csv_path: str = 'EdinetcodeDlInfo.csv') -> di
 
             eng_main, kata_main = result
 
-            # 優先度の計算（上場企業を優先、短いカタカナ名を優先）
+            # 優先度の計算（上場企業を優先、本来の英語名が短いものを優先、短いカタカナ名を優先）
             # priority値が小さいほど優先度が高い
             is_listed = 1 if listing_status == 'Listed company' else 2
-            priority = (is_listed, len(kata_main))
+            priority = (is_listed, len(eng_main.split()), len(kata_main))
 
             # 複数のキー候補を生成
             # 1. 完全な企業名（例: "toyota motor"）
@@ -139,6 +144,7 @@ def build_english_dict_from_edinet(csv_path: str = 'EdinetcodeDlInfo.csv') -> di
                 key_candidates.append(words[0])
 
             for key in key_candidates:
+                all_candidates[key].append(kata_main)
                 # 重複がある場合は優先度の高い方を採用
                 if key in english_dict:
                     existing_priority = english_dict_metadata[key]
@@ -152,6 +158,29 @@ def build_english_dict_from_edinet(csv_path: str = 'EdinetcodeDlInfo.csv') -> di
                     english_dict[key] = kata_main
                     english_dict_metadata[key] = priority
                     stats['added'] += 1
+
+        # 共通接頭辞を使用した汎用キーワードの上書き（例: nissan -> 日産、toyota -> トヨタ を抽出）
+        for key, list_names in all_candidates.items():
+            if len(list_names) > 1:
+                unique_names = list(set(list_names))
+                if len(unique_names) > 1:
+                    # Toyota問題（「トヨタ」と「豊田」が混在すると共通接頭辞がなくなる）に対応
+                    # 先頭2文字でグループ化し、最大のグループを優先する
+                    prefix_groups = defaultdict(list)
+                    for name in unique_names:
+                        if len(name) >= 2:
+                            prefix_groups[name[:2]].append(name)
+
+                    if prefix_groups:
+                        # 要素数が一番多いグループを取得
+                        best_group = max(prefix_groups.values(), key=len)
+                        
+                        # 2社以上からなるグループの場合は、その内部で共通プレフィックスを計算
+                        if len(best_group) > 1:
+                            prefix = os.path.commonprefix(best_group)
+                            if len(prefix) >= 2:
+                                english_dict[key] = prefix
+                                stats['prefix_overrides'] += 1
 
     return english_dict, stats
 
@@ -170,6 +199,7 @@ def main():
     print(f"辞書追加: {stats['added']}件")
     print(f"辞書更新: {stats['updated']}件")
     print(f"重複スキップ: {stats['duplicate_skipped']}件")
+    print(f"共通接頭辞による汎用化: {stats['prefix_overrides']}件")
     print(f"\n最終辞書エントリ数: {len(english_dict)}件\n")
 
     # サンプル表示（アルファベット順）

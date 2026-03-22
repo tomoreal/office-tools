@@ -14,64 +14,7 @@ from typing import List, Dict, Optional
 import os
 import unicodedata
 
-# 各種辞書をグローバルで読み込み（パフォーマンス最適化）
-_ENGLISH_KATAKANA_DICT = None
-_KATAKANA_COMPANY_DICT = None
 
-def _load_english_katakana_dict() -> Dict[str, str]:
-    """英語名→カタカナ名辞書を読み込む"""
-    global _ENGLISH_KATAKANA_DICT
-
-    if _ENGLISH_KATAKANA_DICT is not None:
-        return _ENGLISH_KATAKANA_DICT
-
-    dict_path = os.path.join(os.path.dirname(__file__), 'english_katakana_dict.json')
-
-    # デフォルト辞書（ファイルが無い場合のフォールバック）
-    default_dict = {
-        'canon': 'キヤノン',
-        'sony': 'ソニー',
-        'toyota': 'トヨタ',
-        'honda': 'ホンダ',
-        'nissan': 'ニッサン',
-        'panasonic': 'パナソニック',
-        'toshiba': 'トシバ',
-        'hitachi': 'ヒタチ',
-        'fujitsu': 'フジツ',
-        'nec': 'エヌイーシー',
-    }
-
-    try:
-        if os.path.exists(dict_path):
-            with open(dict_path, 'r', encoding='utf-8') as f:
-                _ENGLISH_KATAKANA_DICT = json.load(f)
-        else:
-            _ENGLISH_KATAKANA_DICT = default_dict
-    except Exception:
-        _ENGLISH_KATAKANA_DICT = default_dict
-
-    return _ENGLISH_KATAKANA_DICT
-
-
-def _load_katakana_company_dict() -> Dict[str, str]:
-    """カタカナ読み→企業名辞書を読み込む"""
-    global _KATAKANA_COMPANY_DICT
-
-    if _KATAKANA_COMPANY_DICT is not None:
-        return _KATAKANA_COMPANY_DICT
-
-    dict_path = os.path.join(os.path.dirname(__file__), 'katakana_company_dict.json')
-
-    try:
-        if os.path.exists(dict_path):
-            with open(dict_path, 'r', encoding='utf-8') as f:
-                _KATAKANA_COMPANY_DICT = json.load(f)
-        else:
-            _KATAKANA_COMPANY_DICT = {}
-    except Exception:
-        _KATAKANA_COMPANY_DICT = {}
-
-    return _KATAKANA_COMPANY_DICT
 
 
 def hiragana_to_katakana(text: str) -> str:
@@ -112,38 +55,8 @@ def normalize_text(text: str) -> str:
 
     import re
 
-    # 【ステップ1】英字のカタカナ読み変換（正規化の前に実行）
-    # 英字のみで構成されている場合のみ変換
-    lower_text = text.lower().strip()
-
-    # 英字のみで構成されているかチェック（スペースや記号は許可）
-    if re.match(r'^[a-z\s\-\.]+$', lower_text):
-        english_to_katakana = _load_english_katakana_dict()
-
-        # 辞書を長い順にソート（部分一致を避けるため）
-        sorted_dict = sorted(english_to_katakana.items(), key=lambda x: len(x[0]), reverse=True)
-
-        for eng, kata in sorted_dict:
-            # 単語境界を考慮した完全一致
-            if re.search(r'\b' + re.escape(eng) + r'\b', lower_text):
-                text = re.sub(r'\b' + re.escape(eng) + r'\b', kata, lower_text, flags=re.IGNORECASE)
-                break  # 最初に一致したもので置換
-
-    # 【ステップ2】ひらがな→カタカナ変換（検索を統一するため）
+    # ひらがな→カタカナ変換（検索を統一するため）
     text = hiragana_to_katakana(text)
-
-    # 【ステップ2.5】カタカナ読み→企業名変換
-    # NFKC正規化前に実行（カタカナの状態で辞書検索）
-    katakana_dict = _load_katakana_company_dict()
-    if katakana_dict:
-        # カタカナのみで構成されているかチェック
-        if re.match(r'^[ァ-ヴー\s]+$', text):
-            # スペース削除して辞書検索
-            text_no_space = text.replace(' ', '').replace('　', '')
-            text_lower = text_no_space.lower()
-            if text_lower in katakana_dict:
-                # 辞書にある場合は企業名に変換
-                text = katakana_dict[text_lower]
 
     # 【ステップ3】NFKC正規化（全角英数字→半角、半角カタカナ→全角など）
     normalized = unicodedata.normalize('NFKC', text)
@@ -310,33 +223,50 @@ class EdinetCache:
         Returns:
             企業情報リスト（EDINETコードごとにグループ化）
         """
-        # 検索クエリを正規化
+        if not company_name:
+            return []
+
+        # 半角/全角の揺れをある程度無効化するための正規化（主に日本語での検索用）
         normalized_query = normalize_text(company_name)
+        # そのままのクエリ（英語の大文字小文字や半角などをそのまま検索するため）
+        raw_query = company_name.strip()
+        # ひらがなをカタカナに（かな名検索用）
+        kana_query = hiragana_to_katakana(raw_query)
+
+        search_norm = f"%{normalized_query}%"
+        search_raw = f"%{raw_query}%"
+        search_kana = f"%{kana_query}%"
 
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # すべての企業情報を取得（最新の提出情報でグループ化）
+        # company_masterがあればJOINし、english_name, kana_name, japanese_name全てを検索対象に入れる
         cursor.execute("""
-            SELECT DISTINCT edinet_code, filer_name, sec_code,
-                   MAX(submit_datetime) as latest_submit
-            FROM securities_reports
-            GROUP BY edinet_code
+            SELECT DISTINCT r.edinet_code, COALESCE(c.japanese_name, r.filer_name) as display_name, r.sec_code,
+                   MAX(r.submit_datetime) as latest_submit
+            FROM securities_reports r
+            LEFT JOIN company_master c ON r.edinet_code = c.edinet_code
+            WHERE (
+               c.english_name LIKE ? COLLATE NOCASE OR
+               c.kana_name LIKE ? OR
+               c.japanese_name LIKE ? OR
+               c.japanese_name LIKE ? OR
+               r.filer_name LIKE ? OR
+               r.filer_name LIKE ?
+            )
+            GROUP BY r.edinet_code
             ORDER BY latest_submit DESC
-        """)
+        """, (search_raw, search_kana, search_raw, search_norm, search_raw, search_norm))
 
         results = []
         for row in cursor.fetchall():
-            # 企業名を正規化して部分一致検索
-            normalized_filer_name = normalize_text(row['filer_name'])
-            if normalized_query in normalized_filer_name:
-                results.append({
-                    'edinetCode': row['edinet_code'],
-                    'filerName': row['filer_name'],  # 元の企業名を返す
-                    'secCode': row['sec_code'] or '',
-                    'latest_submit': row['latest_submit']
-                })
+            results.append({
+                'edinetCode': row['edinet_code'],
+                'filerName': row['display_name'],
+                'secCode': row['sec_code'] or '',
+                'latest_submit': row['latest_submit']
+            })
 
         conn.close()
         return results
