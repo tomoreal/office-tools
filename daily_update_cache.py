@@ -117,65 +117,18 @@ def extract_company_name(english_name: str, japanese_name: str) -> tuple:
         (英語主要部分(小文字), カタカナ主要部分) のタプル
         抽出できない場合は None
     """
-    if not english_name or not japanese_name:
-        return None
-
-    # 英語名から企業名主要部分を抽出
-    exclude_patterns = [
-        r'\bCO\.,?\s*LTD\.?',
-        r'\bCORPORATION',
-        r'\bCORP\.?',
-        r'\bINC\.?',
-        r'\bLTD\.?',
-        r'\bLIMITED',
-        r'\bHOLDINGS?',
-        r'\bGROUP',
-        r'\bCOMPANY',
-        r'\bK\.?K\.?',
-    ]
-
-    eng_clean = english_name.upper()
-    for pattern in exclude_patterns:
-        eng_clean = re.sub(pattern, '', eng_clean, flags=re.IGNORECASE)
-
-    eng_clean = eng_clean.strip().strip(',').strip()
-
-    # 複数単語の場合の処理
-    words = eng_clean.split()
-    if len(words) == 1:
-        eng_main = words[0]
-    elif len(words) <= 3:
-        eng_main = ' '.join(words)
-    else:
-        eng_main = ' '.join(words[:2])
-
-    if len(eng_main) < 2:
-        return None
-
-    # 日本語名からカタカナ部分を抽出
-    katakana_parts = re.findall(r'[ァ-ヴー]+', japanese_name)
-    if not katakana_parts:
-        return None
-
-    kata_main = max(katakana_parts, key=len)
-
-    if len(kata_main) < 2:
-        return None
-
-    return (eng_main.lower(), kata_main)
-
-
-def update_english_dictionary() -> Tuple[bool, int, str]:
+    if not edef update_company_master() -> Tuple[bool, int, str]:
     """
-    EDINET公式英語コードリストから英語名辞書とカタカナ読み辞書を更新
-
+    EDINET公式英語コードリストからEDINETの企業マスターをSQLiteに更新
+    
     Returns:
         (success, entry_count, message)
     """
     import zipfile
     import tempfile
+    import sqlite3
 
-    logger.info("英語名辞書とカタカナ読み辞書の更新を開始...")
+    logger.info("企業マスタ(company_master)の更新を開始...")
 
     try:
         # ZIPファイルをダウンロード
@@ -200,13 +153,22 @@ def update_english_dictionary() -> Tuple[bool, int, str]:
             if not os.path.exists(csv_path):
                 return False, 0, "CSV file not found in ZIP"
 
-            # 辞書を構築（英語名とカタカナ読みの両方）
-            english_dict = {}
-            english_dict_metadata = {}
-            katakana_dict = {}
-            katakana_dict_metadata = {}
-            stats = defaultdict(int)
+            conn = sqlite3.connect('edinet_cache.db')
+            cursor = conn.cursor()
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS company_master (
+                    edinet_code TEXT PRIMARY KEY,
+                    japanese_name TEXT,
+                    english_name TEXT,
+                    kana_name TEXT
+                )
+            """)
+            
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cm_english ON company_master(english_name)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cm_kana ON company_master(kana_name)")
+
+            records = []
             with open(csv_path, 'r', encoding='cp932', errors='ignore') as f:
                 reader = csv.reader(f)
                 next(reader)  # メタ行
@@ -215,70 +177,35 @@ def update_english_dictionary() -> Tuple[bool, int, str]:
                 for row in reader:
                     if len(row) < 9:
                         continue
+                    
+                    edinet_code = row[0].strip()
+                    japanese_name = row[6].strip()
+                    english_name = row[7].strip()
+                    kana_name = row[8].strip()
+                    
+                    if edinet_code:
+                        records.append((edinet_code, japanese_name, english_name, kana_name))
+            
+            cursor.executemany("""
+                INSERT OR REPLACE INTO company_master 
+                (edinet_code, japanese_name, english_name, kana_name) 
+                VALUES (?, ?, ?, ?)
+            """, records)
+            
+            conn.commit()
+            conn.close()
+            
+            os.unlink(tmp_zip_path)
+            
+            logger.info(f"  ✓ {len(records)}件の企業マスタを更新しました")
+            return True, len(records), "OK"
 
-                    stats['total'] += 1
-                    listing_status = row[2]
-                    japanese_name = row[6]
-                    english_name = row[7]
-                    phonetic_name = row[8]
-
-                    # 優先度計算（上場企業を優先）
-                    is_listed = 1 if listing_status == 'Listed company' else 2
-
-                    # 英語名辞書の構築
-                    if english_name and english_name.strip() != '':
-                        result = extract_company_name(english_name, japanese_name)
-                        if result is not None:
-                            eng_main, kata_main = result
-                            priority = (is_listed, len(kata_main))
-
-                            # 複数のキー候補を生成
-                            key_candidates = [eng_main]
-                            words = eng_main.split()
-                            if len(words) > 1:
-                                key_candidates.append(words[0])
-
-                            for key in key_candidates:
-                                if key in english_dict:
-                                    existing_priority = english_dict_metadata[key]
-                                    if priority < existing_priority:
-                                        english_dict[key] = kata_main
-                                        english_dict_metadata[key] = priority
-                                        stats['eng_updated'] += 1
-                                    else:
-                                        stats['eng_duplicate_skipped'] += 1
-                                else:
-                                    english_dict[key] = kata_main
-                                    english_dict_metadata[key] = priority
-                                    stats['eng_added'] += 1
-                        else:
-                            stats['eng_extraction_failed'] += 1
-                    else:
-                        stats['no_english'] += 1
-
-                    # カタカナ読み辞書の構築
-                    if phonetic_name and phonetic_name.strip() != '':
-                        result = extract_katakana_reading(phonetic_name, japanese_name)
-                        if result is not None:
-                            kana_main, japanese_main = result
-                            priority = (is_listed, len(japanese_main))
-
-                            if kana_main in katakana_dict:
-                                existing_priority = katakana_dict_metadata[kana_main]
-                                if priority < existing_priority:
-                                    katakana_dict[kana_main] = japanese_main
-                                    katakana_dict_metadata[kana_main] = priority
-                                    stats['kata_updated'] += 1
-                                else:
-                                    stats['kata_duplicate_skipped'] += 1
-                            else:
-                                katakana_dict[kana_main] = japanese_main
-                                katakana_dict_metadata[kana_main] = priority
-                                stats['kata_added'] += 1
-                        else:
-                            stats['kata_extraction_failed'] += 1
-                    else:
-                        stats['no_phonetic'] += 1
+    except requests.exceptions.Timeout:
+        return False, 0, "Download timeout"
+    except requests.exceptions.RequestException as e:
+        return False, 0, f"Network error: {e}"
+    except Exception as e:
+        return False, 0, f"Unexpected error: {e}"  stats['no_phonetic'] += 1
 
         # 一時ZIPファイルを削除
         os.unlink(tmp_zip_path)
@@ -391,19 +318,31 @@ def update_cache_for_days(days: int = 1, start_date: str = None, update_english_
         # スキップ
         should_update_dict = False
     else:
-        # 自動判定（週に1回、金曜日のみ、または辞書ファイルが無い場合）
+        # 自動判定（週に1回、金曜日のみ）または company_master が存在しない場合
         today = datetime.now()
         is_friday = today.weekday() == 4
-        should_update_dict = is_friday or not os.path.exists('english_katakana_dict.json')
+        
+        has_table = False
+        try:
+            import sqlite3
+            tmp_conn = sqlite3.connect('edinet_cache.db')
+            res = tmp_conn.cursor().execute("SELECT name FROM sqlite_master WHERE type='table' AND name='company_master'").fetchone()
+            if res:
+                has_table = True
+            tmp_conn.close()
+        except:
+            pass
+
+        should_update_dict = is_friday or not has_table
 
     if should_update_dict:
         logger.info("")
         logger.info("-" * 80)
-        success, entry_count, message = update_english_dictionary()
+        success, entry_count, message = update_company_master()
         if success:
-            logger.info(f"✓ 英語名辞書とカタカナ読み辞書を更新しました（合計{entry_count}件）")
+            logger.info(f"✓ 企業マスタを更新しました（合計{entry_count}件）")
         else:
-            logger.warning(f"✗ 辞書の更新に失敗: {message}")
+            logger.warning(f"✗ マスタの更新に失敗: {message}")
         logger.info("-" * 80)
         logger.info("")
 

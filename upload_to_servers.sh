@@ -15,7 +15,7 @@ FILES=(
 #    "README_english_dict.md"
     "edinet_cache.py"
     "edinet_cache.db"
-#    "daily_update_cache.py"
+    "daily_update_cache.py"
 #    "build_english_dict_from_edinet.py"
 #    "english_katakana_dict.json"
 #    "build_katakana_dict.py"
