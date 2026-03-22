@@ -3404,6 +3404,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             'CapitalAdequacyRatioBISStandardSummaryOfBusinessResults',
             'CapitalAdequacyRatioDomesticStandard2SummaryOfBusinessResults',
             'PayoutRatioSummaryOfBusinessResults',
+            'TotalShareholderReturnSummaryOfBusinessResults',
+            'ComparativeTotalShareholderReturnSummaryOfBusinessResults',
+            'jpcrp_cor_TotalShareholderReturn',
+            'jpcrp030000-asr_E04509-000_TotalShareholderReturn',
+            'jpcrp_cor_TotalReturnOnSharePriceIndex',
+            'jpcrp030000-asr_E04509-000_TotalReturnOnSharePriceIndex',
             
             # IFRS Variations
             'RatioOfOwnersEquityToGrossAssetsIFRSSummaryOfBusinessResults',
@@ -3606,10 +3612,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for out_ws in wb.worksheets:
         is_analysis = "_分析" in out_ws.title
         
-        # 分析以外の財務諸表シート（標準シート）ではB列（項目ID）を非表示にする
+        # 分析以外の財務諸表シート（標準シート）の設定
         if not is_analysis:
-            # openpyxlのcolumn_dimensionsは列文字（'B'）で指定
+            # B列（項目ID）を非表示
             out_ws.column_dimensions['B'].hidden = True
+            # ウィンドウ枠の固定 (A列と1行目を固定: セルB2を基準に左・上を固定)
+            out_ws.freeze_panes = 'B2'
+        else:
+            # 分析シートのウィンドウ枠の固定 (A列・B列・1行目を固定: セルC2を基準に左・上を固定)
+            out_ws.freeze_panes = 'C2'
             
         for col in out_ws.columns:
             col_idx = col[0].column  # 1-indexed: A=1, B=2, C=3...
@@ -3655,18 +3666,20 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
         # 財務諸表の種別による並び順
         stmt_order = 99
-        if 'セグメント' in title:
+        if '経営指標' in title:
             stmt_order = 0
-        elif '貸借対照表' in title or '財政状態' in title:
+        elif 'セグメント' in title:
             stmt_order = 1
-        elif '損益' in title or ('利益' in title and '包括' not in title):
+        elif '貸借対照表' in title or '財政状態' in title:
             stmt_order = 2
-        elif '包括' in title:
+        elif '損益' in title or ('利益' in title and '包括' not in title):
             stmt_order = 3
-        elif '変動' in title:
+        elif '包括' in title:
             stmt_order = 4
-        elif 'キャッシュ' in title:
+        elif '変動' in title:
             stmt_order = 5
+        elif 'キャッシュ' in title:
+            stmt_order = 6
             
         # 基準ごとの並び順 (日本基準が先)
         std_order = 2 if '(IFRS)' in title else 1
