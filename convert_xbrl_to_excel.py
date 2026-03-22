@@ -2951,7 +2951,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
         sorted_role_cols = sorted(list(role_columns), key=sort_col)
         
-        has_segments = any(c[1] not in ('全体', '連結', '全社') for c in sorted_role_cols)
+        # '全体', '連結', '全社', '単体', '個別' などの基礎区分のみの場合はセグメント無し（単一階層ヘッダー）とする
+        has_segments = any(c[1] not in ('全体', '連結', '全社', '単体', '個別') for c in sorted_role_cols)
         
         if is_new_sheet:
             if has_segments:
@@ -3599,18 +3600,35 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
     debug_log(f"Sheet generation completed in {time.time() - t_sheet_generation_start:.2f}s")
 
-        # Auto-adjust column widths (optimized: sample first 100 rows only)
+    # Auto-adjust or fix column widths
     t_colwidth_start = time.time()
     MAX_SAMPLE_ROWS = 100  # Only check first 100 rows for width calculation
     for out_ws in wb.worksheets:
+        is_analysis = "_分析" in out_ws.title
+        
+        # 分析以外の財務諸表シート（標準シート）ではB列（項目ID）を非表示にする
+        if not is_analysis:
+            # openpyxlのcolumn_dimensionsは列文字（'B'）で指定
+            out_ws.column_dimensions['B'].hidden = True
+            
         for col in out_ws.columns:
-            max_length = 0
+            col_idx = col[0].column  # 1-indexed: A=1, B=2, C=3...
             column_letter = col[0].column_letter
+            
+            # 分析以外の財務諸表シートではC列以降（時系列データ）の幅を12に固定
+            if not is_analysis and col_idx >= 3:
+                out_ws.column_dimensions[column_letter].width = 12
+                continue
+            
+            # それ以外（分析シートの全列、または標準シートのA列など）は自動調整
+            max_length = 0
             # Optimization: Only sample first 100 rows instead of entire column
             for cell in col[:MAX_SAMPLE_ROWS]:
                 try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
+                    if cell.value is not None:
+                        val_str = str(cell.value)
+                        if len(val_str) > max_length:
+                            max_length = len(val_str)
                 except Exception:
                     pass
             # Add a little extra padding, especially for Japanese characters
