@@ -13,18 +13,19 @@ COREM15_DIR="/virtual/tomo/public_html/xbrl3.xtomo.com"
 
 # アップロードするファイル
 FILES=(
-    "edinet_cache.py"
-    "daily_update_cache.py"
-    "build_english_dict_from_edinet.py"
-    "README_english_dict.md"
-    "build_katakana_dict.py"
-    ".edinet_api_key_config"
-    "edinet_api_key.py"
+#    "edinet_cache.py"
+#    "daily_update_cache.py"
+#    "build_english_dict_from_edinet.py"
+#    "README_english_dict.md"
+#    "build_katakana_dict.py"
+#    ".edinet_api_key_config"
+#    "edinet_api_key.py"
 #    "english_katakana_dict.json"
 #    "katakana_company_dict.json"
-    "app.py"
-    "build_cache.py"
-    "daily_update_cache.py"
+#    "app.py"
+#    "build_cache.py"
+#    "daily_update_cache.py"
+    "convert_xbrl_to_excel.py"
 )
 
 # s211へアップロード
