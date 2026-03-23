@@ -3407,10 +3407,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             'TotalShareholderReturnSummaryOfBusinessResults',
             'ComparativeTotalShareholderReturnSummaryOfBusinessResults',
             'jpcrp_cor_TotalShareholderReturn',
-            'jpcrp030000-asr_E04509-000_TotalShareholderReturn',
             'jpcrp_cor_TotalReturnOnSharePriceIndex',
+            'jpcrp030000-asr_E04509-000_TotalShareholderReturn',
             'jpcrp030000-asr_E04509-000_TotalReturnOnSharePriceIndex',
-            
+            'jpcrp030000-asr_E21183-000_TotalShareholderReturn',
+            'jpcrp030000-asr_E21183-000_TotalReturnOnSharePriceIndex',
+
             # IFRS Variations
             'RatioOfOwnersEquityToGrossAssetsIFRSSummaryOfBusinessResults',
             'RateOfReturnOnEquityIFRSSummaryOfBusinessResults',
