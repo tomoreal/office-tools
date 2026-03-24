@@ -362,26 +362,30 @@ XBRL to Excel Converter - Main UI Template
 
                 <!-- 検索結果表示 -->
                 <div id="searchResults" style="display: none; margin-bottom: 1rem;">
-                    <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">検索結果:</h3>
+                    <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">
+                        検索結果:企業名をクリックするとダウンロードが始まります。</h3>
                     <div id="companyList" style="max-height: 200px; overflow-y: auto;"></div>
                 </div>
 
                 <!-- 変換モード選択 -->
-                <div id="conversionModeSection" style="display: none; margin-bottom: 1rem; padding: 0.75rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
+                <div id="conversionModeSection"
+                    style="display: none; margin-bottom: 1rem; padding: 0.75rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
                     <h4 style="font-size: 0.9rem; margin-bottom: 0.75rem; color: var(--text-muted);">変換モード:</h4>
                     <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                        <label style="display: flex; align-items: center; cursor: pointer; padding: 0.5rem; border-radius: 6px; transition: background 0.2s;"
-                               onmouseover="this.style.background='rgba(59, 130, 246, 0.05)'"
-                               onmouseout="this.style.background='transparent'">
+                        <label
+                            style="display: flex; align-items: center; cursor: pointer; padding: 0.5rem; border-radius: 6px; transition: background 0.2s;"
+                            onmouseover="this.style.background='rgba(59, 130, 246, 0.05)'"
+                            onmouseout="this.style.background='transparent'">
                             <input type="radio" name="conversionMode" value="manual" style="margin-right: 10px;">
                             <div>
                                 <div style="font-weight: 500; margin-bottom: 0.1rem;">期間を選択して変換</div>
                                 <div style="font-size: 0.75rem; color: var(--text-muted);">ダウンロード完了後、手動でボタンを押して変換</div>
                             </div>
                         </label>
-                        <label style="display: flex; align-items: center; cursor: pointer; padding: 0.5rem; border-radius: 6px; transition: background 0.2s;"
-                               onmouseover="this.style.background='rgba(59, 130, 246, 0.05)'"
-                               onmouseout="this.style.background='transparent'">
+                        <label
+                            style="display: flex; align-items: center; cursor: pointer; padding: 0.5rem; border-radius: 6px; transition: background 0.2s;"
+                            onmouseover="this.style.background='rgba(59, 130, 246, 0.05)'"
+                            onmouseout="this.style.background='transparent'">
                             <input type="radio" name="conversionMode" value="auto" checked style="margin-right: 10px;">
                             <div>
                                 <div style="font-weight: 500; margin-bottom: 0.1rem;">全期間を一括して変換</div>
@@ -413,7 +417,8 @@ XBRL to Excel Converter - Main UI Template
                             style="height: 100%; width: 0%; background: var(--primary-color); transition: width 0.3s ease;">
                         </div>
                     </div>
-                    <div id="downloadCompleteInfo" style="display: none; margin-top: 0.5rem; padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
+                    <div id="downloadCompleteInfo"
+                        style="display: none; margin-top: 0.5rem; padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
                         <div style="display: flex; align-items: center; color: #10b981;">
                             <i class="fas fa-check-circle" style="margin-right: 8px; font-size: 1.1rem;"></i>
                             <div>
@@ -432,9 +437,11 @@ XBRL to Excel Converter - Main UI Template
                             <i class="fas fa-file-excel" style="margin-right: 5px; color: var(--primary-color);"></i>
                             Excel変換進捗
                         </span>
-                        <span id="conversionStatusText" style="font-size: 0.9rem; color: var(--primary-color);">変換中...</span>
+                        <span id="conversionStatusText"
+                            style="font-size: 0.9rem; color: var(--primary-color);">変換中...</span>
                     </div>
-                    <div id="conversionCompleteInfo" style="display: none; margin-top: 0.5rem; padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
+                    <div id="conversionCompleteInfo"
+                        style="display: none; margin-top: 0.5rem; padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
                         <div style="display: flex; align-items: center; color: #10b981;">
                             <i class="fas fa-check-circle" style="margin-right: 8px; font-size: 1.1rem;"></i>
                             <div>
@@ -446,7 +453,8 @@ XBRL to Excel Converter - Main UI Template
                 </div>
 
                 <!-- PDFダウンロードボタン -->
-                <button id="pdfDownloadBtn" class="btn" style="display: none; background: #ef4444; margin-bottom: 1rem;">
+                <button id="pdfDownloadBtn" class="btn"
+                    style="display: none; background: #ef4444; margin-bottom: 1rem;">
                     <i class="fas fa-file-pdf" style="margin-right: 8px;"></i>
                     <span id="pdfDownloadBtnText">有価証券報告書のPDFをダウンロード</span>
                     <div class="loader" id="pdfDownloadLoader" style="display: none;"></div>
@@ -699,7 +707,7 @@ XBRL to Excel Converter - Main UI Template
                 const response = await fetch('/api/edinet/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
+                    body: JSON.stringify({
                         company_name: companyName
                     })
                 });
@@ -879,7 +887,7 @@ XBRL to Excel Converter - Main UI Template
                     convertBtnText.textContent = `選択した報告書を変換してダウンロード (${data.success_count}/${data.count}件成功)`;
                     alert(`警告: ${data.failed_count}件のダウンロードに失敗しました。成功した${data.success_count}件で変換を続行できます。`);
                 } else {
-                    convertBtnText.textContent = `選択した報告書を変換してダウンロード (${data.total_elapsed}秒で完了)`;
+                    convertBtnText.textContent = '選択した報告書を変換してダウンロード';
                 }
 
                 // ダウンロード完了情報を表示
@@ -888,8 +896,8 @@ XBRL to Excel Converter - Main UI Template
                 if (downloadCompleteInfo && downloadCompleteTime) {
                     const now = new Date();
                     const timeStr = now.getHours().toString().padStart(2, '0') + ':' +
-                                   now.getMinutes().toString().padStart(2, '0') + ':' +
-                                   now.getSeconds().toString().padStart(2, '0');
+                        now.getMinutes().toString().padStart(2, '0') + ':' +
+                        now.getSeconds().toString().padStart(2, '0');
                     downloadCompleteTime.textContent = `完了: ${timeStr} (${data.total_elapsed}秒)`;
                     downloadCompleteInfo.style.display = 'block';
                 }
