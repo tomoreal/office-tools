@@ -3303,12 +3303,22 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     # Handle full-width characters and commas
                     import unicodedata
                     val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
-                    try:
-                        if val_clean and not any(c.isalpha() for c in val_clean):
-                            val = float(val_clean)
-                            has_numeric_data = True
-                    except Exception:
-                        pass
+
+                    # Handle "円銭" format (e.g., "3,422円93銭" → 3422.93)
+                    # This appears in per-share items like NetAssetsPerShare, EarningsPerShare
+                    yen_sen_match = re.match(r'^([0-9]+)円([0-9]+)銭$', val_clean)
+                    if yen_sen_match:
+                        yen_part = yen_sen_match.group(1)
+                        sen_part = yen_sen_match.group(2)
+                        val = float(yen_part) + float(sen_part) / 100
+                        has_numeric_data = True
+                    else:
+                        try:
+                            if val_clean and not any(c.isalpha() for c in val_clean):
+                                val = float(val_clean)
+                                has_numeric_data = True
+                        except Exception:
+                            pass
                 row_data.append(val)
                 if val != "":
                     has_data = True

@@ -401,13 +401,25 @@ XBRL to Excel Converter - Main UI Template
                 <div id="downloadProgress"
                     style="display: none; margin-bottom: 1rem; padding: 0.75rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-                        <span style="font-size: 0.9rem;">XBRLダウンロード進捗</span>
+                        <span style="font-size: 0.9rem;">
+                            <i class="fas fa-download" style="margin-right: 5px; color: var(--primary-color);"></i>
+                            XBRLダウンロード進捗
+                        </span>
                         <span id="progressText" style="font-size: 0.9rem; color: var(--primary-color);">0 / 0</span>
                     </div>
                     <div
                         style="width: 100%; height: 8px; background: var(--border-color); border-radius: 4px; overflow: hidden;">
                         <div id="progressBarFill"
                             style="height: 100%; width: 0%; background: var(--primary-color); transition: width 0.3s ease;">
+                        </div>
+                    </div>
+                    <div id="downloadCompleteInfo" style="display: none; margin-top: 0.5rem; padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
+                        <div style="display: flex; align-items: center; color: #10b981;">
+                            <i class="fas fa-check-circle" style="margin-right: 8px; font-size: 1.1rem;"></i>
+                            <div>
+                                <div style="font-weight: 500; margin-bottom: 0.1rem;">XBRLダウンロード完了</div>
+                                <div id="downloadCompleteTime" style="font-size: 0.75rem; opacity: 0.9;"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -672,6 +684,13 @@ XBRL to Excel Converter - Main UI Template
                 return;
             }
 
+            // 前回の検索結果をリセット
+            document.getElementById('downloadProgress').style.display = 'none';
+            document.getElementById('downloadCompleteInfo').style.display = 'none';
+            document.getElementById('conversionProgress').style.display = 'none';
+            document.getElementById('conversionCompleteInfo').style.display = 'none';
+            document.getElementById('pdfDownloadBtn').style.display = 'none';
+
             searchBtnText.style.display = 'none';
             searchLoader.style.display = 'block';
             searchBtn.disabled = true;
@@ -863,15 +882,20 @@ XBRL to Excel Converter - Main UI Template
                     convertBtnText.textContent = `選択した報告書を変換してダウンロード (${data.total_elapsed}秒で完了)`;
                 }
 
+                // ダウンロード完了情報を表示
+                const downloadCompleteInfo = document.getElementById('downloadCompleteInfo');
+                const downloadCompleteTime = document.getElementById('downloadCompleteTime');
+                if (downloadCompleteInfo && downloadCompleteTime) {
+                    const now = new Date();
+                    const timeStr = now.getHours().toString().padStart(2, '0') + ':' +
+                                   now.getMinutes().toString().padStart(2, '0') + ':' +
+                                   now.getSeconds().toString().padStart(2, '0');
+                    downloadCompleteTime.textContent = `完了: ${timeStr} (${data.total_elapsed}秒)`;
+                    downloadCompleteInfo.style.display = 'block';
+                }
+
                 convertBtn.disabled = false;
                 isDownloading = false;
-
-                // 3秒後に進捗バーを非表示
-                setTimeout(() => {
-                    if (progressContainer) {
-                        progressContainer.style.display = 'none';
-                    }
-                }, 3000);
 
                 // 自動変換モードの場合、自動的に変換を開始
                 const conversionMode = document.querySelector('input[name="conversionMode"]:checked')?.value;
