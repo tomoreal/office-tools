@@ -323,6 +323,182 @@ def edinet_download_and_convert():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/edinet/download-pdfs', methods=['POST'])
+def edinet_download_pdfs():
+    """有価証券報告書のPDFをダウンロードしてZIPで固める"""
+    from edinet_api import EdinetAPI
+    from flask import jsonify
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+    import zipfile
+    import re
+
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        doc_ids = data.get('doc_ids', [])
+        company_name = data.get('company_name', '')
+        reports_info = data.get('reports_info', [])
+
+        if not session_id or not doc_ids:
+            return jsonify({'error': 'セッションIDと書類IDを指定してください'}), 400
+
+        # セッションディレクトリを取得
+        base_temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
+        temp_dir = os.path.join(base_temp_dir, session_id)
+
+        if not os.path.exists(temp_dir):
+            return jsonify({'error': 'セッションが見つかりません'}), 404
+
+        # PDFダウンロード用のサブディレクトリを作成
+        pdf_dir = os.path.join(temp_dir, 'pdfs')
+        os.makedirs(pdf_dir, exist_ok=True)
+
+        # 報告書情報をdocIDでマッピング
+        reports_map = {report['docID']: report for report in reports_info}
+
+        # EDINET APIからPDFを並行ダウンロード
+        api = EdinetAPI(EDINET_API_KEY)
+
+        def sanitize_filename(name):
+            """ファイル名として使えない文字を除去"""
+            return re.sub(r'[\\/:*?"<>|]', '_', name)
+
+        def get_period_ym(period_end):
+            """期末日からYYYYMM形式を取得 (例: 2025-03-31 -> 202503)"""
+            if period_end:
+                return period_end.replace('-', '')[:6]
+            return ''
+
+        def download_single_pdf(doc_id, retry_count=2):
+            """単一PDFをダウンロードする関数（リトライ機能付き）"""
+            # 報告書情報から期末を取得
+            report = reports_map.get(doc_id, {})
+            period_end = report.get('periodEnd', '')
+            period_ym = get_period_ym(period_end)
+
+            # ファイル名: 有報_企業名_年月.pdf
+            safe_company_name = sanitize_filename(company_name)
+            if period_ym:
+                pdf_filename = f"有報_{safe_company_name}_{period_ym}.pdf"
+            else:
+                pdf_filename = f"有報_{safe_company_name}_{doc_id}.pdf"
+
+            file_path = os.path.join(pdf_dir, pdf_filename)
+            start_time = time.time()
+
+            for attempt in range(retry_count + 1):
+                # download_type=2 でPDFを取得
+                success = api.download_xbrl(doc_id, file_path, download_type=2)
+
+                if success:
+                    elapsed = time.time() - start_time
+                    return {
+                        'doc_id': doc_id,
+                        'file_path': file_path,
+                        'filename': pdf_filename,
+                        'period_end': period_end,
+                        'status': 'success',
+                        'elapsed': round(elapsed, 2),
+                        'retry_count': attempt
+                    }
+
+                # リトライ前に少し待機
+                if attempt < retry_count:
+                    time.sleep(1)
+
+            elapsed = time.time() - start_time
+            return {
+                'doc_id': doc_id,
+                'status': 'failed',
+                'elapsed': round(elapsed, 2),
+                'retry_count': retry_count
+            }
+
+        # 並行ダウンロード実行
+        start_time = time.time()
+        max_workers = min(6, len(doc_ids))
+        downloaded_pdfs = []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(download_single_pdf, doc_id): doc_id for doc_id in doc_ids}
+
+            for future in as_completed(futures):
+                result = future.result()
+                downloaded_pdfs.append(result)
+
+        total_elapsed = time.time() - start_time
+
+        # 成功したPDFをZIPに固める
+        success_pdfs = [pdf for pdf in downloaded_pdfs if pdf['status'] == 'success']
+
+        if not success_pdfs:
+            return jsonify({'error': 'PDFのダウンロードに失敗しました'}), 500
+
+        # 期間を計算（最古と最新）
+        period_ends = sorted([pdf['period_end'] for pdf in success_pdfs if pdf.get('period_end')])
+        if period_ends:
+            start_ym = get_period_ym(period_ends[0])
+            end_ym = get_period_ym(period_ends[-1])
+            period_range = f"{start_ym}-{end_ym}" if start_ym != end_ym else start_ym
+        else:
+            period_range = str(int(time.time()))
+
+        # PDF保護解除処理
+        try:
+            import pikepdf
+            has_pikepdf = True
+        except ImportError:
+            has_pikepdf = False
+            app.logger.warning("pikepdf not installed - PDF protection removal skipped")
+
+        unlocked_pdfs = []
+        for pdf_info in success_pdfs:
+            original_path = pdf_info['file_path']
+
+            if has_pikepdf:
+                try:
+                    # 保護解除されたPDFを同じ場所に上書き保存
+                    with pikepdf.open(original_path, allow_overwriting_input=True) as pdf:
+                        # 保護を解除して保存（上書き）
+                        pdf.save(original_path)
+                    app.logger.info(f"PDF protection removed: {pdf_info['filename']}")
+                    unlocked_pdfs.append(pdf_info)
+                except Exception as e:
+                    app.logger.warning(f"Failed to unlock PDF {pdf_info['filename']}: {e}")
+                    # 解除失敗してもファイルは追加
+                    unlocked_pdfs.append(pdf_info)
+            else:
+                # pikepdfがない場合はそのまま追加
+                unlocked_pdfs.append(pdf_info)
+
+        # ZIPファイル作成: 有報_企業名_期間.zip
+        safe_company_name = sanitize_filename(company_name)
+        zip_filename = f"有報_{safe_company_name}_{period_range}.zip"
+        zip_path = os.path.join(temp_dir, zip_filename)
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for pdf_info in unlocked_pdfs:
+                file_path = pdf_info['file_path']
+                arcname = pdf_info['filename']
+                zipf.write(file_path, arcname=arcname)
+
+        # 相対パスを返す
+        relative_path = os.path.relpath(zip_path, BASE_TEMP_DIR)
+
+        return jsonify({
+            'success': True,
+            'file': relative_path,
+            'pdf_count': len(success_pdfs),
+            'failed_count': len(downloaded_pdfs) - len(success_pdfs),
+            'total_elapsed': round(total_elapsed, 2)
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error in edinet_download_pdfs: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/edinet/download')
 def download_excel():
     """iPad等のファイル名化け対策: ブラウザのデフォルトダウンロード機能を利用"""

@@ -366,12 +366,6 @@ XBRL to Excel Converter - Main UI Template
                     <div id="companyList" style="max-height: 200px; overflow-y: auto;"></div>
                 </div>
 
-                <!-- 有価証券報告書一覧 -->
-                <div id="reportsSection" style="display: none; margin-bottom: 1rem;">
-                    <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">有価証券報告書:</h3>
-                    <div id="reportsList" style="max-height: 300px; overflow-y: auto;"></div>
-                </div>
-
                 <!-- 変換モード選択 -->
                 <div id="conversionModeSection" style="display: none; margin-bottom: 1rem; padding: 0.75rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
                     <h4 style="font-size: 0.9rem; margin-bottom: 0.75rem; color: var(--text-muted);">変換モード:</h4>
@@ -395,6 +389,12 @@ XBRL to Excel Converter - Main UI Template
                             </div>
                         </label>
                     </div>
+                </div>
+
+                <!-- 有価証券報告書一覧 -->
+                <div id="reportsSection" style="display: none; margin-bottom: 1rem;">
+                    <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">有価証券報告書:</h3>
+                    <div id="reportsList" style="max-height: 300px; overflow-y: auto;"></div>
                 </div>
 
                 <!-- ダウンロード進捗表示 -->
@@ -432,6 +432,13 @@ XBRL to Excel Converter - Main UI Template
                         </div>
                     </div>
                 </div>
+
+                <!-- PDFダウンロードボタン -->
+                <button id="pdfDownloadBtn" class="btn" style="display: none; background: #ef4444; margin-bottom: 1rem;">
+                    <i class="fas fa-file-pdf" style="margin-right: 8px;"></i>
+                    <span id="pdfDownloadBtnText">有価証券報告書のPDFをダウンロード</span>
+                    <div class="loader" id="pdfDownloadLoader" style="display: none;"></div>
+                </button>
 
                 <!-- ダウンロード＆変換ボタン -->
                 <button id="convertBtn" class="btn" style="display: none;">
@@ -704,6 +711,7 @@ XBRL to Excel Converter - Main UI Template
                 `).join('');
 
                 searchResults.style.display = 'block';
+                document.getElementById('conversionModeSection').style.display = 'block';
                 reportsSection.style.display = 'none';
                 convertBtn.style.display = 'none';
 
@@ -772,7 +780,6 @@ XBRL to Excel Converter - Main UI Template
                 `).join('');
 
                 reportsSection.style.display = 'block';
-                document.getElementById('conversionModeSection').style.display = 'block';
                 convertBtn.style.display = 'block';
 
                 // 先読みダウンロード開始
@@ -964,6 +971,12 @@ XBRL to Excel Converter - Main UI Template
                     conversionCompleteTime.textContent = `完了時刻: ${timeString} (変換時間: ${elapsedSeconds}秒)`;
                 }
 
+                // PDFダウンロードボタンを表示
+                const pdfDownloadBtn = document.getElementById('pdfDownloadBtn');
+                if (pdfDownloadBtn) {
+                    pdfDownloadBtn.style.display = 'flex';
+                }
+
                 // ダウンロード（ブラウザに任せる）
                 window.location.href = `/api/edinet/download?file=${encodeURIComponent(data.file)}`;
 
@@ -1010,6 +1023,67 @@ XBRL to Excel Converter - Main UI Template
                 }
             }
         }
+
+        // PDFダウンロード機能
+        const pdfDownloadBtn = document.getElementById('pdfDownloadBtn');
+        const pdfDownloadBtnText = document.getElementById('pdfDownloadBtnText');
+        const pdfDownloadLoader = document.getElementById('pdfDownloadLoader');
+
+        pdfDownloadBtn.addEventListener('click', async () => {
+            if (!sessionId || selectedReports.length === 0) {
+                alert('セッション情報が見つかりません');
+                return;
+            }
+
+            if (!selectedCompany) {
+                alert('企業情報が見つかりません');
+                return;
+            }
+
+            pdfDownloadBtnText.style.display = 'none';
+            pdfDownloadLoader.style.display = 'block';
+            pdfDownloadBtn.disabled = true;
+
+            // 選択された報告書の詳細情報を収集
+            const reportsInfo = window.reportsData.filter(r => selectedReports.includes(r.docID));
+
+            try {
+                const response = await fetch('/api/edinet/download-pdfs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        doc_ids: selectedReports,
+                        company_name: selectedCompany.filerName,
+                        reports_info: reportsInfo
+                    })
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'PDFダウンロードに失敗しました');
+                }
+
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || 'PDFダウンロード失敗');
+                }
+
+                // ZIPファイルをダウンロード
+                window.location.href = `/api/edinet/download?file=${encodeURIComponent(data.file)}`;
+
+                // ボタンテキストを更新
+                pdfDownloadBtnText.textContent = `PDFダウンロード完了 (${data.pdf_count}件)`;
+
+            } catch (error) {
+                alert('エラーが発生しました: ' + error.message);
+            } finally {
+                pdfDownloadBtnText.style.display = 'block';
+                pdfDownloadLoader.style.display = 'none';
+                pdfDownloadBtn.disabled = false;
+            }
+        });
     </script>
 
     <!-- ======================================================================

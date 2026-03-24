@@ -3834,7 +3834,21 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for out_ws in wb.worksheets:
         debug_log(f"  - {out_ws.title}: {out_ws.max_row} rows")
 
-    out_file = f'有報_{company_name}.xlsx'
+    # 最新の期末を取得してファイル名に追加
+    latest_period = ''
+    if periods_seen:
+        # periods_seenは (fact_std, dim_label, period) のタプルのセット
+        # 期間部分（3番目の要素）だけを取り出してソート
+        period_dates = [p[2] if isinstance(p, tuple) else p for p in periods_seen]
+        period_dates = [d for d in period_dates if d and isinstance(d, str)]  # 空文字列を除外、文字列のみ
+        if period_dates:
+            sorted_dates = sorted(period_dates)
+            latest_date = sorted_dates[-1]  # 最新の日付
+            # YYYY-MM-DD -> YYYYMM 形式に変換
+            if isinstance(latest_date, str) and '-' in latest_date:
+                latest_period = f"_{latest_date.replace('-', '')[:6]}"
+
+    out_file = f'有報_{company_name}{latest_period}.xlsx'
     if output_dir:
         out_file = os.path.join(output_dir, out_file)
 
