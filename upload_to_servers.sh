@@ -15,7 +15,7 @@ COREM15_DIR="/virtual/tomo/public_html/xbrl3.xtomo.com"
 FILES=(
 #    "README_english_dict.md"
 #    "requirements.txt"
-    "edinet_cache.py"
+#    "edinet_cache.py"
 #    "edinet_cache.db"
 #    "daily_update_cache.py"
 #    "build_english_dict_from_edinet.py"
@@ -25,14 +25,14 @@ FILES=(
 #    ".edinet_api_key_config"
 #    "edinet_api_key.py"
 #    "build_cache.py"
-    "daily_update_cache.py"
+#    "daily_update_cache.py"
 #    "sync_db_to_servers.sh"
 #    ".ftp_config"
 #    "edinet_api.py"
 #    "edinet_cache.py"
     "templates"
-    "app.py"
-    "convert_xbrl_to_excel.py"
+#    "app.py"
+#    "convert_xbrl_to_excel.py"
 )
 
 # s211へアップロード
