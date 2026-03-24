@@ -3326,6 +3326,13 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Display heading elements even if they have no data (for hierarchy structure)
             # Display data elements only if they have at least one value
             if has_data or is_heading:
+                # --- IFRSシート専用フィルタ: 英語勘定名に"IFRS"が含まれない行を除外 ---
+                # IFRS sheets should only show elements with "IFRS" in their English name
+                # Exception: Keep heading elements (Abstract/Heading) for hierarchy structure
+                if is_ifrs and not is_heading:
+                    if 'IFRS' not in el:
+                        continue
+
                 # --- セグメント情報や財務諸表の文字情報の除外 (Current Refinement) ---
                 # Remove unwanted text blocks like *FinancialInformation or long descriptions
                 # But keep heading elements for hierarchy structure
