@@ -1822,6 +1822,13 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Merge presentation trees
             for role, tree_arcs in res['trees'].items():
                 base_name = role.split('_')[-1]
+
+                # Debug: Log BusinessResults roles
+                if 'BusinessResults' in base_name:
+                    debug_log(f"[Presentation-Tree] Found role {role} with {len(tree_arcs)} arcs from {res.get('year', 'unknown')}")
+                    sample_arcs = list(tree_arcs)[:3]
+                    for arc in sample_arcs:
+                        debug_log(f"  arc: child={arc['child']}, order={arc['order']}")
                 # Merge SegmentInformation variants into a single role
                 sub_role_idx = 0
                 if 'SegmentInformation' in base_name and '-' in base_name:
@@ -1865,8 +1872,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     # Unique key including preferredLabel to allow duplicates in CF statements
                     arc_key = (p, c, pl)
                     # Newest report wins (results is sorted year DESC)
+                    # However, if same element appears with different preferredLabels, use the one with smallest order
                     if arc_key not in merged_trees[role]:
                         merged_trees[role][arc_key] = (float(o) + sub_role_idx, i)
+                    else:
+                        # Element already exists - check if we should update it with a better order
+                        existing_order, existing_idx = merged_trees[role][arc_key]
+                        new_order = float(o) + sub_role_idx
+                        if new_order < existing_order:
+                            merged_trees[role][arc_key] = (new_order, i)
+                            debug_log(f"  [Order-Update] Updated {c} in {role}: {existing_order} -> {new_order}")
 
         # --- Build element-to-statement-type mapping (FIX V7 - IMPROVED) ---
         # Use a smarter approach: if an element appears in multiple statement types,
@@ -1958,6 +1973,22 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     roles_to_fill = EDINET_DOC_ROLE_MAP
 
     if roles_to_fill:
+        # First, build a map of element -> presentation linkbase order from merged_trees
+        # This ensures we preserve the correct order from presentation linkbase
+        elem_presentation_order = {}  # {element: min_presentation_order}
+        for role, arcs_dict in merged_trees.items():
+            for (parent, child, _), (order_val, _) in arcs_dict.items():
+                if child and child not in elem_presentation_order:
+                    elem_presentation_order[child] = order_val
+                elif child and order_val < elem_presentation_order[child]:
+                    elem_presentation_order[child] = order_val
+
+        # Debug: Show some of the presentation orders
+        debug_log(f"[Presentation-Order-Map] Built map with {len(elem_presentation_order)} elements")
+        sample_elements = list(elem_presentation_order.items())[:10]
+        for el, order in sample_elements:
+            debug_log(f"  {el}: {order}")
+
         facts_by_doc = {}  # {doc_code: {element: min_order}}
         for f in all_facts:
             src = f.get('source_file', '')
@@ -1967,7 +1998,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     if doc_code not in facts_by_doc:
                         facts_by_doc[doc_code] = {}
                     el = f['element']
-                    order = f.get('elem_order', 0)
+                    # Prefer presentation linkbase order, fallback to elem_order (file appearance order)
+                    if el in elem_presentation_order:
+                        order = elem_presentation_order[el]
+                    else:
+                        order = f.get('elem_order', 0) + 10000  # Add offset to ensure presentation orders come first
                     if el not in facts_by_doc[doc_code] or order < facts_by_doc[doc_code][el]:
                         facts_by_doc[doc_code][el] = order
 
@@ -1977,6 +2012,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             elem_order_map = facts_by_doc[doc_code]
             if not elem_order_map:
                 continue
+
+            # Debug: Show first few elements from this document
+            debug_log(f"[Fallback-Build] Processing doc_code={doc_code}, role={role_name}, {len(elem_order_map)} elements")
+            sample_elems = list(elem_order_map.items())[:5]
+            for el, order in sample_elems:
+                debug_log(f"  {el}: order={order}")
 
             sorted_elems = sorted(elem_order_map.items(), key=lambda x: x[1])
             
@@ -2118,6 +2159,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             else:
                 virtual_root = role_name
                 arcs = []
+
+                # Debug: Log first few elements for this role
+                if 'BusinessResults' in role_name and len(sorted_elems) > 0:
+                    debug_log(f"[Fallback-Simple] Creating {role_name} from {doc_code}, {len(sorted_elems)} elements")
+                    sample_count = min(5, len(sorted_elems))
+                    for i in range(sample_count):
+                        elem, _order = sorted_elems[i]
+                        debug_log(f"  {elem}: order={_order}")
+
                 for i, (elem, _order) in enumerate(sorted_elems):
                     arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order), 'index': i, 'preferredLabel': None})
 
@@ -2135,6 +2185,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     # Jumbo roles create virtual taxonomy roles (e.g., jppfs_cor_ConsolidatedBalanceSheet)
     # but these often only contain Heading and TextBlock elements.
     # If a fallback role exists with substantially more elements, remove the stub taxonomy role.
+    # BUT FIRST: Merge order information from taxonomy role to fallback role to preserve correct ordering.
     DEDUP_PREFIXES = ('jppfs_cor_', 'jpigp_cor_', 'jpcrp_cor_', 'rol_')
     roles_to_clean = set()
     for role_name in list(merged_trees.keys()):
@@ -2161,6 +2212,29 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # If taxonomy role is a stub (<=5 elements) and fallback has substantially more (>20),
             # remove the taxonomy role and keep the fallback
             if tax_elem_count <= 5 and fallback_elem_count > 20:
+                # BEFORE deleting: Copy order information from taxonomy role to fallback role
+                # This preserves the correct presentation order from presentation linkbase
+                debug_log(f"[Stub-Cleanup] Analyzing {role_name} ({tax_elem_count} elems) vs {fallback_role} ({fallback_elem_count} elems)")
+
+                # Build a map of child elements and their orders from the taxonomy role
+                tax_child_orders = {}
+                for (p, c, pl), (order_val, idx) in merged_trees[role_name].items():
+                    if c:
+                        tax_child_orders[c] = order_val
+                        debug_log(f"  [Tax-Order] {c}: order={order_val}")
+
+                # Update orders in fallback role for matching elements
+                updates_count = 0
+                for fb_key in list(merged_trees[fallback_role].keys()):
+                    fb_p, fb_c, fb_pl = fb_key
+                    if fb_c in tax_child_orders:
+                        fb_order, fb_idx = merged_trees[fallback_role][fb_key]
+                        new_order = tax_child_orders[fb_c]
+                        merged_trees[fallback_role][fb_key] = (new_order, fb_idx)
+                        debug_log(f"  [Order-Merge] Updated order for {fb_c}: {fb_order} -> {new_order}")
+                        updates_count += 1
+
+                debug_log(f"  [Order-Merge] Updated {updates_count} elements in {fallback_role}")
                 roles_to_clean.add(role_name)
                 debug_log(f"[Stub-Cleanup] Removing stub taxonomy role {role_name} ({tax_elem_count} elems) in favor of fallback role {fallback_role} ({fallback_elem_count} elems)")
 
@@ -2178,9 +2252,26 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         tree_arcs = [{'parent': p, 'child': c, 'order': o_i[0], 'index': o_i[1], 'preferredLabel': pl}
                      for (p, c, pl), o_i in pd_dict.items()]
 
+        # Debug: Log arcs for BusinessResults roles
+        base_name = role.split('_')[-1]
+        if 'BusinessResults' in base_name:
+            debug_log(f"[Merged-Trees-Arcs] Role {role} has {len(tree_arcs)} arcs")
+            for arc in tree_arcs:
+                if 'Revenue' in arc['child'] or 'ProfitLoss' in arc['child'] or 'Tax' in arc['child']:
+                    debug_log(f"  parent={arc['parent']}, child={arc['child']}, order={arc['order']}, pref={arc.get('preferredLabel')}")
+
         # Create hierarchy using presentation order (order attribute from linkbase)
         # This preserves the proper display order defined in XBRL presentation linkbase
         ordered_items = create_hierarchy(tree_arcs)
+
+        # Debug: Log ordered items for BusinessResults roles
+        if 'BusinessResults' in base_name and len(ordered_items) > 0:
+            debug_log(f"[Hierarchy-Result] Role {role} has {len(ordered_items)} ordered items")
+            sample_count = min(10, len(ordered_items))
+            for i in range(sample_count):
+                el, full_path, depth, pref_label = ordered_items[i]
+                if 'Revenue' in el or 'ProfitLoss' in el or 'Tax' in el:
+                    debug_log(f"  {i}: {el}")
 
         # FIX: For Cash Flow statements, ensure section totals appear AFTER their detail items
         # When merging multiple years, detail items from older years may have higher order values
