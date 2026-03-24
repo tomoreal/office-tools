@@ -30,9 +30,9 @@ FILES=(
 #    ".ftp_config"
 #    "edinet_api.py"
 #    "edinet_cache.py"
-    "templates"
+#    "templates"
 #    "app.py"
-#    "convert_xbrl_to_excel.py"
+    "convert_xbrl_to_excel.py"
 )
 
 # s211へアップロード

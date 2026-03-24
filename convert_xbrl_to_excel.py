@@ -3518,7 +3518,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             break
 
         # Apply formatting and column widths
-        ratio_elements = {
+        # Define exact match patterns
+        ratio_elements_exact = {
             # Standard & Japanese GAAP
             'EquityToAssetRatioSummaryOfBusinessResults',
             'RateOfReturnOnEquitySummaryOfBusinessResults',
@@ -3531,27 +3532,31 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             'ComparativeTotalShareholderReturnSummaryOfBusinessResults',
             'jpcrp_cor_TotalShareholderReturn',
             'jpcrp_cor_TotalReturnOnSharePriceIndex',
-            'jpcrp030000-asr_E04509-000_TotalShareholderReturn',
-            'jpcrp030000-asr_E04509-000_TotalReturnOnSharePriceIndex',
-            'jpcrp030000-asr_E21183-000_TotalShareholderReturn',
-            'jpcrp030000-asr_E21183-000_TotalReturnOnSharePriceIndex',
 
             # IFRS Variations
             'RatioOfOwnersEquityToGrossAssetsIFRSSummaryOfBusinessResults',
             'RateOfReturnOnEquityIFRSSummaryOfBusinessResults',
-            
+
             # JMIS Variations
             'RatioOfOwnersEquityToGrossAssetsJMISSummaryOfBusinessResults',
             'RateOfReturnOnEquityJMISSummaryOfBusinessResults',
-            
+
             # US GAAP Variations
             'EquityToAssetRatioUSGAAPSummaryOfBusinessResults',
             'RateOfReturnOnEquityUSGAAPSummaryOfBusinessResults',
-            
+
             # Industry Specific (Insurance, etc.)
             'NetLossRatioSummaryOfBusinessResultsINS',
             'NetOperatingExpenseRatioSummaryOfBusinessResultsINS'
         }
+
+        # Define wildcard patterns (regex patterns for company-specific elements)
+        # Pattern: jpcrp030000-asr_E*****-000_ElementName
+        ratio_patterns_wildcard = [
+            r'jpcrp030000-asr_E\d{5}-000_TotalShareholderReturn$',
+            r'jpcrp030000-asr_E\d{5}-000_TotalReturnOnSharePriceIndex$',
+        ]
+        ratio_regex_compiled = [re.compile(pattern) for pattern in ratio_patterns_wildcard]
 
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
             # Element name is in column B (index 1)
@@ -3559,13 +3564,22 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             is_ratio = False
             if el_name:
                 el_str = str(el_name)
-                # Handle prefixes: Namespace:Element or Namespace_Element
-                # We check if the element name ends with our target ratio element name,
-                # ensuring it is either a perfect match or preceded by a separator.
-                for r in ratio_elements:
+                # Remove namespace prefix if present (e.g., "jpcrp030000-asr:E04509-000_..." → "E04509-000_...")
+                el_no_ns = el_str.split(':')[-1] if ':' in el_str else el_str
+                el_no_ns = el_no_ns.split('_', 1)[-1] if '_' in el_no_ns else el_no_ns
+
+                # Check exact matches
+                for r in ratio_elements_exact:
                     if el_str == r or el_str.endswith(':' + r) or el_str.endswith('_' + r):
                         is_ratio = True
                         break
+
+                # Check wildcard patterns (only if not already matched)
+                if not is_ratio:
+                    for regex in ratio_regex_compiled:
+                        if regex.search(el_str) or regex.search(el_no_ns):
+                            is_ratio = True
+                            break
 
             for cell in row:
                 if isinstance(cell.value, (int, float)):
@@ -3850,6 +3864,265 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     debug_log("Excel Sheet Summary:")
     for out_ws in wb.worksheets:
         debug_log(f"  - {out_ws.title}: {out_ws.max_row} rows")
+
+    # ============================================================================
+    # ROE ANALYSIS SHEET GENERATION
+    # ============================================================================
+    # ROE分析シートを生成（主要な経営指標等の推移（連結）がある場合）
+    def create_roe_analysis_sheet(workbook, source_sheet_name):
+        """
+        主要な経営指標等の推移シートからROE分析シートを生成
+
+        Args:
+            workbook: openpyxlワークブック
+            source_sheet_name: 元シート名（例: "主要な経営指標等の推移（連結）(日本基準)"）
+        """
+        import openpyxl.utils
+
+        if source_sheet_name not in workbook.sheetnames:
+            return
+
+        source_ws = workbook[source_sheet_name]
+        analysis_sheet_name = f"{source_sheet_name}_ROE分析"
+
+        # 既存の分析シートがあれば削除
+        if analysis_sheet_name in workbook.sheetnames:
+            workbook.remove(workbook[analysis_sheet_name])
+
+        # 新しいシートを作成
+        analysis_ws = workbook.create_sheet(analysis_sheet_name)
+
+        # ヘッダー行をコピー
+        header_row = []
+        for col in range(1, source_ws.max_column + 1):
+            cell = source_ws.cell(1, col)
+            header_row.append(cell.value)
+        analysis_ws.append(header_row)
+
+        # 列数を取得
+        num_cols = len(header_row)
+
+        # 参照する行番号を特定（元シートから）
+        row_mapping = {}  # 英語名 -> 行番号のマッピング
+        for row in range(2, source_ws.max_row + 1):
+            english_name = source_ws.cell(row, 2).value  # B列: 項目（英名）
+            if english_name:
+                row_mapping[english_name] = row
+
+        # 必要な勘定科目の英語名
+        sales_key = 'jpcrp_cor_NetSalesSummaryOfBusinessResults'  # 売上高
+        profit_key = 'jpcrp_cor_ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults'  # 親会社株主に帰属する当期純利益
+        net_assets_key = 'jpcrp_cor_NetAssetsSummaryOfBusinessResults'  # 純資産額
+        total_assets_key = 'jpcrp_cor_TotalAssetsSummaryOfBusinessResults'  # 総資産額
+        equity_ratio_key = 'jpcrp_cor_EquityToAssetRatioSummaryOfBusinessResults'  # 自己資本比率
+        roe_key = 'jpcrp_cor_RateOfReturnOnEquitySummaryOfBusinessResults'  # 自己資本利益率
+
+        # 元シートの行番号を取得
+        sales_row = row_mapping.get(sales_key)
+        profit_row = row_mapping.get(profit_key)
+        net_assets_row = row_mapping.get(net_assets_key)
+        total_assets_row = row_mapping.get(total_assets_key)
+        equity_ratio_row = row_mapping.get(equity_ratio_key)
+        roe_row = row_mapping.get(roe_key)
+
+        # セクションヘッダー
+        analysis_ws.append(['　連結経営指標等', 'jpcrp_cor_BusinessResultsOfGroupHeading'] + [''] * (num_cols - 2))
+
+        # 基本指標（元シートから参照）
+        def add_reference_row(label, english_name, source_row_num):
+            """元シートのデータを参照する行を追加"""
+            if source_row_num is None:
+                return
+            row_data = [label, english_name]
+            for col in range(3, num_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                # 元シートのセルを参照する数式
+                formula = f"=IF(ISBLANK('{source_sheet_name}'!{col_letter}{source_row_num}),\"\",'{source_sheet_name}'!{col_letter}{source_row_num})"
+                row_data.append(formula)
+            analysis_ws.append(row_data)
+
+        add_reference_row('　　　売上高', sales_key, sales_row)
+        add_reference_row('　　　親会社株主に帰属する当期純利益又は親会社株主に帰属する当期純損失（△）', profit_key, profit_row)
+        add_reference_row('　　　純資産額', net_assets_key, net_assets_row)
+        add_reference_row('　　　総資産額', total_assets_key, total_assets_row)
+        add_reference_row('　　　自己資本比率', equity_ratio_key, equity_ratio_row)
+        add_reference_row('　　　自己資本利益率', roe_key, roe_row)
+
+        # 現在の行番号を記録（上記で追加した行の位置）
+        current_row = analysis_ws.max_row
+        sales_analysis_row = current_row - 5
+        profit_analysis_row = current_row - 4
+        net_assets_analysis_row = current_row - 3
+        total_assets_analysis_row = current_row - 2
+        equity_ratio_analysis_row = current_row - 1
+        roe_analysis_row = current_row
+
+        # 空行
+        analysis_ws.append([''] * num_cols)
+
+        # 計算指標
+        # 自己資本 = 総資産額 × 自己資本比率
+        equity_row_num = analysis_ws.max_row + 1
+        equity_row = ['　　　自己資本', '']
+        for col in range(3, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"={col_letter}{total_assets_analysis_row}*{col_letter}{equity_ratio_analysis_row}"
+            equity_row.append(formula)
+        analysis_ws.append(equity_row)
+
+        # 自己資本（平均） = AVERAGE(前期:当期)
+        equity_avg_row_num = analysis_ws.max_row + 1
+        equity_avg_row = ['　　　自己資本（平均）', '']
+        # 最初の期（C列）は計算不可
+        equity_avg_row.append('')
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"=AVERAGE({prev_col_letter}{equity_row_num}:{col_letter}{equity_row_num})"
+            equity_avg_row.append(formula)
+        analysis_ws.append(equity_avg_row)
+
+        # 総資産（平均） = AVERAGE(前期:当期)
+        total_assets_avg_row_num = analysis_ws.max_row + 1
+        total_assets_avg_row = ['　　　総資産（平均）', '']
+        # 最初の期（C列）は計算不可
+        total_assets_avg_row.append('')
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"=AVERAGE({prev_col_letter}{total_assets_analysis_row}:{col_letter}{total_assets_analysis_row})"
+            total_assets_avg_row.append(formula)
+        analysis_ws.append(total_assets_avg_row)
+
+        # 空行
+        analysis_ws.append([''] * num_cols)
+
+        # ROE分析指標
+        # ROE = 元シートのROE
+        roe_calc_row_num = analysis_ws.max_row + 1
+        roe_calc_row = ['　　　自己資本利益率(ROE)', '']
+        # 最初の期（C列）は計算不可（平均が必要なため）
+        roe_calc_row.append('')
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"={col_letter}{roe_analysis_row}"
+            roe_calc_row.append(formula)
+        analysis_ws.append(roe_calc_row)
+
+        # ROS = 当期純利益 / 売上高
+        ros_row_num = analysis_ws.max_row + 1
+        ros_row = ['　　　売上高利益率(ROS)', '']
+        ros_row.append('')  # 最初の期
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"={col_letter}{profit_analysis_row}/{col_letter}{sales_analysis_row}"
+            ros_row.append(formula)
+        analysis_ws.append(ros_row)
+
+        # TOR = 売上高 / 総資産（平均）
+        tor_row_num = analysis_ws.max_row + 1
+        tor_row = ['　　　総資産回転率(TOR)', '']
+        tor_row.append('')  # 最初の期
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"={col_letter}{sales_analysis_row}/{col_letter}{total_assets_avg_row_num}"
+            tor_row.append(formula)
+        analysis_ws.append(tor_row)
+
+        # LRV = 総資産（平均） / 自己資本（平均）
+        lrv_row_num = analysis_ws.max_row + 1
+        lrv_row = ['　　　レバレッジ(LRV)', '']
+        lrv_row.append('')  # 最初の期
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"={col_letter}{total_assets_avg_row_num}/{col_letter}{equity_avg_row_num}"
+            lrv_row.append(formula)
+        analysis_ws.append(lrv_row)
+
+        # 検算1: ROS * TOR * LRV = ROE
+        check1_row_num = analysis_ws.max_row + 1
+        check1_row = ['　　　検算1(ROS*TOR*LEV=ROE)', '']
+        check1_row.append('')  # 最初の期
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"=PRODUCT({col_letter}{ros_row_num}:{col_letter}{lrv_row_num})"
+            check1_row.append(formula)
+        analysis_ws.append(check1_row)
+
+        # 検算2: 検算1 = ROE（TRUE/FALSE）
+        check2_row_num = analysis_ws.max_row + 1
+        check2_row = ['　　　検算2(検算1=ROE)', '']
+        check2_row.append('')  # 最初の期
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"=ROUND({col_letter}{roe_calc_row_num},1)=ROUND({col_letter}{check1_row_num},1)"
+            check2_row.append(formula)
+        analysis_ws.append(check2_row)
+
+        # ROA = 当期純利益 / 総資産（平均）
+        roa_row_num = analysis_ws.max_row + 1
+        roa_row = ['　　　ROA(総資産利益率)', '']
+        roa_row.append('')  # 最初の期
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"={col_letter}{profit_analysis_row}/{col_letter}{total_assets_avg_row_num}"
+            roa_row.append(formula)
+        analysis_ws.append(roa_row)
+
+        # ============================================================================
+        # セルの表示形式を設定
+        # ============================================================================
+        # 数値フォーマット定義
+        number_format_integer = '#,##0_ ;[Red]\-#,##0\ '  # 整数（カンマ区切り）
+        number_format_decimal = '#,##0_);[Red](#,##0)'  # 整数（カンマ区切り、負数は括弧）
+        number_format_decimal2 = '#,##0.00_);[Red](#,##0.00)'  # 小数2桁
+        number_format_percent = '0.0%'  # パーセント（小数1桁）
+
+        # 基本指標の表示形式（元シートから参照している行）
+        for col in range(3, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+
+            # 売上高、当期純利益、純資産額、総資産額: 整数カンマ区切り
+            for row_num in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row, total_assets_analysis_row]:
+                analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_integer
+
+            # 自己資本比率、自己資本利益率: パーセント
+            for row_num in [equity_ratio_analysis_row, roe_analysis_row]:
+                analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_percent
+
+        # 計算指標の表示形式
+        for col in range(3, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+
+            # 自己資本、自己資本（平均）、総資産（平均）: 整数カンマ区切り（括弧）
+            for row_num in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_decimal
+
+        # ROE分析指標の表示形式
+        for col in range(4, num_cols + 1):  # D列から（C列は空）
+            col_letter = openpyxl.utils.get_column_letter(col)
+
+            # ROE、ROS、ROA: パーセント
+            for row_num in [roe_calc_row_num, ros_row_num, roa_row_num]:
+                analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_percent
+
+            # TOR、LRV: 小数2桁
+            for row_num in [tor_row_num, lrv_row_num]:
+                analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_decimal2
+
+            # 検算1: パーセント
+            analysis_ws[f'{col_letter}{check1_row_num}'].number_format = number_format_percent
+
+            # 検算2: パーセント（実際はTRUE/FALSEだが元シートに合わせる）
+            analysis_ws[f'{col_letter}{check2_row_num}'].number_format = number_format_percent
+
+        debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
+
+    # 主要な経営指標等の推移（連結）シートを検索してROE分析シートを生成
+    for sheet_name in wb.sheetnames:
+        if '主要な経営指標等の推移' in sheet_name and '連結' in sheet_name and '_' not in sheet_name:
+            # "_"が含まれない = オリジナルシート（分析シートではない）
+            create_roe_analysis_sheet(wb, sheet_name)
 
     # 最新の期末を取得してファイル名に追加
     latest_period = ''
