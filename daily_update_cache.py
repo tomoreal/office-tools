@@ -117,7 +117,26 @@ def extract_company_name(english_name: str, japanese_name: str) -> tuple:
         (英語主要部分(小文字), カタカナ主要部分) のタプル
         抽出できない場合は None
     """
-    if not edef update_company_master() -> Tuple[bool, int, str]:
+    if not english_name or not japanese_name:
+        return None
+
+    # 英語名から企業形態を除く
+    english_main = english_name.upper()
+    for suffix in [' INC.', ' INC', ' CORPORATION', ' CORP.', ' CORP', ' CO.,LTD.', ' CO.,LTD', ' CO.LTD.', ' LTD.', ' LTD', ' LIMITED']:
+        if english_main.endswith(suffix):
+            english_main = english_main[:-len(suffix)].strip()
+
+    # カタカナ部分を抽出
+    katakana_parts = re.findall(r'[ァ-ヴー]+', japanese_name)
+    if not katakana_parts:
+        return None
+
+    katakana_main = max(katakana_parts, key=len)
+
+    return (english_main.lower(), katakana_main)
+
+
+def update_company_master() -> Tuple[bool, int, str]:
     """
     EDINET公式英語コードリストからEDINETの企業マスターをSQLiteに更新
     
@@ -199,39 +218,6 @@ def extract_company_name(english_name: str, japanese_name: str) -> tuple:
             
             logger.info(f"  ✓ {len(records)}件の企業マスタを更新しました")
             return True, len(records), "OK"
-
-    except requests.exceptions.Timeout:
-        return False, 0, "Download timeout"
-    except requests.exceptions.RequestException as e:
-        return False, 0, f"Network error: {e}"
-    except Exception as e:
-        return False, 0, f"Unexpected error: {e}"  stats['no_phonetic'] += 1
-
-        # 一時ZIPファイルを削除
-        os.unlink(tmp_zip_path)
-
-        # JSONファイルに保存
-        english_output_file = 'english_katakana_dict.json'
-        with open(english_output_file, 'w', encoding='utf-8') as f:
-            json.dump(english_dict, f, ensure_ascii=False, indent=2, sort_keys=True)
-
-        katakana_output_file = 'katakana_company_dict.json'
-        with open(katakana_output_file, 'w', encoding='utf-8') as f:
-            json.dump(katakana_dict, f, ensure_ascii=False, indent=2, sort_keys=True)
-
-        logger.info(f"  総企業数: {stats['total']}社")
-        logger.info(f"  【英語名辞書】")
-        logger.info(f"    英語名なし: {stats['no_english']}社")
-        logger.info(f"    抽出失敗: {stats['eng_extraction_failed']}社")
-        logger.info(f"    辞書エントリ数: {len(english_dict)}件")
-        logger.info(f"    保存先: {english_output_file}")
-        logger.info(f"  【カタカナ読み辞書】")
-        logger.info(f"    カナ名なし: {stats['no_phonetic']}社")
-        logger.info(f"    抽出失敗: {stats['kata_extraction_failed']}社")
-        logger.info(f"    辞書エントリ数: {len(katakana_dict)}件")
-        logger.info(f"    保存先: {katakana_output_file}")
-
-        return True, len(english_dict) + len(katakana_dict), "OK"
 
     except requests.exceptions.Timeout:
         return False, 0, "Download timeout"
@@ -433,6 +419,24 @@ def update_cache_for_days(days: int = 1, start_date: str = None, update_english_
 
     if failed_dates:
         logger.warning(f"失敗した日付: {', '.join(failed_dates)}")
+
+    # 10年超の古いデータを削除（EDINETは約10年分のデータしか保持していないため）
+    logger.info("")
+    logger.info("-" * 80)
+    logger.info("10年超の古いデータを削除中...")
+    try:
+        deleted_count = cache.delete_old_reports(years=10)
+        if deleted_count > 0:
+            logger.info(f"✓ {deleted_count:,}件の古いデータを削除しました")
+            # 削除後の統計
+            stats_after_cleanup = cache.get_cache_stats()
+            logger.info(f"削除後: {stats_after_cleanup['total_reports']:,}件の報告書")
+            logger.info(f"DBサイズ: {stats_after_cleanup['db_size_mb']:.2f}MB (削減: {stats_after['db_size_mb'] - stats_after_cleanup['db_size_mb']:.2f}MB)")
+        else:
+            logger.info("削除対象のデータはありませんでした")
+    except Exception as e:
+        logger.warning(f"古いデータの削除に失敗: {e}")
+    logger.info("-" * 80)
 
     # メタデータ更新
     cache.set_metadata('last_update_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))

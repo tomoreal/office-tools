@@ -361,3 +361,41 @@ class EdinetCache:
 
         conn.close()
         return result[0] if result else None
+
+    def delete_old_reports(self, years: int = 10) -> int:
+        """
+        指定年数より古い報告書を削除
+
+        EDINETは約10年分のデータを保持しているため、
+        それより古いローカルキャッシュデータを削除してDB容量を節約
+
+        Args:
+            years: 保持期間（年数）デフォルト10年
+
+        Returns:
+            削除した件数
+        """
+        cutoff_date = datetime.now() - timedelta(days=365 * years)
+        cutoff_str = cutoff_date.strftime('%Y-%m-%d')
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # 削除前に件数を確認
+        cursor.execute("""
+            SELECT COUNT(*) FROM securities_reports
+            WHERE submit_datetime < ?
+        """, (cutoff_str,))
+        delete_count = cursor.fetchone()[0]
+
+        if delete_count > 0:
+            # 削除実行
+            cursor.execute("""
+                DELETE FROM securities_reports
+                WHERE submit_datetime < ?
+            """, (cutoff_str,))
+
+            conn.commit()
+
+        conn.close()
+        return delete_count
