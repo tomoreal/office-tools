@@ -438,6 +438,70 @@ def update_cache_for_days(days: int = 1, start_date: str = None, update_english_
         logger.warning(f"古いデータの削除に失敗: {e}")
     logger.info("-" * 80)
 
+    # 過去の失敗を検出して再試行（過去7日間をチェック）
+    logger.info("")
+    logger.info("-" * 80)
+    logger.info("データ欠落チェック（過去7日間の再試行）...")
+    try:
+        retry_added = 0
+        retry_dates = []
+
+        # 過去7日間の各日付をチェック
+        for i in range(1, 8):
+            check_date = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+
+            # その日付のデータがDBに存在するか確認
+            import sqlite3
+            conn = sqlite3.connect('edinet_cache.db')
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM securities_reports
+                WHERE DATE(submit_datetime) = ?
+            """, (check_date,))
+            count = cursor.fetchone()[0]
+            conn.close()
+
+            # データが0件の場合、その日のデータを再取得
+            if count == 0:
+                success, report_count, message = fetch_reports_for_date(check_date)
+
+                if success and report_count > 0:
+                    # データ取得成功、DBに追加
+                    try:
+                        url = f"{BASE_URL}/documents.json"
+                        params = {"date": check_date, "type": 2}
+                        headers = {"Ocp-Apim-Subscription-Key": API_KEY}
+                        response = requests.get(url, params=params, headers=headers, timeout=30)
+                        data = response.json()
+
+                        reports = []
+                        if data.get('results'):
+                            for doc in data['results']:
+                                if doc.get('docTypeCode') == '120' and str(doc.get('xbrlFlag')) == '1':
+                                    reports.append(doc)
+
+                        cache.add_reports(reports)
+                        retry_added += report_count
+                        retry_dates.append(check_date)
+                        logger.info(f"  ✓ {check_date}: {report_count}件を再取得して追加")
+                    except Exception as e:
+                        logger.warning(f"  ✗ {check_date}: DB書き込み失敗 - {e}")
+                elif success and report_count == 0:
+                    # データなし（正常）
+                    pass
+                else:
+                    # API エラー（警告のみ、次回再試行される）
+                    logger.warning(f"  ! {check_date}: API取得失敗 - {message}")
+
+        if retry_added > 0:
+            logger.info(f"✓ 過去の欠落データを{retry_added}件追加しました（{len(retry_dates)}日分）")
+            logger.info(f"  対象日付: {', '.join(retry_dates)}")
+        else:
+            logger.info("欠落データはありませんでした")
+    except Exception as e:
+        logger.warning(f"欠落チェックに失敗: {e}")
+    logger.info("-" * 80)
+
     # メタデータ更新
     cache.set_metadata('last_update_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     cache.set_metadata('last_update_added_count', str(total_added))
