@@ -4073,10 +4073,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         # セルの表示形式を設定
         # ============================================================================
         # 数値フォーマット定義
-        number_format_integer = '#,##0_ ;[Red]\-#,##0\ '  # 整数（カンマ区切り）
-        number_format_decimal = '#,##0_);[Red](#,##0)'  # 整数（カンマ区切り、負数は括弧）
-        number_format_decimal2 = '#,##0.00_);[Red](#,##0.00)'  # 小数2桁
-        number_format_percent = '0.0%'  # パーセント（小数1桁）
+        number_format_integer = r'#,##0_ ;[Red]\-#,##0\ '  # 整数（カンマ区切り）
+        number_format_decimal = r'#,##0_);[Red](#,##0)'  # 整数（カンマ区切り、負数は括弧）
+        number_format_decimal2 = r'#,##0.00_);[Red](#,##0.00)'  # 小数2桁
+        number_format_percent = r'0.0%'  # パーセント（小数1桁）
 
         # 基本指標の表示形式（元シートから参照している行）
         for col in range(3, num_cols + 1):
@@ -4122,7 +4122,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for sheet_name in wb.sheetnames:
         if '主要な経営指標等の推移' in sheet_name and '連結' in sheet_name and '_' not in sheet_name:
             # "_"が含まれない = オリジナルシート（分析シートではない）
-            create_roe_analysis_sheet(wb, sheet_name)
+            try:
+                create_roe_analysis_sheet(wb, sheet_name)
+            except Exception as e:
+                debug_log(f"Warning: Failed to create ROE analysis sheet for '{sheet_name}': {e}")
+                # ROE分析シート生成に失敗してもメイン処理は継続
 
     # 最新の期末を取得してファイル名に追加
     latest_period = ''
