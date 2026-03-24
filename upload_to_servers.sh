@@ -9,6 +9,7 @@ echo ""
 # アップロード先のベースディレクトリ
 S211_DIR="/virtual/tomo/public_html/xbrl2.xtomo.com"
 S217_DIR="/virtual/tomo/public_html/xbrl.xtomo.com"
+S63_DIR="/virtual/tomo/public_html/xbrl1.xtomo.com"
 COREM15_DIR="/virtual/tomo/public_html/xbrl3.xtomo.com"
 
 FILES=(
@@ -31,8 +32,9 @@ FILES=(
 #    "convert_xbrl_to_excel.py"
 #    "edinet_api.py"
 #    "edinet_cache.py"
-    "convert_xbrl_to_excel.py"
-
+#    "convert_xbrl_to_excel.py"
+    "sync_db_to_servers.sh"
+    ".ftp_config"
 )
 
 # s211へアップロード
@@ -47,6 +49,13 @@ echo "--- s217 へアップロード ---"
 echo "  Uploading: ${FILES[*]}"
 scp -r "${FILES[@]}" "s217:${S217_DIR}/"
 echo "✓ s217 完了"
+echo ""
+
+# s63へアップロード
+echo "--- s63 へアップロード ---"
+echo "  Uploading: ${FILES[*]}"
+scp -r "${FILES[@]}" "s63:${S63_DIR}/"
+echo "✓ s63 完了"
 echo ""
 
 # corem15へアップロード

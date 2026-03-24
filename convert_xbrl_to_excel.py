@@ -2045,8 +2045,13 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         if new_role != curr_role:
                             if curr_arcs:
                                 # Merge instead of Overwrite
+                                # IMPORTANT: Preserve presentation linkbase order values (don't overwrite)
                                 if curr_role not in merged_trees: merged_trees[curr_role] = {}
-                                merged_trees[curr_role].update({(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in curr_arcs})
+                                for arc in curr_arcs:
+                                    key = (arc['parent'], arc['child'], arc['preferredLabel'])
+                                    # Only add if not already exists (prioritize presentation linkbase)
+                                    if key not in merged_trees[curr_role]:
+                                        merged_trees[curr_role][key] = (arc['order'], arc['index'])
                                 print(f"[Fallback-Split] Merged synthetic role {curr_role} (Phase 1)", file=sys.stderr)
                                 roles_created.add(curr_role)
                             curr_role = new_role
@@ -2102,18 +2107,28 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
                     curr_arcs.append({'parent': curr_role, 'child': elem, 'order': float(_order), 'index': i, 'preferredLabel': None})
                 if curr_arcs:
+                    # IMPORTANT: Preserve presentation linkbase order values (don't overwrite)
                     if curr_role not in merged_trees: merged_trees[curr_role] = {}
-                    merged_trees[curr_role].update({(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in curr_arcs})
+                    for arc in curr_arcs:
+                        key = (arc['parent'], arc['child'], arc['preferredLabel'])
+                        # Only add if not already exists (prioritize presentation linkbase)
+                        if key not in merged_trees[curr_role]:
+                            merged_trees[curr_role][key] = (arc['order'], arc['index'])
                     print(f"[Fallback-Split] Merged synthetic role {curr_role} (Phase 1)", file=sys.stderr)
             else:
                 virtual_root = role_name
                 arcs = []
                 for i, (elem, _order) in enumerate(sorted_elems):
                     arcs.append({'parent': virtual_root, 'child': elem, 'order': float(_order), 'index': i, 'preferredLabel': None})
-                
+
                 if arcs:
+                    # IMPORTANT: Preserve presentation linkbase order values (don't overwrite)
                     if role_name not in merged_trees: merged_trees[role_name] = {}
-                    merged_trees[role_name].update({(a['parent'], a['child'], a['preferredLabel']): (a['order'], a['index']) for a in arcs})
+                    for arc in arcs:
+                        key = (arc['parent'], arc['child'], arc['preferredLabel'])
+                        # Only add if not already exists (prioritize presentation linkbase)
+                        if key not in merged_trees[role_name]:
+                            merged_trees[role_name][key] = (arc['order'], arc['index'])
                     print(f"[Fallback] Merged synthetic role {role_name} from {doc_code} (Phase 1)", file=sys.stderr)
 
     # --- Clean up stub taxonomy roles from jumbo roles (FIX V5) ---

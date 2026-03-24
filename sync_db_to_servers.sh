@@ -46,7 +46,7 @@ if [ ! -f "$DB_FILE" ]; then
     exit 1
 fi
 
-DB_SIZE=$(du -h "$DB_FILE" | cut -f1)
+DB_SIZE=$(ls -lh "$DB_FILE" | awk '{print $5}')
 log "転送ファイル: $DB_FILE ($DB_SIZE)"
 
 # FTP転送関数（lftp使用）
@@ -86,8 +86,11 @@ ftp_transfer() {
 # ==========================================
 # セキュリティのため、環境変数または別ファイルから読み込むことを推奨
 
+# スクリプトのディレクトリを取得
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # 設定ファイルが存在すれば読み込み
-CONFIG_FILE=".ftp_config"
+CONFIG_FILE="$SCRIPT_DIR/.ftp_config"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi
@@ -103,6 +106,12 @@ S217_HOST="${S217_HOST:-s217.xrea.com}"
 S217_USER="${S217_USER:-tomo}"
 S217_PASS="${S217_PASS:-YOUR_PASSWORD_HERE}"
 S217_PATH="${S217_PATH:-/virtual/tomo/public_html/xbrl.xtomo.com}"
+
+# s63設定
+S63_HOST="${S63_HOST:-s63.xrea.com}"
+S63_USER="${S63_USER:-tomo}"
+S63_PASS="${S63_PASS:-YOUR_PASSWORD_HERE}"
+S63_PATH="${S63_PATH:-/virtual/tomo/public_html/xbrl1.xtomo.com}"
 
 # ==========================================
 # 転送実行
@@ -120,6 +129,13 @@ fi
 
 # s217への転送
 if ftp_transfer "$S217_HOST" "$S217_USER" "$S217_PASS" "$S217_PATH" "s217"; then
+    ((SUCCESS_COUNT++))
+else
+    ((FAIL_COUNT++))
+fi
+
+# s63への転送
+if ftp_transfer "$S63_HOST" "$S63_USER" "$S63_PASS" "$S63_PATH" "s63"; then
     ((SUCCESS_COUNT++))
 else
     ((FAIL_COUNT++))
