@@ -35,9 +35,10 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     analysis_ws = workbook.create_sheet(analysis_sheet_name)
 
     # 列数を取得
-    # CAGR列（Q列=17列目）を確保するため、最低でも16列（P列まで）確保する
+    # Note: num_cols will be adjusted later based on kikan
+    # For now, just use source columns
     source_cols = source_ws.max_column
-    num_cols = max(source_cols, 16)  # 最低でもP列（16列目）まで確保
+    num_cols = source_cols  # Will be adjusted later if kikan >= 10
 
     # 参照する行番号を特定（元シートから）
     row_mapping = {}  # 英語名 -> 行番号のマッピング
@@ -507,12 +508,22 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     if oldest_col is None:
         # No valid data found
         base_col = None
+        kikan = 0  # No data available
+        num_cols = source_cols  # Keep original columns
     else:
         # Step 2: Calculate FYb = FYa + 1 (need previous year for average calculation)
         fyb_col = oldest_col + 1
 
         # Step 3: Calculate period: kikan = FYc - FYb
         kikan = latest_col - fyb_col
+
+        # Adjust num_cols based on kikan
+        # For kikan >= 10: need padding to at least 16 columns for 10-year comparison
+        # For kikan < 10: use actual source columns only (no padding)
+        if kikan >= 10:
+            num_cols = max(source_cols, 16)  # Ensure at least P column (16) for 10-year data
+        else:
+            num_cols = source_cols  # No padding for < 10 year data
 
         # Step 4: Determine base column based on period
         if kikan >= 10:
@@ -591,7 +602,34 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         # Q2: 空（ヘッダー行）
         analysis_ws[f'{growth_col_letter}2'] = ''
 
-        # Q3-Q20: 空白（年平均増加率は対前年増加率セクションのQ24-Q41に移動）
+        # Q3-Q20: 簡単な比率計算（最新値/基準値）
+        # 基本指標: Q3-Q8 (売上高、当期純利益、純資産額、総資産額、自己資本比率、ROE)
+        for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                          total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+            ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
+            # 書式設定: #,##0.00;[Red]-#,##0.00
+            analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+        # Q9: 空行（対応する行9が空行）
+
+        # 計算指標: Q10-Q12 (自己資本、自己資本（平均）、総資産（平均）)
+        for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+            ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
+            analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+        # Q13: 空行（対応する行13が空行）
+
+        # ROE分析指標: Q14-Q20 (ROE、ROS、TOR、LRV、検算1、検算2、ROA)
+        for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                          check1_row_num, check2_row_num, roa_row_num]:
+            # check2_row_num（検算2）の場合は空欄
+            if source_row == check2_row_num:
+                continue
+            ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
+            analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
         # Q23: "　対前年増加率" ヘッダー（Q1を参照）
         analysis_ws[f'{growth_col_letter}{yoy_header_row_num}'] = f'={growth_col_letter}1'
@@ -636,6 +674,219 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         # Q24-Q41: 対前年増加率セクションの年平均増加率の表示形式を設定（パーセント）
         for row_num in yoy_rows_basic + yoy_rows_calc + yoy_rows_roe:
             analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
+
+        # ============================================================================
+        # R列とS列: 5年間の比較
+        # ============================================================================
+        # kikanに基づいて5年間の比較を追加
+        # - kikan >= 10: R列=前半5年(base to mid), S列=後半5年(mid to latest)
+        # - 5 <= kikan < 10: R列=最新5年(latest-5 to latest)のみ
+        # - kikan < 5: R列S列なし
+
+        if kikan >= 5:
+            if kikan >= 10:
+                # Case 1: kikan >= 10
+                # R列: 前半5年間 (base to mid)
+                # S列: 後半5年間 (mid to latest)
+                mid_col = latest_col - 5  # 中間地点（5年前）
+                mid_col_letter = openpyxl.utils.get_column_letter(mid_col)
+
+                # R列 (num_cols + 2)
+                r_col = num_cols + 2
+                r_col_letter = openpyxl.utils.get_column_letter(r_col)
+
+                # R1: 期間表示 (mid/base)
+                r_period_formula = f"=YEAR({mid_col_letter}1) & \"/\" & YEAR({base_col_letter}1)"
+                analysis_ws[f'{r_col_letter}1'] = r_period_formula
+
+                # R2: 空
+                analysis_ws[f'{r_col_letter}2'] = ''
+
+                # R3-R20: 比率計算
+                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                  total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+                    ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                    ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                  check1_row_num, check2_row_num, roa_row_num]:
+                    if source_row == check2_row_num:
+                        continue
+                    ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                # R23: ヘッダー（R1を参照）
+                analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
+
+                # R24-R41: CAGR計算 (base to mid)
+                for idx, row_num in enumerate(yoy_rows_basic):
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                     total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_calc):
+                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_roe):
+                    source_cagr_row = source_rows_roe[idx]
+                    if source_cagr_row == check2_row_num:
+                        continue
+                    cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                # R列の列幅を12に設定
+                analysis_ws.column_dimensions[r_col_letter].width = 12
+
+                # S列 (num_cols + 3)
+                s_col = num_cols + 3
+                s_col_letter = openpyxl.utils.get_column_letter(s_col)
+
+                # S1: 期間表示 (latest/mid)
+                s_period_formula = f"=YEAR({latest_col_letter}1) & \"/\" & YEAR({mid_col_letter}1)"
+                analysis_ws[f'{s_col_letter}1'] = s_period_formula
+
+                # S2: 空
+                analysis_ws[f'{s_col_letter}2'] = ''
+
+                # S3-S20: 比率計算
+                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                  total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+                    ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                    ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                  check1_row_num, check2_row_num, roa_row_num]:
+                    if source_row == check2_row_num:
+                        continue
+                    ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                # S23: ヘッダー（S1を参照）
+                analysis_ws[f'{s_col_letter}{yoy_header_row_num}'] = f'={s_col_letter}1'
+
+                # S24-S41: CAGR計算 (mid to latest)
+                # Note: S列のCAGRは (latest/mid)^(1/(latest_year - mid_year)) - 1
+                for idx, row_num in enumerate(yoy_rows_basic):
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                     total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
+                    analysis_ws[f'{s_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_calc):
+                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
+                    analysis_ws[f'{s_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_roe):
+                    source_cagr_row = source_rows_roe[idx]
+                    if source_cagr_row == check2_row_num:
+                        continue
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
+                    analysis_ws[f'{s_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = number_format_percent
+
+                # S列の列幅を12に設定
+                analysis_ws.column_dimensions[s_col_letter].width = 12
+
+                debug_log(f"Added R and S columns for 10+ year data: R={mid_col_letter}/{base_col_letter}, S={latest_col_letter}/{mid_col_letter}")
+
+            else:
+                # Case 2: 5 <= kikan < 10
+                # R列のみ: 最新5年間 (latest-5 to latest)
+                five_years_ago_col = latest_col - 5
+                five_years_col_letter = openpyxl.utils.get_column_letter(five_years_ago_col)
+
+                # R列 (num_cols + 2)
+                r_col = num_cols + 2
+                r_col_letter = openpyxl.utils.get_column_letter(r_col)
+
+                # R1: 期間表示 (latest/5years_ago)
+                r_period_formula = f"=YEAR({latest_col_letter}1) & \"/\" & YEAR({five_years_col_letter}1)"
+                analysis_ws[f'{r_col_letter}1'] = r_period_formula
+
+                # R2: 空
+                analysis_ws[f'{r_col_letter}2'] = ''
+
+                # R3-R20: 比率計算
+                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                  total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+                    ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                    ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                  check1_row_num, check2_row_num, roa_row_num]:
+                    if source_row == check2_row_num:
+                        continue
+                    ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                # R23: ヘッダー（R1を参照）
+                analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
+
+                # R24-R41: CAGR計算 (5years_ago to latest)
+                for idx, row_num in enumerate(yoy_rows_basic):
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                     total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_calc):
+                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_roe):
+                    source_cagr_row = source_rows_roe[idx]
+                    if source_cagr_row == check2_row_num:
+                        continue
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                # R列の列幅を12に設定
+                analysis_ws.column_dimensions[r_col_letter].width = 12
+
+                debug_log(f"Added R column for 5-9 year data: R={latest_col_letter}/{five_years_col_letter}")
 
     debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
 

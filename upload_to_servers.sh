@@ -32,7 +32,7 @@ FILES=(
 #    "edinet_cache.py"
 #    "templates"
 #    "app.py"
-    "convert_xbrl_to_excel.py"
+#    "convert_xbrl_to_excel.py"
     "financial_analysis.py"
 )
 
