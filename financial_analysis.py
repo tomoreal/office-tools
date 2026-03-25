@@ -274,7 +274,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
     # LRV = 総資産（平均） / 自己資本（平均）
     lrv_row_num = analysis_ws.max_row + 1
-    lrv_row = ['　　　レバレッジ(LRV)', '']
+    lrv_row = ['　　　レバレッジ(LEV)', '']
     lrv_row.append('')  # 最初の期
     for col in range(4, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
