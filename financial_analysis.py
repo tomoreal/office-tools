@@ -891,6 +891,729 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
 
 
+def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debug_log=None):
+    """
+    主要な経営指標等の推移（単体）シートからROE分析シートを生成
+
+    Args:
+        workbook: openpyxlワークブック
+        source_sheet_name: 元シート名（例: "主要な経営指標等の推移（単体）"）
+        debug_log: デバッグログ関数（オプション）
+    """
+    # デバッグログ関数がない場合はダミー関数を使用
+    if debug_log is None:
+        def debug_log(msg):
+            pass
+
+    if source_sheet_name not in workbook.sheetnames:
+        return
+
+    source_ws = workbook[source_sheet_name]
+    analysis_sheet_name = f"{source_sheet_name}_ROE分析"
+
+    # 既存の分析シートがあれば削除
+    if analysis_sheet_name in workbook.sheetnames:
+        workbook.remove(workbook[analysis_sheet_name])
+
+    # 新しいシートを作成
+    analysis_ws = workbook.create_sheet(analysis_sheet_name)
+
+    # 列数を取得
+    source_cols = source_ws.max_column
+    num_cols = source_cols
+
+    # 参照する行番号を特定（元シートから）
+    row_mapping = {}  # 英語名 -> 行番号のマッピング
+    for row in range(2, source_ws.max_row + 1):
+        english_name = source_ws.cell(row, 2).value  # B列: 項目（英名）
+        if english_name:
+            row_mapping[english_name] = row
+
+    def find_row_by_keywords(keywords_list, item_name):
+        """
+        複数のキーワード候補で行を検索（部分一致）
+
+        Args:
+            keywords_list: キーワードのリスト（優先度順）
+            item_name: 項目名（ログ用）
+
+        Returns:
+            見つかった行番号、または None
+        """
+        for keywords in keywords_list:
+            # キーワードが文字列の場合はリストに変換
+            if isinstance(keywords, str):
+                keywords = [keywords]
+
+            # 候補を検索（すべてのキーワードを含む英語名）
+            candidates = []
+            for eng_name, row_num in row_mapping.items():
+                if all(kw in eng_name for kw in keywords):
+                    candidates.append((eng_name, row_num))
+
+            if candidates:
+                # 最初の候補を使用
+                eng_name, row_num = candidates[0]
+                if len(candidates) > 1:
+                    debug_log(f"{item_name}: multiple matches found, using '{eng_name}' (row {row_num})")
+                else:
+                    debug_log(f"{item_name}: found '{eng_name}' (row {row_num})")
+                return row_num
+
+        return None
+
+    # 単体用の勘定科目のキーワード候補（優先度順）
+    sales_keywords = [
+        ['NetSales', 'Summary', 'BusinessResults'],  # 売上高（単体標準）
+        ['NetSales', 'Summary'],  # 売上高（汎用）
+        ['NetSales'],
+    ]
+
+    profit_keywords = [
+        ['NetIncomeLoss', 'Summary', 'BusinessResults'],  # 当期純利益（単体標準）
+        ['NetIncome', 'Summary'],  # 代替パターン
+        ['NetIncomeLoss'],
+    ]
+
+    net_assets_keywords = [
+        ['NetAssets', 'Summary', 'BusinessResults'],  # 純資産額（単体標準）
+        ['NetAssets', 'Summary'],
+        ['NetAssets'],
+    ]
+
+    total_assets_keywords = [
+        ['TotalAssets', 'Summary', 'BusinessResults'],  # 総資産額（単体標準）
+        ['TotalAssets', 'Summary'],
+        ['TotalAssets'],
+    ]
+
+    equity_ratio_keywords = [
+        ['EquityToAssetRatio', 'Summary', 'BusinessResults'],  # 自己資本比率（単体標準）
+        ['EquityToAsset', 'Summary'],
+        ['EquityRatio'],
+    ]
+
+    roe_keywords = [
+        ['RateOfReturnOnEquity', 'Summary', 'BusinessResults'],  # ROE（単体標準）
+        ['ReturnOnEquity', 'Summary'],
+        ['ROE'],
+    ]
+
+    # 元シートの行番号を取得（部分一致検索）
+    sales_row = find_row_by_keywords(sales_keywords, '売上高')
+    profit_row = find_row_by_keywords(profit_keywords, '当期純利益')
+    net_assets_row = find_row_by_keywords(net_assets_keywords, '純資産額')
+    total_assets_row = find_row_by_keywords(total_assets_keywords, '総資産額')
+    equity_ratio_row = find_row_by_keywords(equity_ratio_keywords, '自己資本比率')
+    roe_row = find_row_by_keywords(roe_keywords, 'ROE')
+
+    # 売上高が見つからない場合は、セクションヘッダーの次の行を使用
+    if sales_row is None:
+        # ヘッダーを部分一致で検索
+        header_keywords = [
+            ['BusinessResults', 'ReportingCompany', 'Heading'],  # 単体用ヘッダー
+            ['BusinessResults', 'Heading'],
+            ['BusinessResults'],
+        ]
+        header_row_num = find_row_by_keywords(header_keywords, 'セクションヘッダー')
+        if header_row_num:
+            # ヘッダーの次の行を売上高として使用
+            sales_row = header_row_num + 1
+            debug_log(f"Sales row not found, using first item after header (row {sales_row})")
+
+    # ROE分析に必要な項目がすべて存在するかチェック
+    required_items = {
+        '売上高': sales_row,
+        '当期純利益': profit_row,
+        '総資産額': total_assets_row,
+        '自己資本比率': equity_ratio_row,
+        'ROE': roe_row
+    }
+    missing_items = [name for name, row in required_items.items() if row is None]
+    if missing_items:
+        debug_log(f"ROE analysis skipped for '{source_sheet_name}': missing items: {', '.join(missing_items)}")
+        return
+
+    # ここから先は連結と全く同じロジックなので、create_roe_analysis_sheetと共通化
+    # 現在は冗長ですが、明確性のため一旦全コピー
+    def add_reference_row_full(source_row_num):
+        """元シートの行全体を参照する行を追加"""
+        row_data = []
+        for col in range(1, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"='{source_sheet_name}'!{col_letter}{source_row_num}"
+            row_data.append(formula)
+        analysis_ws.append(row_data)
+
+    # 1行目: ヘッダー
+    add_reference_row_full(1)
+
+    # 2行目: セクションヘッダー
+    header_keywords = [
+        ['BusinessResults', 'ReportingCompany', 'Heading'],
+        ['BusinessResults', 'Heading'],
+        ['BusinessResults'],
+    ]
+    header_row_num = find_row_by_keywords(header_keywords, 'セクションヘッダー')
+    if header_row_num:
+        row_data = []
+        for col in range(1, 3):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"='{source_sheet_name}'!{col_letter}{header_row_num}"
+            row_data.append(formula)
+        for col in range(3, num_cols + 1):
+            row_data.append('')
+        analysis_ws.append(row_data)
+
+    # 3-8行目: 基本指標
+    add_reference_row_full(sales_row)
+    add_reference_row_full(profit_row)
+    add_reference_row_full(net_assets_row)
+    add_reference_row_full(total_assets_row)
+    add_reference_row_full(equity_ratio_row)
+    add_reference_row_full(roe_row)
+
+    current_row = analysis_ws.max_row
+    sales_analysis_row = current_row - 5
+    profit_analysis_row = current_row - 4
+    net_assets_analysis_row = current_row - 3
+    total_assets_analysis_row = current_row - 2
+    equity_ratio_analysis_row = current_row - 1
+    roe_analysis_row = current_row
+
+    # 空行
+    analysis_ws.append([''] * num_cols)
+
+    # 自己資本 = 総資産額 × 自己資本比率
+    equity_row_num = analysis_ws.max_row + 1
+    equity_row = ['　　　自己資本', '']
+    for col in range(3, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"={col_letter}{total_assets_analysis_row}*{col_letter}{equity_ratio_analysis_row}"
+        equity_row.append(formula)
+    analysis_ws.append(equity_row)
+
+    # 自己資本（平均）
+    equity_avg_row_num = analysis_ws.max_row + 1
+    equity_avg_row = ['　　　自己資本（平均）', '']
+    equity_avg_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+        formula = f"=AVERAGE({prev_col_letter}{equity_row_num}:{col_letter}{equity_row_num})"
+        equity_avg_row.append(formula)
+    analysis_ws.append(equity_avg_row)
+
+    # 総資産（平均）
+    total_assets_avg_row_num = analysis_ws.max_row + 1
+    total_assets_avg_row = ['　　　総資産（平均）', '']
+    total_assets_avg_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+        formula = f"=AVERAGE({prev_col_letter}{total_assets_analysis_row}:{col_letter}{total_assets_analysis_row})"
+        total_assets_avg_row.append(formula)
+    analysis_ws.append(total_assets_avg_row)
+
+    # 空行
+    analysis_ws.append([''] * num_cols)
+
+    # ROE分析指標
+    roe_calc_row_num = analysis_ws.max_row + 1
+    roe_calc_row = ['　　　自己資本利益率(ROE)', '']
+    roe_calc_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"={col_letter}{roe_analysis_row}"
+        roe_calc_row.append(formula)
+    analysis_ws.append(roe_calc_row)
+
+    # ROS = 当期純利益 / 売上高
+    ros_row_num = analysis_ws.max_row + 1
+    ros_row = ['　　　売上高利益率(ROS)', '']
+    ros_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"={col_letter}{profit_analysis_row}/{col_letter}{sales_analysis_row}"
+        ros_row.append(formula)
+    analysis_ws.append(ros_row)
+
+    # TOR = 売上高 / 総資産（平均）
+    tor_row_num = analysis_ws.max_row + 1
+    tor_row = ['　　　総資産回転率(TOR)', '']
+    tor_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"={col_letter}{sales_analysis_row}/{col_letter}{total_assets_avg_row_num}"
+        tor_row.append(formula)
+    analysis_ws.append(tor_row)
+
+    # LEV = 総資産（平均） / 自己資本（平均）
+    lrv_row_num = analysis_ws.max_row + 1
+    lrv_row = ['　　　レバレッジ(LEV)', '']
+    lrv_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"={col_letter}{total_assets_avg_row_num}/{col_letter}{equity_avg_row_num}"
+        lrv_row.append(formula)
+    analysis_ws.append(lrv_row)
+
+    # 検算1: ROS * TOR * LEV = ROE
+    check1_row_num = analysis_ws.max_row + 1
+    check1_row = ['　　　検算1(ROS*TOR*LEV=ROE)', '']
+    check1_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"=PRODUCT({col_letter}{ros_row_num}:{col_letter}{lrv_row_num})"
+        check1_row.append(formula)
+    analysis_ws.append(check1_row)
+
+    # 検算2: 検算1 = ROE
+    check2_row_num = analysis_ws.max_row + 1
+    check2_row = ['　　　検算2(検算1=ROE)', '']
+    check2_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"=ROUND({col_letter}{roe_calc_row_num},1)=ROUND({col_letter}{check1_row_num},1)"
+        check2_row.append(formula)
+    analysis_ws.append(check2_row)
+
+    # ROA = 当期純利益 / 総資産（平均）
+    roa_row_num = analysis_ws.max_row + 1
+    roa_row = ['　　　ROA(総資産利益率)', '']
+    roa_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"={col_letter}{profit_analysis_row}/{col_letter}{total_assets_avg_row_num}"
+        roa_row.append(formula)
+    analysis_ws.append(roa_row)
+
+    # 表示形式設定
+    number_format_integer = r'#,##0_ ;[Red]\-#,##0\ '
+    number_format_decimal = r'#,##0_);[Red](#,##0)'
+    number_format_decimal2 = r'#,##0.00_);[Red](#,##0.00)'
+    number_format_percent = r'0.0%'
+
+    for col in range(3, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        for row_num in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row, total_assets_analysis_row]:
+            analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_integer
+        for row_num in [equity_ratio_analysis_row, roe_analysis_row]:
+            analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_percent
+
+    for col in range(3, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        for row_num in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+            analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_decimal
+
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        for row_num in [roe_calc_row_num, ros_row_num, roa_row_num]:
+            analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_percent
+        for row_num in [tor_row_num, lrv_row_num]:
+            analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_decimal2
+        analysis_ws[f'{col_letter}{check1_row_num}'].number_format = number_format_percent
+        analysis_ws[f'{col_letter}{check2_row_num}'].number_format = number_format_percent
+
+    # 列幅設定
+    analysis_ws.column_dimensions['A'].width = 28
+    analysis_ws.column_dimensions['B'].hidden = True
+    for col in range(3, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        analysis_ws.column_dimensions[col_letter].width = 12
+
+    # ウィンドウ枠固定
+    analysis_ws.freeze_panes = 'B2'
+
+    # 対前年増加率セクション
+    analysis_ws.append([''] * num_cols)
+    analysis_ws.append([''] * num_cols)
+
+    yoy_header_row_num = analysis_ws.max_row + 1
+    yoy_header_row = ['　対前年増加率', '']
+    yoy_header_row.append('')
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        yoy_header_row.append(f'={col_letter}1')
+    analysis_ws.append(yoy_header_row)
+
+    yoy_rows_basic = []
+    for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                       total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+        yoy_row_num = analysis_ws.max_row + 1
+        yoy_rows_basic.append(yoy_row_num)
+        yoy_row = [f'=A{source_row}', '']
+        yoy_row.append('')
+        yoy_row.append('')
+        for col in range(5, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
+            yoy_row.append(formula)
+        analysis_ws.append(yoy_row)
+
+    analysis_ws.append([''] * num_cols)
+
+    yoy_rows_calc = []
+    for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+        yoy_row_num = analysis_ws.max_row + 1
+        yoy_rows_calc.append(yoy_row_num)
+        yoy_row = [f'=A{source_row}', '']
+        yoy_row.append('')
+        yoy_row.append('')
+        for col in range(5, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
+            yoy_row.append(formula)
+        analysis_ws.append(yoy_row)
+
+    analysis_ws.append([''] * num_cols)
+
+    yoy_rows_roe = []
+    for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                       check1_row_num, check2_row_num, roa_row_num]:
+        yoy_row_num = analysis_ws.max_row + 1
+        yoy_rows_roe.append(yoy_row_num)
+        yoy_row = [f'=A{source_row}', '']
+        yoy_row.append('')
+        if source_row == check2_row_num:
+            for col in range(4, num_cols + 1):
+                yoy_row.append('')
+        else:
+            yoy_row.append('')
+            for col in range(5, num_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+                formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
+                yoy_row.append(formula)
+        analysis_ws.append(yoy_row)
+
+    for col in range(5, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        for row_num in yoy_rows_basic + yoy_rows_calc + yoy_rows_roe:
+            analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_percent
+
+    # 10年前からの増加率計算（Q列以降）
+    latest_col = source_cols
+    latest_col_letter = openpyxl.utils.get_column_letter(latest_col)
+
+    target_rows = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                   total_assets_analysis_row, equity_ratio_analysis_row]
+
+    def has_all_data(col_num):
+        col_letter = openpyxl.utils.get_column_letter(col_num)
+        for row_num in target_rows:
+            cell_formula = analysis_ws[f'{col_letter}{row_num}'].value
+            if not cell_formula:
+                return False
+            if isinstance(cell_formula, str) and cell_formula.startswith('='):
+                try:
+                    parts = cell_formula.split('!')
+                    if len(parts) == 2:
+                        source_cell_ref = parts[1].strip()
+                        source_cell_value = source_ws[source_cell_ref].value
+                        if source_cell_value is None or source_cell_value == '':
+                            return False
+                except Exception:
+                    return False
+        return True
+
+    oldest_col = None
+    for col in range(3, latest_col):
+        if has_all_data(col):
+            oldest_col = col
+            break
+
+    if oldest_col is None:
+        base_col = None
+        kikan = 0
+        num_cols = source_cols
+    else:
+        fyb_col = oldest_col + 1
+        kikan = latest_col - fyb_col
+
+        if kikan >= 10:
+            num_cols = max(source_cols, 16)
+        else:
+            num_cols = source_cols
+
+        if kikan >= 10:
+            candidate_base_col = latest_col - 10
+            if candidate_base_col > 3:
+                try:
+                    candidate_letter = openpyxl.utils.get_column_letter(candidate_base_col)
+                    prev_letter = openpyxl.utils.get_column_letter(candidate_base_col - 1)
+                    if has_all_data(candidate_base_col - 1):
+                        candidate_header = analysis_ws[f'{candidate_letter}1'].value
+                        if isinstance(candidate_header, str) and candidate_header.startswith('='):
+                            parts = candidate_header.split('!')
+                            if len(parts) == 2:
+                                source_cell_ref = parts[1].strip().replace("'", "")
+                                candidate_date = source_ws[source_cell_ref].value
+                                prev_date = source_ws[f'{prev_letter[0] if len(prev_letter)==1 else prev_letter}1'].value
+                                if candidate_date and prev_date:
+                                    if hasattr(candidate_date, 'year') and hasattr(prev_date, 'year'):
+                                        if candidate_date.year == prev_date.year:
+                                            base_col = candidate_base_col - 1
+                                            debug_log(f"Fiscal year change detected: using {prev_letter} instead of {candidate_letter} (same year {candidate_date.year})")
+                                        else:
+                                            base_col = candidate_base_col
+                                    else:
+                                        base_col = candidate_base_col
+                                else:
+                                    base_col = candidate_base_col
+                        else:
+                            base_col = candidate_base_col
+                    else:
+                        base_col = candidate_base_col
+                except Exception:
+                    base_col = candidate_base_col
+            else:
+                base_col = candidate_base_col
+            base_col_letter = openpyxl.utils.get_column_letter(base_col)
+            debug_log(f"Using 10-year comparison: kikan={kikan}, base column {base_col_letter}")
+        else:
+            base_col = fyb_col
+            base_col_letter = openpyxl.utils.get_column_letter(base_col)
+            oldest_col_letter = openpyxl.utils.get_column_letter(oldest_col)
+            debug_log(f"Using longest available period: kikan={kikan}, oldest={oldest_col_letter}, base={base_col_letter}")
+
+    if base_col is not None:
+        growth_col = num_cols + 1
+        growth_col_letter = openpyxl.utils.get_column_letter(growth_col)
+        base_col_letter = openpyxl.utils.get_column_letter(base_col)
+
+        period_formula = f"=YEAR({latest_col_letter}1) & \"/\" & YEAR({base_col_letter}1)"
+        analysis_ws[f'{growth_col_letter}1'] = period_formula
+        analysis_ws[f'{growth_col_letter}2'] = ''
+
+        for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                          total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+            ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
+            analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+        for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+            ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
+            analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+        for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                          check1_row_num, check2_row_num, roa_row_num]:
+            if source_row == check2_row_num:
+                continue
+            ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
+            analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+        analysis_ws[f'{growth_col_letter}{yoy_header_row_num}'] = f'={growth_col_letter}1'
+
+        for idx, row_num in enumerate(yoy_rows_basic):
+            source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                             total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+            cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                          f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+            analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
+
+        for idx, row_num in enumerate(yoy_rows_calc):
+            source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+            cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                          f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+            analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
+
+        source_rows_roe = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                          check1_row_num, check2_row_num, roa_row_num]
+        for idx, row_num in enumerate(yoy_rows_roe):
+            source_cagr_row = source_rows_roe[idx]
+            if source_cagr_row == check2_row_num:
+                continue
+            cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                          f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+            analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
+
+        analysis_ws.column_dimensions[growth_col_letter].width = 12
+
+        for row_num in yoy_rows_basic + yoy_rows_calc + yoy_rows_roe:
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
+
+        # R列とS列: 5年間の比較
+        if kikan >= 5:
+            if kikan >= 10:
+                mid_col = latest_col - 5
+                mid_col_letter = openpyxl.utils.get_column_letter(mid_col)
+                r_col = num_cols + 2
+                r_col_letter = openpyxl.utils.get_column_letter(r_col)
+
+                r_period_formula = f"=YEAR({mid_col_letter}1) & \"/\" & YEAR({base_col_letter}1)"
+                analysis_ws[f'{r_col_letter}1'] = r_period_formula
+                analysis_ws[f'{r_col_letter}2'] = ''
+
+                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                  total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+                    ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                    ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                  check1_row_num, check2_row_num, roa_row_num]:
+                    if source_row == check2_row_num:
+                        continue
+                    ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
+
+                for idx, row_num in enumerate(yoy_rows_basic):
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                     total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_calc):
+                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_roe):
+                    source_cagr_row = source_rows_roe[idx]
+                    if source_cagr_row == check2_row_num:
+                        continue
+                    cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                analysis_ws.column_dimensions[r_col_letter].width = 12
+
+                s_col = num_cols + 3
+                s_col_letter = openpyxl.utils.get_column_letter(s_col)
+
+                s_period_formula = f"=YEAR({latest_col_letter}1) & \"/\" & YEAR({mid_col_letter}1)"
+                analysis_ws[f'{s_col_letter}1'] = s_period_formula
+                analysis_ws[f'{s_col_letter}2'] = ''
+
+                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                  total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+                    ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                    ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                  check1_row_num, check2_row_num, roa_row_num]:
+                    if source_row == check2_row_num:
+                        continue
+                    ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                analysis_ws[f'{s_col_letter}{yoy_header_row_num}'] = f'={s_col_letter}1'
+
+                for idx, row_num in enumerate(yoy_rows_basic):
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                     total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
+                    analysis_ws[f'{s_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_calc):
+                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
+                    analysis_ws[f'{s_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_roe):
+                    source_cagr_row = source_rows_roe[idx]
+                    if source_cagr_row == check2_row_num:
+                        continue
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
+                    analysis_ws[f'{s_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = number_format_percent
+
+                analysis_ws.column_dimensions[s_col_letter].width = 12
+
+                debug_log(f"Added R and S columns for 10+ year data: R={mid_col_letter}/{base_col_letter}, S={latest_col_letter}/{mid_col_letter}")
+
+            else:
+                five_years_ago_col = latest_col - 5
+                five_years_col_letter = openpyxl.utils.get_column_letter(five_years_ago_col)
+                r_col = num_cols + 2
+                r_col_letter = openpyxl.utils.get_column_letter(r_col)
+
+                r_period_formula = f"=YEAR({latest_col_letter}1) & \"/\" & YEAR({five_years_col_letter}1)"
+                analysis_ws[f'{r_col_letter}1'] = r_period_formula
+                analysis_ws[f'{r_col_letter}2'] = ''
+
+                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                  total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+                    ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                    ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                  check1_row_num, check2_row_num, roa_row_num]:
+                    if source_row == check2_row_num:
+                        continue
+                    ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
+                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
+
+                analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
+
+                for idx, row_num in enumerate(yoy_rows_basic):
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                     total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_calc):
+                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                for idx, row_num in enumerate(yoy_rows_roe):
+                    source_cagr_row = source_rows_roe[idx]
+                    if source_cagr_row == check2_row_num:
+                        continue
+                    cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
+                                  f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
+                    analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
+
+                analysis_ws.column_dimensions[r_col_letter].width = 12
+
+                debug_log(f"Added R column for 5-9 year data: R={latest_col_letter}/{five_years_col_letter}")
+
+    debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
+
+
 def add_financial_analysis_sheets(workbook, debug_log=None):
     """
     財務分析シートを追加する（メイン関数）
@@ -913,3 +1636,11 @@ def add_financial_analysis_sheets(workbook, debug_log=None):
             except Exception as e:
                 debug_log(f"Warning: Failed to create ROE analysis sheet for '{sheet_name}': {e}")
                 # ROE分析シート生成に失敗してもメイン処理は継続
+
+    # 主要な経営指標等の推移（単体）シートを検索してROE分析シートを生成
+    for sheet_name in workbook.sheetnames:
+        if '主要な経営指標等の推移' in sheet_name and '単体' in sheet_name and '_' not in sheet_name:
+            try:
+                create_roe_analysis_sheet_non_consolidated(workbook, sheet_name, debug_log)
+            except Exception as e:
+                debug_log(f"Warning: Failed to create ROE analysis sheet for '{sheet_name}': {e}")
