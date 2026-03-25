@@ -296,6 +296,83 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     analysis_ws.freeze_panes = 'B2'
 
     # ============================================================================
+    # 対前年増加率セクション（A23以降）
+    # ============================================================================
+    # 空行（2行）
+    analysis_ws.append([''] * num_cols)
+    analysis_ws.append([''] * num_cols)
+
+    # A23行: "　対前年増加率" ヘッダー
+    yoy_header_row_num = analysis_ws.max_row + 1
+    yoy_header_row = ['　対前年増加率', '']
+    # C列とD列は空欄
+    yoy_header_row.append('')  # C列
+    yoy_header_row.append('')  # D列
+    # E列以降は1行目を参照する数式
+    for col in range(5, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        yoy_header_row.append(f'={col_letter}1')
+    analysis_ws.append(yoy_header_row)
+
+    # 対前年増加率を計算する行の定義
+    # 行24-29: 基本指標（売上高、当期純利益、純資産額、総資産額、自己資本比率、ROE）
+    yoy_rows_basic = []
+    for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                       total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
+        yoy_row_num = analysis_ws.max_row + 1
+        yoy_rows_basic.append(yoy_row_num)
+        yoy_row = [f'=A{source_row}', '']  # A列は元の行を参照
+        yoy_row.append('')  # C列は空（初年度は前年がない）
+        # D列以降: =D{source_row}/C{source_row}-1
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
+            yoy_row.append(formula)
+        analysis_ws.append(yoy_row)
+
+    # 空行
+    analysis_ws.append([''] * num_cols)
+
+    # 行31-33: 計算指標（自己資本、自己資本（平均）、総資産（平均））
+    yoy_rows_calc = []
+    for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+        yoy_row_num = analysis_ws.max_row + 1
+        yoy_rows_calc.append(yoy_row_num)
+        yoy_row = [f'=A{source_row}', '']
+        yoy_row.append('')  # C列は空
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
+            yoy_row.append(formula)
+        analysis_ws.append(yoy_row)
+
+    # 空行
+    analysis_ws.append([''] * num_cols)
+
+    # 行35-41: ROE分析指標
+    yoy_rows_roe = []
+    for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                       check1_row_num, check2_row_num, roa_row_num]:
+        yoy_row_num = analysis_ws.max_row + 1
+        yoy_rows_roe.append(yoy_row_num)
+        yoy_row = [f'=A{source_row}', '']
+        yoy_row.append('')  # C列は空
+        for col in range(4, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
+            yoy_row.append(formula)
+        analysis_ws.append(yoy_row)
+
+    # 対前年増加率セクションの表示形式を設定（パーセント）
+    for col in range(4, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        for row_num in yoy_rows_basic + yoy_rows_calc + yoy_rows_roe:
+            analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_percent
+
+    # ============================================================================
     # 10年前からの増加率計算（Q列）
     # ============================================================================
     # 最新の年の列を特定（最後のデータ列）
@@ -358,44 +435,49 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         # Q2: 空（ヘッダー行）
         analysis_ws[f'{growth_col_letter}2'] = ''
 
-        # Q3-Q8: 基本指標の増加率（年平均成長率 CAGR）
-        # 数式: =(最新/基準)^(1/(COUNTA(F$1:P$1)-1))-1
-        for row_num in target_rows:
-            cagr_formula = (f"=({latest_col_letter}{row_num}/{base_col_letter}{row_num})"
+        # Q3-Q20: 空白（年平均増加率は対前年増加率セクションのQ24-Q41に移動）
+
+        # Q23: "　対前年増加率" ヘッダー（Q1を参照）
+        analysis_ws[f'{growth_col_letter}{yoy_header_row_num}'] = f'={growth_col_letter}1'
+
+        # Q24-Q41: 対前年増加率セクションの年平均増加率（Q3-Q20を移動）
+        # Q24-Q29: 基本指標
+        for idx, row_num in enumerate(yoy_rows_basic):
+            source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                             total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+            cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                           f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
 
-        # Q9: 空行
-        analysis_ws[f'{growth_col_letter}{current_row + 1}'] = ''
+        # Q30: 空行（対応する行30が空行）
+        # （analysis_wsの行30は空行なので何もしない）
 
-        # Q10-Q12: 計算指標の増加率
-        for row_num in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
-            cagr_formula = (f"=({latest_col_letter}{row_num}/{base_col_letter}{row_num})"
+        # Q31-Q33: 計算指標
+        for idx, row_num in enumerate(yoy_rows_calc):
+            source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+            cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                           f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
 
-        # Q13: 空行
-        analysis_ws[f'{growth_col_letter}{current_row + 5}'] = ''
+        # Q34: 空行（対応する行34が空行）
 
-        # Q14-Q20: ROE分析指標の増加率
-        for row_num in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
-                       check1_row_num, roa_row_num]:
-            cagr_formula = (f"=({latest_col_letter}{row_num}/{base_col_letter}{row_num})"
+        # Q35-Q41: ROE分析指標（check2_row_numは除外）
+        source_rows_roe = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                          check1_row_num, check2_row_num, roa_row_num]
+        for idx, row_num in enumerate(yoy_rows_roe):
+            source_cagr_row = source_rows_roe[idx]
+            # check2_row_num（検算2）の場合は空欄
+            if source_cagr_row == check2_row_num:
+                continue
+            cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                           f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
 
         # Q列の列幅を12に設定
         analysis_ws.column_dimensions[growth_col_letter].width = 12
 
-        # Q列の表示形式を設定（パーセント）
-        for row_num in target_rows:
-            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
-
-        for row_num in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
-            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
-
-        for row_num in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
-                       check1_row_num, roa_row_num]:
+        # Q24-Q41: 対前年増加率セクションの年平均増加率の表示形式を設定（パーセント）
+        for row_num in yoy_rows_basic + yoy_rows_calc + yoy_rows_roe:
             analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
 
     debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
