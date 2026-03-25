@@ -34,15 +34,8 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     # 新しいシートを作成
     analysis_ws = workbook.create_sheet(analysis_sheet_name)
 
-    # ヘッダー行をコピー
-    header_row = []
-    for col in range(1, source_ws.max_column + 1):
-        cell = source_ws.cell(1, col)
-        header_row.append(cell.value)
-    analysis_ws.append(header_row)
-
     # 列数を取得
-    num_cols = len(header_row)
+    num_cols = source_ws.max_column
 
     # 参照する行番号を特定（元シートから）
     row_mapping = {}  # 英語名 -> 行番号のマッピング
@@ -67,6 +60,15 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     equity_ratio_row = row_mapping.get(equity_ratio_key)
     roe_row = row_mapping.get(roe_key)
 
+    # 売上高が見つからない場合は、セクションヘッダーの次の行を使用
+    if sales_row is None:
+        header_key = 'jpcrp_cor_BusinessResultsOfGroupHeading'
+        header_row_num = row_mapping.get(header_key)
+        if header_row_num:
+            # ヘッダーの次の行を売上高として使用
+            sales_row = header_row_num + 1
+            debug_log(f"Sales row not found, using first item after header (row {sales_row})")
+
     # ROE分析に必要な項目がすべて存在するかチェック
     required_items = {
         '売上高': sales_row,
@@ -80,28 +82,33 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         debug_log(f"ROE analysis skipped for '{source_sheet_name}': missing items: {', '.join(missing_items)}")
         return
 
-    # セクションヘッダー
-    analysis_ws.append(['　連結経営指標等', 'jpcrp_cor_BusinessResultsOfGroupHeading'] + [''] * (num_cols - 2))
-
-    # 基本指標（元シートから参照）
-    def add_reference_row(label, english_name, source_row_num):
-        """元シートのデータを参照する行を追加"""
-        if source_row_num is None:
-            return
-        row_data = [label, english_name]
-        for col in range(3, num_cols + 1):
+    # ヘッダー行と基本指標をすべて元シートから参照する形で追加
+    def add_reference_row_full(source_row_num):
+        """元シートの行全体を参照する行を追加"""
+        row_data = []
+        for col in range(1, num_cols + 1):
             col_letter = openpyxl.utils.get_column_letter(col)
             # 元シートのセルを参照する数式
-            formula = f"=IF(ISBLANK('{source_sheet_name}'!{col_letter}{source_row_num}),\"\",'{source_sheet_name}'!{col_letter}{source_row_num})"
+            formula = f"='{source_sheet_name}'!{col_letter}{source_row_num}"
             row_data.append(formula)
         analysis_ws.append(row_data)
 
-    add_reference_row('　　　売上高', sales_key, sales_row)
-    add_reference_row('　　　親会社株主に帰属する当期純利益又は親会社株主に帰属する当期純損失（△）', profit_key, profit_row)
-    add_reference_row('　　　純資産額', net_assets_key, net_assets_row)
-    add_reference_row('　　　総資産額', total_assets_key, total_assets_row)
-    add_reference_row('　　　自己資本比率', equity_ratio_key, equity_ratio_row)
-    add_reference_row('　　　自己資本利益率', roe_key, roe_row)
+    # 1行目: ヘッダー（勘定科目、項目（英名）など）
+    add_reference_row_full(1)
+
+    # 2行目: セクションヘッダー（連結経営指標等）
+    header_key = 'jpcrp_cor_BusinessResultsOfGroupHeading'
+    header_row_num = row_mapping.get(header_key)
+    if header_row_num:
+        add_reference_row_full(header_row_num)
+
+    # 3-8行目: 基本指標（元シートから参照）
+    add_reference_row_full(sales_row)
+    add_reference_row_full(profit_row)
+    add_reference_row_full(net_assets_row)
+    add_reference_row_full(total_assets_row)
+    add_reference_row_full(equity_ratio_row)
+    add_reference_row_full(roe_row)
 
     # 現在の行番号を記録（上記で追加した行の位置）
     current_row = analysis_ws.max_row
@@ -270,6 +277,126 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
         # 検算2: パーセント（実際はTRUE/FALSEだが元シートに合わせる）
         analysis_ws[f'{col_letter}{check2_row_num}'].number_format = number_format_percent
+
+    # ============================================================================
+    # 列幅の設定とウィンドウ枠の固定
+    # ============================================================================
+    # A列: 幅28
+    analysis_ws.column_dimensions['A'].width = 28
+
+    # B列: 非表示
+    analysis_ws.column_dimensions['B'].hidden = True
+
+    # C列以降（年度の列）: 幅12
+    for col in range(3, num_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        analysis_ws.column_dimensions[col_letter].width = 12
+
+    # B2でウィンドウ枠を固定
+    analysis_ws.freeze_panes = 'B2'
+
+    # ============================================================================
+    # 10年前からの増加率計算（Q列）
+    # ============================================================================
+    # 最新の年の列を特定（最後のデータ列）
+    latest_col = num_cols
+    latest_col_letter = openpyxl.utils.get_column_letter(latest_col)
+
+    # 10年前の列を特定（基準は3列目から）
+    # 基準となる5つの指標がすべて揃っているかチェック
+    target_rows = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                   total_assets_analysis_row, equity_ratio_analysis_row]
+
+    # 10年前（11列前）のデータがあるかチェック（最古は3列目=C列）
+    base_col = None
+    ten_years_ago_col = latest_col - 10  # 10年前の列
+
+    if ten_years_ago_col >= 3:  # C列以降であればチェック
+        # 10年前のデータが5つの指標すべてで揃っているかチェック
+        all_data_exists = True
+        ten_years_col_letter = openpyxl.utils.get_column_letter(ten_years_ago_col)
+
+        for row_num in target_rows:
+            cell_formula = analysis_ws[f'{ten_years_col_letter}{row_num}'].value
+            # 空欄や数式でない場合はデータなしと判断
+            if not cell_formula:
+                all_data_exists = False
+                break
+
+        if all_data_exists:
+            base_col = ten_years_ago_col
+            debug_log(f"Using 10-year comparison: column {ten_years_col_letter}")
+
+    # 10年前のデータがない場合は、最長の年で計算
+    if base_col is None:
+        # 3列目（C列）から順にチェックして、5つの指標がすべて揃っている最古の列を探す
+        for col in range(3, latest_col):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            all_data_exists = True
+
+            for row_num in target_rows:
+                cell_formula = analysis_ws[f'{col_letter}{row_num}'].value
+                if not cell_formula:
+                    all_data_exists = False
+                    break
+
+            if all_data_exists:
+                base_col = col
+                debug_log(f"Using longest available period: column {col_letter}")
+                break
+
+    # 増加率列を追加（Q列 = num_cols + 1）
+    if base_col is not None:
+        growth_col = num_cols + 1
+        growth_col_letter = openpyxl.utils.get_column_letter(growth_col)
+        base_col_letter = openpyxl.utils.get_column_letter(base_col)
+
+        # Q1: 期間表示（例: "2024/2014"）
+        period_formula = f"=YEAR({latest_col_letter}1) & \"/\" & YEAR({base_col_letter}1)"
+        analysis_ws[f'{growth_col_letter}1'] = period_formula
+
+        # Q2: 空（ヘッダー行）
+        analysis_ws[f'{growth_col_letter}2'] = ''
+
+        # Q3-Q8: 基本指標の増加率（年平均成長率 CAGR）
+        # 数式: =(最新/基準)^(1/(COUNTA(F$1:P$1)-1))-1
+        for row_num in target_rows:
+            cagr_formula = (f"=({latest_col_letter}{row_num}/{base_col_letter}{row_num})"
+                          f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
+            analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
+
+        # Q9: 空行
+        analysis_ws[f'{growth_col_letter}{current_row + 1}'] = ''
+
+        # Q10-Q12: 計算指標の増加率
+        for row_num in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+            cagr_formula = (f"=({latest_col_letter}{row_num}/{base_col_letter}{row_num})"
+                          f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
+            analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
+
+        # Q13: 空行
+        analysis_ws[f'{growth_col_letter}{current_row + 5}'] = ''
+
+        # Q14-Q20: ROE分析指標の増加率
+        for row_num in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                       check1_row_num, roa_row_num]:
+            cagr_formula = (f"=({latest_col_letter}{row_num}/{base_col_letter}{row_num})"
+                          f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
+            analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
+
+        # Q列の列幅を12に設定
+        analysis_ws.column_dimensions[growth_col_letter].width = 12
+
+        # Q列の表示形式を設定（パーセント）
+        for row_num in target_rows:
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
+
+        for row_num in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
+
+        for row_num in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                       check1_row_num, roa_row_num]:
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
 
     debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
 
