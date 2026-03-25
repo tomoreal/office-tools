@@ -35,7 +35,9 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     analysis_ws = workbook.create_sheet(analysis_sheet_name)
 
     # 列数を取得
-    num_cols = source_ws.max_column
+    # CAGR列（Q列=17列目）を確保するため、最低でも16列（P列まで）確保する
+    source_cols = source_ws.max_column
+    num_cols = max(source_cols, 16)  # 最低でもP列（16列目）まで確保
 
     # 参照する行番号を特定（元シートから）
     row_mapping = {}  # 英語名 -> 行番号のマッピング
@@ -44,26 +46,91 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         if english_name:
             row_mapping[english_name] = row
 
-    # 必要な勘定科目の英語名
-    sales_key = 'jpcrp_cor_NetSalesSummaryOfBusinessResults'  # 売上高
-    profit_key = 'jpcrp_cor_ProfitLossAttributableToOwnersOfParentSummaryOfBusinessResults'  # 親会社株主に帰属する当期純利益
-    net_assets_key = 'jpcrp_cor_NetAssetsSummaryOfBusinessResults'  # 純資産額
-    total_assets_key = 'jpcrp_cor_TotalAssetsSummaryOfBusinessResults'  # 総資産額
-    equity_ratio_key = 'jpcrp_cor_EquityToAssetRatioSummaryOfBusinessResults'  # 自己資本比率
-    roe_key = 'jpcrp_cor_RateOfReturnOnEquitySummaryOfBusinessResults'  # 自己資本利益率
+    def find_row_by_keywords(keywords_list, item_name):
+        """
+        複数のキーワード候補で行を検索（部分一致）
 
-    # 元シートの行番号を取得
-    sales_row = row_mapping.get(sales_key)
-    profit_row = row_mapping.get(profit_key)
-    net_assets_row = row_mapping.get(net_assets_key)
-    total_assets_row = row_mapping.get(total_assets_key)
-    equity_ratio_row = row_mapping.get(equity_ratio_key)
-    roe_row = row_mapping.get(roe_key)
+        Args:
+            keywords_list: キーワードのリスト（優先度順）
+            item_name: 項目名（ログ用）
+
+        Returns:
+            見つかった行番号、または None
+        """
+        for keywords in keywords_list:
+            # キーワードが文字列の場合はリストに変換
+            if isinstance(keywords, str):
+                keywords = [keywords]
+
+            # 候補を検索（すべてのキーワードを含む英語名）
+            candidates = []
+            for eng_name, row_num in row_mapping.items():
+                if all(kw in eng_name for kw in keywords):
+                    candidates.append((eng_name, row_num))
+
+            if candidates:
+                # 最初の候補を使用
+                eng_name, row_num = candidates[0]
+                if len(candidates) > 1:
+                    debug_log(f"{item_name}: multiple matches found, using '{eng_name}' (row {row_num})")
+                else:
+                    debug_log(f"{item_name}: found '{eng_name}' (row {row_num})")
+                return row_num
+
+        return None
+
+    # 必要な勘定科目のキーワード候補（優先度順）
+    sales_keywords = [
+        ['NetSales', 'Summary'],  # 売上高（標準）
+        ['NetSales'],  # 売上高（汎用）
+        ['Sales', 'Summary'],  # 代替パターン
+    ]
+
+    profit_keywords = [
+        ['ProfitLoss', 'OwnersOfParent', 'Summary'],  # 親会社株主に帰属する当期純利益（標準）
+        ['ProfitLoss', 'Parent', 'Summary'],  # 代替パターン1
+        ['Profit', 'OwnersOfParent'],  # 代替パターン2
+        ['ProfitLoss', 'Summary'],  # 汎用
+    ]
+
+    net_assets_keywords = [
+        ['NetAssets', 'Summary'],  # 純資産額（標準）
+        ['NetAssets'],  # 純資産額（汎用）
+    ]
+
+    total_assets_keywords = [
+        ['TotalAssets', 'Summary'],  # 総資産額（標準）
+        ['TotalAssets'],  # 総資産額（汎用）
+    ]
+
+    equity_ratio_keywords = [
+        ['EquityToAssetRatio', 'Summary'],  # 自己資本比率（標準）
+        ['EquityToAsset', 'Summary'],  # 代替パターン
+        ['EquityRatio'],  # 汎用
+    ]
+
+    roe_keywords = [
+        ['RateOfReturnOnEquity', 'Summary'],  # 自己資本利益率（標準）
+        ['ReturnOnEquity', 'Summary'],  # 代替パターン
+        ['ROE'],  # 汎用
+    ]
+
+    # 元シートの行番号を取得（部分一致検索）
+    sales_row = find_row_by_keywords(sales_keywords, '売上高')
+    profit_row = find_row_by_keywords(profit_keywords, '当期純利益')
+    net_assets_row = find_row_by_keywords(net_assets_keywords, '純資産額')
+    total_assets_row = find_row_by_keywords(total_assets_keywords, '総資産額')
+    equity_ratio_row = find_row_by_keywords(equity_ratio_keywords, '自己資本比率')
+    roe_row = find_row_by_keywords(roe_keywords, 'ROE')
 
     # 売上高が見つからない場合は、セクションヘッダーの次の行を使用
     if sales_row is None:
-        header_key = 'jpcrp_cor_BusinessResultsOfGroupHeading'
-        header_row_num = row_mapping.get(header_key)
+        # ヘッダーを部分一致で検索
+        header_keywords = [
+            ['BusinessResults', 'Heading'],
+            ['BusinessResults'],
+        ]
+        header_row_num = find_row_by_keywords(header_keywords, 'セクションヘッダー')
         if header_row_num:
             # ヘッダーの次の行を売上高として使用
             sales_row = header_row_num + 1
@@ -97,10 +164,23 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     add_reference_row_full(1)
 
     # 2行目: セクションヘッダー（連結経営指標等）
-    header_key = 'jpcrp_cor_BusinessResultsOfGroupHeading'
-    header_row_num = row_mapping.get(header_key)
+    # A列とB列のみ参照、C列以降は空欄
+    header_keywords = [
+        ['BusinessResults', 'Heading'],
+        ['BusinessResults'],
+    ]
+    header_row_num = find_row_by_keywords(header_keywords, 'セクションヘッダー')
     if header_row_num:
-        add_reference_row_full(header_row_num)
+        # A列とB列のみ参照
+        row_data = []
+        for col in range(1, 3):  # A列とB列のみ
+            col_letter = openpyxl.utils.get_column_letter(col)
+            formula = f"='{source_sheet_name}'!{col_letter}{header_row_num}"
+            row_data.append(formula)
+        # C列以降は空欄
+        for col in range(3, num_cols + 1):
+            row_data.append('')
+        analysis_ws.append(row_data)
 
     # 3-8行目: 基本指標（元シートから参照）
     add_reference_row_full(sales_row)
@@ -305,11 +385,10 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     # A23行: "　対前年増加率" ヘッダー
     yoy_header_row_num = analysis_ws.max_row + 1
     yoy_header_row = ['　対前年増加率', '']
-    # C列とD列は空欄
+    # C列は空欄（対前年増加率の初年度なので前年がない）
     yoy_header_row.append('')  # C列
-    yoy_header_row.append('')  # D列
-    # E列以降は1行目を参照する数式
-    for col in range(5, num_cols + 1):
+    # D列以降は1行目を参照する数式
+    for col in range(4, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
         yoy_header_row.append(f'={col_letter}1')
     analysis_ws.append(yoy_header_row)
@@ -323,8 +402,9 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         yoy_rows_basic.append(yoy_row_num)
         yoy_row = [f'=A{source_row}', '']  # A列は元の行を参照
         yoy_row.append('')  # C列は空（初年度は前年がない）
-        # D列以降: =D{source_row}/C{source_row}-1
-        for col in range(4, num_cols + 1):
+        yoy_row.append('')  # D列は空（基準年なので前年がない）
+        # E列以降: =E{source_row}/D{source_row}-1
+        for col in range(5, num_cols + 1):
             col_letter = openpyxl.utils.get_column_letter(col)
             prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
             formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
@@ -341,7 +421,9 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         yoy_rows_calc.append(yoy_row_num)
         yoy_row = [f'=A{source_row}', '']
         yoy_row.append('')  # C列は空
-        for col in range(4, num_cols + 1):
+        yoy_row.append('')  # D列は空（基準年なので前年がない）
+        # E列以降: =E{source_row}/D{source_row}-1
+        for col in range(5, num_cols + 1):
             col_letter = openpyxl.utils.get_column_letter(col)
             prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
             formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
@@ -359,15 +441,24 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         yoy_rows_roe.append(yoy_row_num)
         yoy_row = [f'=A{source_row}', '']
         yoy_row.append('')  # C列は空
-        for col in range(4, num_cols + 1):
-            col_letter = openpyxl.utils.get_column_letter(col)
-            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
-            formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
-            yoy_row.append(formula)
+
+        # check2_row_num（検算2）の場合は全列空欄
+        if source_row == check2_row_num:
+            for col in range(4, num_cols + 1):
+                yoy_row.append('')
+        else:
+            yoy_row.append('')  # D列は空（基準年なので前年がない）
+            # E列以降: =E{source_row}/D{source_row}-1
+            for col in range(5, num_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+                formula = f"={col_letter}{source_row}/{prev_col_letter}{source_row}-1"
+                yoy_row.append(formula)
         analysis_ws.append(yoy_row)
 
     # 対前年増加率セクションの表示形式を設定（パーセント）
-    for col in range(4, num_cols + 1):
+    # E列以降（D列は空欄なので除外）
+    for col in range(5, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
         for row_num in yoy_rows_basic + yoy_rows_calc + yoy_rows_roe:
             analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_percent
@@ -376,51 +467,116 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     # 10年前からの増加率計算（Q列）
     # ============================================================================
     # 最新の年の列を特定（最後のデータ列）
-    latest_col = num_cols
+    # source_colsは元シートの実際の列数、num_colsはパディングを含む列数
+    latest_col = source_cols
     latest_col_letter = openpyxl.utils.get_column_letter(latest_col)
 
-    # 10年前の列を特定（基準は3列目から）
     # 基準となる5つの指標がすべて揃っているかチェック
     target_rows = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
                    total_assets_analysis_row, equity_ratio_analysis_row]
 
-    # 10年前（11列前）のデータがあるかチェック（最古は3列目=C列）
-    base_col = None
-    ten_years_ago_col = latest_col - 10  # 10年前の列
-
-    if ten_years_ago_col >= 3:  # C列以降であればチェック
-        # 10年前のデータが5つの指標すべてで揃っているかチェック
-        all_data_exists = True
-        ten_years_col_letter = openpyxl.utils.get_column_letter(ten_years_ago_col)
-
+    # Helper function to check if a column has all required data
+    def has_all_data(col_num):
+        """Check if the specified column has all required data in the source sheet"""
+        col_letter = openpyxl.utils.get_column_letter(col_num)
         for row_num in target_rows:
-            cell_formula = analysis_ws[f'{ten_years_col_letter}{row_num}'].value
-            # 空欄や数式でない場合はデータなしと判断
+            cell_formula = analysis_ws[f'{col_letter}{row_num}'].value
             if not cell_formula:
-                all_data_exists = False
-                break
+                return False
 
-        if all_data_exists:
-            base_col = ten_years_ago_col
-            debug_log(f"Using 10-year comparison: column {ten_years_col_letter}")
+            # Check the actual data in source sheet
+            if isinstance(cell_formula, str) and cell_formula.startswith('='):
+                try:
+                    parts = cell_formula.split('!')
+                    if len(parts) == 2:
+                        source_cell_ref = parts[1].strip()
+                        source_cell_value = source_ws[source_cell_ref].value
+                        if source_cell_value is None or source_cell_value == '':
+                            return False
+                except Exception:
+                    return False
+        return True
 
-    # 10年前のデータがない場合は、最長の年で計算
-    if base_col is None:
-        # 3列目（C列）から順にチェックして、5つの指標がすべて揃っている最古の列を探す
-        for col in range(3, latest_col):
-            col_letter = openpyxl.utils.get_column_letter(col)
-            all_data_exists = True
+    # Step 1: Find the oldest column (FYa) with all required data
+    oldest_col = None
+    for col in range(3, latest_col):
+        if has_all_data(col):
+            oldest_col = col
+            break
 
-            for row_num in target_rows:
-                cell_formula = analysis_ws[f'{col_letter}{row_num}'].value
-                if not cell_formula:
-                    all_data_exists = False
-                    break
+    if oldest_col is None:
+        # No valid data found
+        base_col = None
+    else:
+        # Step 2: Calculate FYb = FYa + 1 (need previous year for average calculation)
+        fyb_col = oldest_col + 1
 
-            if all_data_exists:
-                base_col = col
-                debug_log(f"Using longest available period: column {col_letter}")
-                break
+        # Step 3: Calculate period: kikan = FYc - FYb
+        kikan = latest_col - fyb_col
+
+        # Step 4: Determine base column based on period
+        if kikan >= 10:
+            # Use 10-year comparison: base = FYc - 10
+            candidate_base_col = latest_col - 10
+
+            # Handle fiscal year change: if multiple periods exist for the same fiscal year,
+            # prefer the earlier one (which represents a full 12-month period)
+            # Example: If 2014/12 and 2014/03 both exist, prefer 2014/03
+            # Check if the previous column (candidate_base_col - 1) has the same year
+            if candidate_base_col > 3:  # C列より右であれば前の列をチェック可能
+                try:
+                    # Get year from candidate and previous column
+                    candidate_letter = openpyxl.utils.get_column_letter(candidate_base_col)
+                    prev_letter = openpyxl.utils.get_column_letter(candidate_base_col - 1)
+
+                    # Use YEAR function in formula to compare years
+                    # Check if previous column has data and same year
+                    if has_all_data(candidate_base_col - 1):
+                        # Get the header cell references
+                        candidate_ref = f"'{source_sheet_name}'!{candidate_letter}1"
+                        prev_ref = f"'{source_sheet_name}'!{prev_letter}1"
+
+                        # Check year values from source sheet
+                        candidate_header = analysis_ws[f'{candidate_letter}1'].value
+                        if isinstance(candidate_header, str) and candidate_header.startswith('='):
+                            # Extract cell reference
+                            parts = candidate_header.split('!')
+                            if len(parts) == 2:
+                                source_cell_ref = parts[1].strip().replace("'", "")
+                                candidate_date = source_ws[source_cell_ref].value
+                                prev_date = source_ws[f'{prev_letter[0] if len(prev_letter)==1 else prev_letter}1'].value
+
+                                # If both dates exist and have same year, use the earlier month
+                                if candidate_date and prev_date:
+                                    if hasattr(candidate_date, 'year') and hasattr(prev_date, 'year'):
+                                        if candidate_date.year == prev_date.year:
+                                            # Same year - use previous column (earlier month = full year period)
+                                            base_col = candidate_base_col - 1
+                                            debug_log(f"Fiscal year change detected: using {prev_letter} instead of {candidate_letter} (same year {candidate_date.year})")
+                                        else:
+                                            base_col = candidate_base_col
+                                    else:
+                                        base_col = candidate_base_col
+                                else:
+                                    base_col = candidate_base_col
+                        else:
+                            base_col = candidate_base_col
+                    else:
+                        base_col = candidate_base_col
+                except Exception:
+                    # If any error occurs, fall back to original candidate
+                    base_col = candidate_base_col
+            else:
+                base_col = candidate_base_col
+
+            base_col_letter = openpyxl.utils.get_column_letter(base_col)
+            debug_log(f"Using 10-year comparison: kikan={kikan}, base column {base_col_letter}")
+        else:
+            # Use longest available period: base = FYb
+            base_col = fyb_col
+            base_col_letter = openpyxl.utils.get_column_letter(base_col)
+            oldest_col_letter = openpyxl.utils.get_column_letter(oldest_col)
+            debug_log(f"Using longest available period: kikan={kikan}, oldest={oldest_col_letter}, base={base_col_letter}")
 
     # 増加率列を追加（Q列 = num_cols + 1）
     if base_col is not None:
@@ -441,12 +597,13 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         analysis_ws[f'{growth_col_letter}{yoy_header_row_num}'] = f'={growth_col_letter}1'
 
         # Q24-Q41: 対前年増加率セクションの年平均増加率（Q3-Q20を移動）
+        # CAGR計算: =(最新値/基準値)^(1/(YEAR(最新)-YEAR(基準)))-1
         # Q24-Q29: 基本指標
         for idx, row_num in enumerate(yoy_rows_basic):
             source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
                              total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
             cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
-                          f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
+                          f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
 
         # Q30: 空行（対応する行30が空行）
@@ -456,7 +613,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         for idx, row_num in enumerate(yoy_rows_calc):
             source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
             cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
-                          f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
+                          f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
 
         # Q34: 空行（対応する行34が空行）
@@ -470,7 +627,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
             if source_cagr_row == check2_row_num:
                 continue
             cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
-                          f"^(1/(COUNTA({base_col_letter}$1:{latest_col_letter}$1)-1))-1")
+                          f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
 
         # Q列の列幅を12に設定
