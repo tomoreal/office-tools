@@ -397,6 +397,106 @@ def file_lock(lock_path, timeout=60):
             except Exception:
                 pass
 
+def http_request_with_retry(url, max_retries=3, timeout=10, delay=1.0):
+    """HTTP request with automatic retry on failure.
+
+    Retries the request up to max_retries times with exponential backoff.
+    This handles transient network errors, timeouts, and temporary server issues.
+
+    Args:
+        url: URL to fetch
+        max_retries: Maximum number of retry attempts (default: 3)
+        timeout: Request timeout in seconds (default: 10)
+        delay: Initial delay between retries in seconds (default: 1.0)
+
+    Returns:
+        response object from urllib.request.urlopen
+
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    last_error = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            debug_log(f"HTTP request to {url} (attempt {attempt}/{max_retries})")
+            response = urllib.request.urlopen(url, timeout=timeout)
+            if attempt > 1:
+                debug_log(f"SUCCESS: HTTP request succeeded on attempt {attempt}")
+            return response
+        except Exception as e:
+            last_error = e
+            error_msg = str(e)
+            debug_log(f"ERROR: HTTP request failed (attempt {attempt}/{max_retries}): {error_msg}")
+
+            if attempt < max_retries:
+                # Exponential backoff: 1s, 2s, 4s, ...
+                wait_time = delay * (2 ** (attempt - 1))
+                debug_log(f"Retrying in {wait_time:.1f} seconds...")
+                time.sleep(wait_time)
+            else:
+                debug_log(f"FAILED: All {max_retries} retry attempts exhausted for {url}")
+
+    # All retries failed
+    raise Exception(f"Failed to fetch {url} after {max_retries} attempts: {last_error}")
+
+def http_retrieve_with_retry(url, filepath, max_retries=3, timeout=30, delay=1.0):
+    """Download file with automatic retry on failure.
+
+    Similar to http_request_with_retry but for file downloads using urlretrieve.
+
+    Args:
+        url: URL to download
+        filepath: Local path to save the file
+        max_retries: Maximum number of retry attempts (default: 3)
+        timeout: Request timeout in seconds (default: 30)
+        delay: Initial delay between retries in seconds (default: 1.0)
+
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    import socket
+
+    # Set global timeout for urlretrieve (it doesn't accept timeout parameter)
+    original_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(timeout)
+
+    last_error = None
+
+    try:
+        for attempt in range(1, max_retries + 1):
+            try:
+                debug_log(f"Downloading {url} to {filepath} (attempt {attempt}/{max_retries})")
+                urllib.request.urlretrieve(url, filepath)
+                if attempt > 1:
+                    debug_log(f"SUCCESS: Download succeeded on attempt {attempt}")
+                return
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                debug_log(f"ERROR: Download failed (attempt {attempt}/{max_retries}): {error_msg}")
+
+                # Clean up partial download
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                        debug_log(f"Removed partial download: {filepath}")
+                    except Exception:
+                        pass
+
+                if attempt < max_retries:
+                    wait_time = delay * (2 ** (attempt - 1))
+                    debug_log(f"Retrying in {wait_time:.1f} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    debug_log(f"FAILED: All {max_retries} retry attempts exhausted for {url}")
+
+        # All retries failed
+        raise Exception(f"Failed to download {url} after {max_retries} attempts: {last_error}")
+    finally:
+        # Restore original timeout
+        socket.setdefaulttimeout(original_timeout)
+
 def build_suffix_index(labels_map):
     """Build a suffix index for O(1) label lookups.
 
@@ -608,11 +708,11 @@ def fetch_taxonomy_url(year):
         str: Taxonomy ZIP URL, or None if not found
     """
     try:
-        # Step 1: Fetch index page to find the year's detail page
+        # Step 1: Fetch index page to find the year's detail page (with retry)
         index_url = 'https://www.fsa.go.jp/search/EDINET_Taxonomy_All.html'
         debug_log(f"Fetching taxonomy index from {index_url}")
 
-        with urllib.request.urlopen(index_url, timeout=10) as response:
+        with http_request_with_retry(index_url, max_retries=3, timeout=10) as response:
             html = response.read().decode('utf-8', errors='ignore')
 
         # Step 2: Parse to find the link for requested year
@@ -629,8 +729,8 @@ def fetch_taxonomy_url(year):
         detail_url = f'https://www.fsa.go.jp{detail_path}'
         debug_log(f"Found detail page: {detail_url}")
 
-        # Step 3: Fetch detail page to find ZIP download link
-        with urllib.request.urlopen(detail_url, timeout=10) as response:
+        # Step 3: Fetch detail page to find ZIP download link (with retry)
+        with http_request_with_retry(detail_url, max_retries=3, timeout=10) as response:
             detail_html = response.read().decode('utf-8', errors='ignore')
 
         # Pattern: <a href="/search/YYYYMMDD/1c_Taxonomy.zip">
@@ -744,7 +844,7 @@ def get_standard_labels(year, cache_dir=None):
                 if not os.path.exists(os.path.join(tax_dir, 'taxonomy')): # rudimentary check for extracted data
                     vprint(f"Downloading EDINET taxonomy for {year} (takes a moment)...")
                     try:
-                        urllib.request.urlretrieve(taxonomy_url, zip_path)
+                        http_retrieve_with_retry(taxonomy_url, zip_path, max_retries=3, timeout=30)
                         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                             # Check for ZIP bomb before extraction
                             check_zip_bomb(zip_ref)

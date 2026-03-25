@@ -33,6 +33,7 @@ FILES=(
 #    "templates"
 #    "app.py"
     "convert_xbrl_to_excel.py"
+    "financial_analysis.py"
 )
 
 # s211へアップロード
