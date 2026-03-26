@@ -472,21 +472,21 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # The year is in analysis_ws column B, row sales_end_row
     year_value_for_title = analysis_ws.cell(sales_end_row, 2).value
 
-    # Row 2: Growth rate (売上高対前年増加率)
-    # A: Year reference, B: Label, C-J: Growth rate values
-    growth_data_row = [f"=B{growth_end_row}", f"=A{growth_end_row}"]
-    for col_idx in range(3, chart_end_col + 1):
-        col_letter = get_column_letter(col_idx)
-        growth_data_row.append(f"={col_letter}{growth_end_row}")
-    ppm_ws.append(growth_data_row)
-
-    # Row 3: Profit margin (売上高利益率)
+    # Row 2: Profit margin (売上高利益率)
     # A: Year reference, B: Label, C-J: Profit margin values
     margin_data_row = [f"=B{margin_end_row}", f"=A{margin_end_row}"]
     for col_idx in range(3, chart_end_col + 1):
         col_letter = get_column_letter(col_idx)
         margin_data_row.append(f"={col_letter}{margin_end_row}")
     ppm_ws.append(margin_data_row)
+
+    # Row 3: Growth rate (売上高対前年増加率)
+    # A: Year reference, B: Label, C-J: Growth rate values
+    growth_data_row = [f"=B{growth_end_row}", f"=A{growth_end_row}"]
+    for col_idx in range(3, chart_end_col + 1):
+        col_letter = get_column_letter(col_idx)
+        growth_data_row.append(f"={col_letter}{growth_end_row}")
+    ppm_ws.append(growth_data_row)
 
     # Row 4: Sales (売上)
     # A: Year reference, B: Label (TRIM), C-J: Sales values
@@ -502,13 +502,13 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     data_end_row = ppm_ws.max_row
 
     # Apply formatting to consolidated data area
-    # Row with growth rate: percentage format
+    # Row with profit margin: percentage format
     for col_idx in range(3, chart_end_col + 1):
         col_letter = get_column_letter(col_idx)
         cell = ppm_ws[f'{col_letter}{data_start_row + 1}']
         cell.number_format = '0%'
 
-    # Row with profit margin: percentage format
+    # Row with growth rate: percentage format
     for col_idx in range(3, chart_end_col + 1):
         col_letter = get_column_letter(col_idx)
         cell = ppm_ws[f'{col_letter}{data_start_row + 2}']
@@ -554,12 +554,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     chart.width = 15
 
     # Create data series
-    # Y values: Growth rate (row data_start_row + 1, columns C to chart_end_col)
-    # X values: Profit margin (row data_start_row + 2, columns C to chart_end_col)
+    # X values: Profit margin (row data_start_row + 1, columns C to chart_end_col)
+    # Y values: Growth rate (row data_start_row + 2, columns C to chart_end_col)
     # Bubble size: Sales (row data_start_row + 3, columns C to chart_end_col)
 
-    yvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 1, max_col=chart_end_col, max_row=data_start_row + 1)
-    xvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 2, max_col=chart_end_col, max_row=data_start_row + 2)
+    xvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 1, max_col=chart_end_col, max_row=data_start_row + 1)
+    yvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 2, max_col=chart_end_col, max_row=data_start_row + 2)
     size = Reference(ppm_ws, min_col=3, min_row=data_start_row + 3, max_col=chart_end_col, max_row=data_start_row + 3)
 
     # For bubble charts, the Series API is: Series(values=yvalues, xvalues=xvalues, zvalues=size)
