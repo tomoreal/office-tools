@@ -378,7 +378,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     check2_row.append('')  # 最初の期
     for col in range(4, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
-        formula = f"=ROUND({col_letter}{roe_calc_row_num},1)=ROUND({col_letter}{check1_row_num},1)"
+        formula = f"=ROUND({col_letter}{roe_calc_row_num},3)=ROUND({col_letter}{check1_row_num},3)"
         check2_row.append(formula)
     analysis_ws.append(check2_row)
 
@@ -1263,7 +1263,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
     check2_row.append('')
     for col in range(4, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
-        formula = f"=ROUND({col_letter}{roe_calc_row_num},1)=ROUND({col_letter}{check1_row_num},1)"
+        formula = f"=ROUND({col_letter}{roe_calc_row_num},3)=ROUND({col_letter}{check1_row_num},3)"
         check2_row.append(formula)
     analysis_ws.append(check2_row)
 
