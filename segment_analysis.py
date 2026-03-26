@@ -522,7 +522,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     # ===== Create Bubble Chart =====
     chart = BubbleChart()
-    chart.style = 18  # Use a predefined style
+    chart.style = 2  # Use a predefined style
 
     # Set chart title dynamically based on the latest year
     # Use the year_value_for_title we got earlier when creating the consolidated header
@@ -553,6 +553,22 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     chart.height = 15
     chart.width = 15
 
+    # Configure X-axis (売上高利益率)
+    chart.x_axis.title = "売上高利益率"
+    #chart.x_axis.majorGridlines = None  # Remove gridlines if needed
+
+    # Configure Y-axis (売上高対前年増加率)
+    chart.y_axis.title = "売上高対前年増加率"
+    #chart.y_axis.majorGridlines = None  # Remove gridlines if needed
+
+    # 目盛ラベル表示
+    chart.x_axis.tickLblPos = "nextTo"
+    chart.y_axis.tickLblPos = "nextTo"
+
+    # 軸自体も明示的に有効化
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+
     # Create data series
     # X values: Profit margin (row data_start_row + 1, columns C to chart_end_col)
     # Y values: Growth rate (row data_start_row + 2, columns C to chart_end_col)
@@ -579,4 +595,131 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     chart_row = data_end_row + 1
     ppm_ws.add_chart(chart, f'B{chart_row}')
 
-    debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name} with {ppm_ws.max_row} rows and bubble chart")
+    # ===== Create 5-year-old data section =====
+    # Add blank row separator
+    ppm_ws.append([""] * max_col)
+
+    # Find the row for 5 years ago (6th row from the end in sales data, since last row is latest)
+    # Sales data is in rows sales_start_row to sales_end_row (11 rows for 11 years)
+    # 5 years ago would be at: sales_end_row - 5
+    five_years_ago_offset = 5
+    if (sales_end_row - sales_start_row + 1) > five_years_ago_offset:
+        five_year_sales_row = sales_end_row - five_years_ago_offset
+        five_year_profit_row = profit_end_row - five_years_ago_offset
+        five_year_growth_row = growth_end_row - five_years_ago_offset
+        five_year_margin_row = margin_end_row - five_years_ago_offset
+
+        # Data consolidation for 5-year-old data starts here
+        five_year_data_start_row = ppm_ws.max_row + 1
+
+        # Get the year value from 5 years ago for chart title
+        year_value_five_years_ago = analysis_ws.cell(five_year_sales_row, 2).value
+
+        # Row 1: Year and Segment names
+        five_year_header = [f"=B{five_year_sales_row}", "セグメント名"]
+        for col_idx in range(3, chart_end_col + 1):
+            col_letter = get_column_letter(col_idx)
+            five_year_header.append(f"={col_letter}1")
+        # Replace last column header with "計"
+        five_year_header[-1] = "計"
+        ppm_ws.append(five_year_header)
+
+        # Row 2: Profit margin (売上高利益率)
+        five_year_margin_data = [f"=B{five_year_margin_row}", f"=A{five_year_margin_row}"]
+        for col_idx in range(3, chart_end_col + 1):
+            col_letter = get_column_letter(col_idx)
+            five_year_margin_data.append(f"={col_letter}{five_year_margin_row}")
+        ppm_ws.append(five_year_margin_data)
+
+        # Row 3: Growth rate (売上高対前年増加率)
+        five_year_growth_data = [f"=B{five_year_growth_row}", f"=A{five_year_growth_row}"]
+        for col_idx in range(3, chart_end_col + 1):
+            col_letter = get_column_letter(col_idx)
+            five_year_growth_data.append(f"={col_letter}{five_year_growth_row}")
+        ppm_ws.append(five_year_growth_data)
+
+        # Row 4: Sales (売上)
+        five_year_sales_data = [f"=B{five_year_sales_row}", f"=TRIM(A{five_year_sales_row})"]
+        for col_idx in range(3, chart_end_col):
+            col_letter = get_column_letter(col_idx)
+            five_year_sales_data.append(f"={col_letter}{five_year_sales_row}")
+        # Last column: Scale down by 1%
+        five_year_sales_data.append(f"={last_col_letter}{five_year_sales_row}*1%")
+        ppm_ws.append(five_year_sales_data)
+
+        five_year_data_end_row = ppm_ws.max_row
+
+        # Apply formatting to 5-year-old data area
+        # Row with profit margin: percentage format
+        for col_idx in range(3, chart_end_col + 1):
+            col_letter = get_column_letter(col_idx)
+            cell = ppm_ws[f'{col_letter}{five_year_data_start_row + 1}']
+            cell.number_format = '0%'
+
+        # Row with growth rate: percentage format
+        for col_idx in range(3, chart_end_col + 1):
+            col_letter = get_column_letter(col_idx)
+            cell = ppm_ws[f'{col_letter}{five_year_data_start_row + 2}']
+            cell.number_format = '0%'
+
+        # Row with sales: thousand separator format
+        for col_idx in range(3, chart_end_col + 1):
+            col_letter = get_column_letter(col_idx)
+            cell = ppm_ws[f'{col_letter}{five_year_data_start_row + 3}']
+            cell.number_format = r'#,##0_);[Red](#,##0)'
+
+        # ===== Create Bubble Chart for 5-year-old data =====
+        chart_5y = BubbleChart()
+        chart_5y.style = 2
+
+        # Set chart title for 5 years ago
+        if year_value_five_years_ago:
+            if isinstance(year_value_five_years_ago, str):
+                import datetime
+                try:
+                    if '-' in year_value_five_years_ago:
+                        date_obj = datetime.datetime.strptime(year_value_five_years_ago, '%Y-%m-%d')
+                        year_str_5y = date_obj.strftime('%Y/%m')
+                    else:
+                        year_str_5y = year_value_five_years_ago[:7].replace('-', '/')
+                except:
+                    year_str_5y = ""
+            elif hasattr(year_value_five_years_ago, 'strftime'):
+                year_str_5y = year_value_five_years_ago.strftime('%Y/%m')
+            else:
+                year_str_5y = ""
+        else:
+            year_str_5y = ""
+
+        chart_5y.title = f"PPM分析 {year_str_5y}"
+
+        # Configure chart
+        chart_5y.height = 15
+        chart_5y.width = 15
+
+        # Configure axes
+        chart_5y.x_axis.title = "売上高利益率"
+        chart_5y.y_axis.title = "売上高対前年増加率"
+        chart_5y.x_axis.tickLblPos = "nextTo"
+        chart_5y.y_axis.tickLblPos = "nextTo"
+        chart_5y.x_axis.delete = False
+        chart_5y.y_axis.delete = False
+
+        # Create data series for 5-year-old data
+        xvalues_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 1, max_col=chart_end_col, max_row=five_year_data_start_row + 1)
+        yvalues_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 2, max_col=chart_end_col, max_row=five_year_data_start_row + 2)
+        size_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 3, max_col=chart_end_col, max_row=five_year_data_start_row + 3)
+
+        series_5y = Series(values=yvalues_5y, xvalues=xvalues_5y, zvalues=size_5y, title="")
+        chart_5y.legend = None
+        chart_5y.series.append(series_5y)
+
+        # Position the 5-year chart to the right of the current chart
+        # Current chart is at column B (column 2), width 15 columns
+        # Position new chart at column Q (column 17) to give some spacing
+        chart_5y_col = 'Q'
+        ppm_ws.add_chart(chart_5y, f'{chart_5y_col}{chart_row}')
+
+        debug_log(f"[PPM Analysis] Added 5-year-old data section and chart")
+
+    debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name} with {ppm_ws.max_row} rows and bubble chart(s)")
