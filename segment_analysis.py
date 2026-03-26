@@ -289,6 +289,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         debug_log: デバッグログ関数
     """
     from openpyxl.utils import get_column_letter
+    from openpyxl.chart import BubbleChart, Reference, Series
+    from openpyxl.chart.label import DataLabelList
 
     # PPM分析シート名を生成
     ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
@@ -432,4 +434,169 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             cell = ppm_ws[f'{col_letter}{row_idx}']
             cell.number_format = '0%'  # Display as percentage (0% format like in sample)
 
-    debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name} with {ppm_ws.max_row} rows")
+    # ===== Create consolidated data area for bubble chart =====
+    # Empty row separators (two rows for spacing)
+    ppm_ws.append([""] * max_col)
+    ppm_ws.append([""] * max_col)
+
+    # Data consolidation starts here (transposed format for chart)
+    data_start_row = ppm_ws.max_row + 1
+
+    # Find the column containing "報告セグメント" in the header row (row 1)
+    # This will be the last column for chart data
+    # We want the column that has JUST "報告セグメント" or ends with it (not combined columns)
+    chart_end_col = max_col
+    for col_idx in range(3, max_col + 1):
+        header_val = analysis_ws.cell(1, col_idx).value
+        if header_val:
+            header_str = str(header_val).strip()
+            # Look for the column that contains "報告セグメント" without "以外" or "及び" or "その他"
+            # This should match columns like "報告セグメント", "報告セグメント合計" etc.
+            if "報告セグメント" in header_str and "以外" not in header_str and "及び" not in header_str:
+                chart_end_col = col_idx
+                break
+
+    # Row 1: Year (A column reference) and Segment names
+    # A50: Year reference from latest sales data
+    # B50: "セグメント名"
+    # C50-J50: Segment names from header row
+    consolidated_header = [f"=B{sales_end_row}", "セグメント名"]
+    for col_idx in range(3, chart_end_col + 1):
+        col_letter = get_column_letter(col_idx)
+        consolidated_header.append(f"={col_letter}1")
+    # Replace last column header with "計"
+    consolidated_header[-1] = "計"
+    ppm_ws.append(consolidated_header)
+
+    # Get the year value from the source for chart title
+    # The year is in analysis_ws column B, row sales_end_row
+    year_value_for_title = analysis_ws.cell(sales_end_row, 2).value
+
+    # Row 2: Growth rate (売上高対前年増加率)
+    # A: Year reference, B: Label, C-J: Growth rate values
+    growth_data_row = [f"=B{growth_end_row}", f"=A{growth_end_row}"]
+    for col_idx in range(3, chart_end_col + 1):
+        col_letter = get_column_letter(col_idx)
+        growth_data_row.append(f"={col_letter}{growth_end_row}")
+    ppm_ws.append(growth_data_row)
+
+    # Row 3: Profit margin (売上高利益率)
+    # A: Year reference, B: Label, C-J: Profit margin values
+    margin_data_row = [f"=B{margin_end_row}", f"=A{margin_end_row}"]
+    for col_idx in range(3, chart_end_col + 1):
+        col_letter = get_column_letter(col_idx)
+        margin_data_row.append(f"={col_letter}{margin_end_row}")
+    ppm_ws.append(margin_data_row)
+
+    # Row 4: Sales (売上)
+    # A: Year reference, B: Label (TRIM), C-J: Sales values
+    sales_data_row = [f"=B{sales_end_row}", f"=TRIM(A{sales_end_row})"]
+    for col_idx in range(3, chart_end_col):  # Up to chart_end_col - 1 (not including last column)
+        col_letter = get_column_letter(col_idx)
+        sales_data_row.append(f"={col_letter}{sales_end_row}")
+    # Last column: Scale down by 1% for better chart display
+    last_col_letter = get_column_letter(chart_end_col)
+    sales_data_row.append(f"={last_col_letter}{sales_end_row}*1%")
+    ppm_ws.append(sales_data_row)
+
+    data_end_row = ppm_ws.max_row
+
+    # Apply formatting to consolidated data area
+    # Row with growth rate: percentage format
+    for col_idx in range(3, chart_end_col + 1):
+        col_letter = get_column_letter(col_idx)
+        cell = ppm_ws[f'{col_letter}{data_start_row + 1}']
+        cell.number_format = '0%'
+
+    # Row with profit margin: percentage format
+    for col_idx in range(3, chart_end_col + 1):
+        col_letter = get_column_letter(col_idx)
+        cell = ppm_ws[f'{col_letter}{data_start_row + 2}']
+        cell.number_format = '0%'
+
+    # Row with sales: thousand separator format
+    for col_idx in range(3, chart_end_col + 1):
+        col_letter = get_column_letter(col_idx)
+        cell = ppm_ws[f'{col_letter}{data_start_row + 3}']
+        cell.number_format = r'#,##0_);[Red](#,##0)'
+
+    # ===== Create Bubble Chart =====
+    chart = BubbleChart()
+    chart.style = 18  # Use a predefined style
+
+    # Set chart title dynamically based on the latest year
+    # Use the year_value_for_title we got earlier when creating the consolidated header
+    if year_value_for_title:
+        # Format as YYYY/MM
+        if isinstance(year_value_for_title, str):
+            # It's already a string, try to parse it
+            import datetime
+            try:
+                if '-' in year_value_for_title:
+                    date_obj = datetime.datetime.strptime(year_value_for_title, '%Y-%m-%d')
+                    year_str = date_obj.strftime('%Y/%m')
+                else:
+                    year_str = year_value_for_title[:7].replace('-', '/')  # Simple conversion
+            except:
+                year_str = ""
+        elif hasattr(year_value_for_title, 'strftime'):
+            # It's a datetime object
+            year_str = year_value_for_title.strftime('%Y/%m')
+        else:
+            year_str = ""
+    else:
+        year_str = ""
+
+    chart.title = f"PPM分析 {year_str}"
+
+    # Configure chart
+    chart.height = 15
+    chart.width = 15
+
+    # Create data series
+    # Y values: Growth rate (row data_start_row + 1, columns C to chart_end_col)
+    # X values: Profit margin (row data_start_row + 2, columns C to chart_end_col)
+    # Bubble size: Sales (row data_start_row + 3, columns C to chart_end_col)
+
+    yvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 1, max_col=chart_end_col, max_row=data_start_row + 1)
+    xvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 2, max_col=chart_end_col, max_row=data_start_row + 2)
+    size = Reference(ppm_ws, min_col=3, min_row=data_start_row + 3, max_col=chart_end_col, max_row=data_start_row + 3)
+
+    # For bubble charts, the Series API is: Series(values=yvalues, xvalues=xvalues, zvalues=size)
+    series = Series(values=yvalues, xvalues=xvalues, zvalues=size, title="")
+
+    # Add data labels showing segment names
+    # Create individual data labels for each bubble with segment names
+    from openpyxl.chart.label import DataLabel
+    from openpyxl.chart.text import Text
+    from openpyxl.chart.data_source import StrRef
+
+    series.dLbls = DataLabelList()
+    series.dLbls.showSerName = False
+    series.dLbls.showVal = False
+    series.dLbls.showCatName = False
+
+    # Add individual labels for each data point
+    num_segments = chart_end_col - 2  # Number of segments (columns C onwards)
+    for idx in range(num_segments):
+        data_label = DataLabel()
+        data_label.idx = idx
+
+        # Create text reference to segment name in header row
+        col_num = idx + 3  # Column C = 3, D = 4, etc.
+        col_letter = get_column_letter(col_num)
+
+        # Create StrRef that points to the segment name
+        label_text = Text()
+        label_text.strRef = StrRef(f="'{ppm_sheet_name}'!${col_letter}${data_start_row}")
+        data_label.tx = label_text
+
+        series.dLbls.dLbl.append(data_label)
+
+    chart.series.append(series)
+
+    # Position chart starting at column B, below the data
+    chart_row = data_end_row + 1
+    ppm_ws.add_chart(chart, f'B{chart_row}')
+
+    debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name} with {ppm_ws.max_row} rows and bubble chart")
