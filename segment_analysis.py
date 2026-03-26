@@ -52,6 +52,15 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             debug_log=debug_log
         )
 
+        # Create PPM analysis sheet for Japanese GAAP only
+        if '日本基準' in info['sheet_name']:
+            _create_ppm_analysis_sheet(
+                workbook=workbook,
+                analysis_sheet_name=info['sheet_name'] + '_分析',
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
 
 def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years_data,
                                    role, sorted_role_cols, role_columns, current_standard,
@@ -267,3 +276,135 @@ def _convert_camel_case_to_title(name):
     s1 = re.sub('(.)([A-Z][a-z]+)', r'\1 \2', name)
     # Insert space before uppercase letters that follow lowercase letters or numbers
     return re.sub('([a-z0-9])([A-Z])', r'\1 \2', s1)
+
+
+def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+    """
+    PPM分析シートを作成（内部関数）
+
+    Args:
+        workbook: openpyxlワークブック
+        analysis_sheet_name: 参照元の分析シート名
+        used_sheet_names: 使用済みシート名のセット
+        debug_log: デバッグログ関数
+    """
+    from openpyxl.utils import get_column_letter
+
+    # PPM分析シート名を生成
+    ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
+    if len(ppm_sheet_name) > 31:
+        # Excel sheet name limit is 31 characters
+        ppm_sheet_name = analysis_sheet_name[:18] + "_PPM分析用"
+
+    debug_log(f"[PPM Analysis] Creating PPM analysis sheet: {ppm_sheet_name}")
+
+    # Check if analysis sheet exists
+    if analysis_sheet_name not in workbook.sheetnames:
+        debug_log(f"[PPM Analysis] Analysis sheet '{analysis_sheet_name}' not found, skipping PPM sheet")
+        return
+
+    # Get the analysis sheet
+    analysis_ws = workbook[analysis_sheet_name]
+
+    # PPM分析シートを作成
+    ppm_ws = workbook.create_sheet(title=ppm_sheet_name)
+    used_sheet_names.add(ppm_sheet_name)
+
+    # Escape single quotes in sheet name for formula
+    escaped_sheet_name = analysis_sheet_name.replace("'", "''")
+
+    # Get the number of columns in the analysis sheet
+    max_col = analysis_ws.max_column
+
+    # Row 1: Header row (references from analysis sheet row 1)
+    header_row = []
+    for col_idx in range(1, max_col + 1):
+        col_letter = get_column_letter(col_idx)
+        formula = f"=IF('{escaped_sheet_name}'!{col_letter}1=\"\",\"\",'{escaped_sheet_name}'!{col_letter}1)"
+        header_row.append(formula)
+    ppm_ws.append(header_row)
+
+    # Rows 2-12: 売上 (Sales) - references rows 24-34 from analysis sheet
+    for src_row in range(24, 35):  # 24-34 inclusive (11 rows)
+        data_row = ["　売上"]  # Fixed account name in column A
+        for col_idx in range(2, max_col + 1):
+            col_letter = get_column_letter(col_idx)
+            formula = f"=IF('{escaped_sheet_name}'!{col_letter}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{col_letter}{src_row})"
+            data_row.append(formula)
+        ppm_ws.append(data_row)
+
+    # Rows 13-23: セグメント利益 (Segment Profit) - references rows 35-45 from analysis sheet
+    for src_row in range(35, 46):  # 35-45 inclusive (11 rows)
+        data_row = ["　セグメント利益"]  # Fixed account name in column A
+        for col_idx in range(2, max_col + 1):
+            col_letter = get_column_letter(col_idx)
+            formula = f"=IF('{escaped_sheet_name}'!{col_letter}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{col_letter}{src_row})"
+            data_row.append(formula)
+        ppm_ws.append(data_row)
+
+    # Row 24: Empty row
+    ppm_ws.append([""] * max_col)
+
+    # Row 25-35: 売上高対前年増加率 (Sales YoY Growth Rate)
+    # Rows 25-35: Each row references the corresponding year from B2-B12
+    for ppm_row in range(25, 36):  # Rows 25-35 (11 rows)
+        growth_row = ["売上高対前年増加率"]
+        # Calculate which row in B2-B12 to reference
+        # Row 25 -> B2, Row 26 -> B3, ..., Row 35 -> B12
+        year_row_ref = ppm_row - 23  # Row 25 -> 2, Row 26 -> 3, etc.
+
+        for col_idx in range(2, max_col + 1):
+            col_letter = get_column_letter(col_idx)
+            if col_idx == 2:  # Column B: reference the year from B2-B12
+                formula = f"=B{year_row_ref}"
+            elif ppm_row == 25:  # Row 25: empty data columns (first year has no growth rate)
+                formula = ""
+            else:  # Rows 26-35: Calculate growth rate
+                # Current year is in row (ppm_row - 23), previous year is in row (ppm_row - 24)
+                current_row_ref = ppm_row - 23  # Row 26 -> 3, Row 27 -> 4, etc.
+                previous_row_ref = ppm_row - 24  # Row 26 -> 2, Row 27 -> 3, etc.
+                formula = f"=IF(OR({col_letter}{current_row_ref}=\"\",{col_letter}{previous_row_ref}=\"\"),\"\",{col_letter}{current_row_ref}/{col_letter}{previous_row_ref}-1)"
+            growth_row.append(formula)
+        ppm_ws.append(growth_row)
+
+    # Row 36: Empty row
+    ppm_ws.append([""] * max_col)
+
+    # Rows 37-47: 売上高利益率 (Sales Profit Margin)
+    for ppm_row in range(37, 48):  # Rows 37-47 (11 rows)
+        margin_row = ["売上高利益率"]
+        # Calculate which row in B2-B12 to reference
+        # Row 37 -> B2, Row 38 -> B3, ..., Row 47 -> B12
+        year_row_ref = ppm_row - 35  # Row 37 -> 2, Row 38 -> 3, etc.
+
+        for col_idx in range(2, max_col + 1):
+            col_letter = get_column_letter(col_idx)
+            if col_idx == 2:  # Column B: reference the year from B2-B12
+                formula = f"=B{year_row_ref}"
+            else:  # Columns C onwards: Calculate profit margin
+                # Sales is in row (ppm_row - 35 + 2), Segment profit is in row (ppm_row - 35 + 13)
+                sales_row_ref = ppm_row - 35  # Row 37 -> 2, Row 38 -> 3, etc.
+                profit_row_ref = ppm_row - 24  # Row 37 -> 13, Row 38 -> 14, etc.
+                formula = f"=IF(OR({col_letter}{profit_row_ref}=\"\",{col_letter}{sales_row_ref}=\"\"),\"\",{col_letter}{profit_row_ref}/{col_letter}{sales_row_ref})"
+            margin_row.append(formula)
+        ppm_ws.append(margin_row)
+
+    # Apply formatting
+    # Freeze panes at B2
+    ppm_ws.freeze_panes = 'B2'
+
+    # Set column widths
+    ppm_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, max_col + 1):
+        col_letter = get_column_letter(col_idx)
+        ppm_ws.column_dimensions[col_letter].width = 12
+
+    # Set number format for percentage rows (rows 25-47 except row 36)
+    from openpyxl.styles import numbers
+    for row_idx in list(range(25, 36)) + list(range(37, 48)):  # Rows 25-35 and 37-47
+        for col_idx in range(3, max_col + 1):  # Starting from column C (data columns)
+            col_letter = get_column_letter(col_idx)
+            cell = ppm_ws[f'{col_letter}{row_idx}']
+            cell.number_format = '0%'  # Display as percentage (0% format like in sample)
+
+    debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name} with {ppm_ws.max_row} rows")

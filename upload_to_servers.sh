@@ -32,8 +32,9 @@ FILES=(
 #    "edinet_cache.py"
 #    "templates"
 #    "app.py"
-#    "convert_xbrl_to_excel.py"
-    "financial_analysis.py"
+    "convert_xbrl_to_excel.py"
+#    "financial_analysis.py"
+    "segment_analysis.py"
 )
 
 # s211へアップロード
