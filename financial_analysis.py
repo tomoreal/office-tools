@@ -2443,17 +2443,23 @@ def create_percentage_ifrs_financial_position_sheet(workbook, source_sheet_name,
     max_col = source_ws.max_column
 
     # Find Total Assets row (資産合計) for IFRS
-    # IFRS uses patterns like: jppfs_cor_AssetsIFRS, ifrs_Assets, etc.
+    # IFRS uses patterns like: jpigp_cor_AssetsIFRS, jpcrp_cor_AssetsIFRS, ifrs_Assets, etc.
     total_assets_row = None
     for row in range(2, min(100, max_row + 1)):
         b_val = source_ws.cell(row, 2).value
         if b_val:
             b_str = str(b_val)
-            # Match IFRS Assets patterns
-            if b_str in ('jppfs_cor_AssetsIFRS', 'ifrs_Assets', 'jppfs_cor_Assets') or \
-               (('Assets' in b_str or '資産' in b_str) and
-                'Current' not in b_str and 'Noncurrent' not in b_str and
-                'Abstract' not in b_str and 'IFRS' in b_str):
+            # Match exact IFRS Assets patterns (total assets only, not subtypes)
+            # Must end with "AssetsIFRS" or "_Assets" (not have other words before Assets)
+            if b_str in ('jpigp_cor_AssetsIFRS', 'jpcrp_cor_AssetsIFRS', 'ifrs_Assets', 'jppfs_cor_AssetsIFRS', 'jppfs_cor_Assets'):
+                total_assets_row = row
+                debug_log(f"Found Assets row (IFRS): {row} ({b_val})")
+                break
+            # Also check for patterns that end with _AssetsIFRS (underscore + AssetsIFRS)
+            if b_str.endswith('_AssetsIFRS') and not any(x in b_str for x in [
+                'Current', 'Noncurrent', 'Contract', 'Intangible', 'Financial',
+                'Deferred', 'Tax', 'Lease', 'Property', 'Investment', 'Held'
+            ]):
                 total_assets_row = row
                 debug_log(f"Found Assets row (IFRS): {row} ({b_val})")
                 break
@@ -2467,7 +2473,8 @@ def create_percentage_ifrs_financial_position_sheet(workbook, source_sheet_name,
                 if b_str in ('jppfs_cor_Assets', 'jppfs_cor_TotalAssets') or \
                    (b_str.endswith('_Assets') and 'Current' not in b_str and 'Noncurrent' not in b_str and
                     'Abstract' not in b_str and 'Lease' not in b_str and 'Property' not in b_str and
-                    'Intangible' not in b_str and 'Investments' not in b_str and 'Deferred' not in b_str):
+                    'Intangible' not in b_str and 'Investments' not in b_str and 'Deferred' not in b_str and
+                    'Contract' not in b_str and 'Financial' not in b_str and 'Held' not in b_str):
                     total_assets_row = row
                     debug_log(f"Found Assets row (IFRS, standard pattern): {row} ({b_val})")
                     break
