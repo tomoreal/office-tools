@@ -80,48 +80,100 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
         return None
 
+    # IFRS判定
+    is_ifrs = 'IFRS' in source_sheet_name
+
     # 必要な勘定科目のキーワード候補（優先度順）
-    sales_keywords = [
-        ['NetSales', 'Summary'],  # 売上高（標準）
-        ['NetSales'],  # 売上高（汎用）
-        ['Sales', 'Summary'],  # 代替パターン
-    ]
+    if is_ifrs:
+        # IFRS用キーワード
+        sales_keywords = [
+            ['Revenue', 'IFRS', 'Summary'],  # 売上収益（IFRS）
+            ['Revenue', 'Summary'],  # 売上収益（汎用）
+            ['Revenue'],  # 最低限
+        ]
 
-    profit_keywords = [
-        ['ProfitLoss', 'OwnersOfParent', 'Summary'],  # 親会社株主に帰属する当期純利益（標準）
-        ['ProfitLoss', 'Parent', 'Summary'],  # 代替パターン1
-        ['Profit', 'OwnersOfParent'],  # 代替パターン2
-        ['ProfitLoss', 'Summary'],  # 汎用
-    ]
+        profit_keywords = [
+            ['ProfitLoss', 'OwnersOfParent', 'IFRS', 'Summary'],  # 親会社の所有者に帰属（IFRS）
+            ['ProfitLoss', 'Attributable', 'OwnersOfParent'],  # 代替パターン
+            ['Profit', 'OwnersOfParent'],  # 汎用
+        ]
 
-    net_assets_keywords = [
-        ['NetAssets', 'Summary'],  # 純資産額（標準）
-        ['NetAssets'],  # 純資産額（汎用）
-    ]
+        # IFRS用: 親会社の所有者に帰属する持分（自己資本の代わり）
+        equity_keywords = [
+            ['EquityAttributableToOwnersOfParent', 'IFRS'],  # 親会社の所有者に帰属する持分
+            ['EquityAttributable', 'OwnersOfParent'],  # 代替パターン
+            ['Equity', 'OwnersOfParent'],  # 汎用
+        ]
 
-    total_assets_keywords = [
-        ['TotalAssets', 'Summary'],  # 総資産額（標準）
-        ['TotalAssets'],  # 総資産額（汎用）
-    ]
+        total_assets_keywords = [
+            ['TotalAssets', 'IFRS', 'Summary'],  # 総資産額（IFRS）
+            ['TotalAssets', 'Summary'],  # 総資産額（汎用）
+            ['TotalAssets'],  # 最低限
+        ]
 
-    equity_ratio_keywords = [
-        ['EquityToAssetRatio', 'Summary'],  # 自己資本比率（標準）
-        ['EquityToAsset', 'Summary'],  # 代替パターン
-        ['EquityRatio'],  # 汎用
-    ]
+        equity_ratio_keywords = [
+            ['RatioOfOwnersEquity', 'IFRS'],  # 親会社所有者帰属持分比率（IFRS）
+            ['Ratio', 'OwnersEquity'],  # 代替パターン
+            ['EquityRatio'],  # 汎用
+        ]
 
-    roe_keywords = [
-        ['RateOfReturnOnEquity', 'Summary'],  # 自己資本利益率（標準）
-        ['ReturnOnEquity', 'Summary'],  # 代替パターン
-        ['ROE'],  # 汎用
-    ]
+        roe_keywords = [
+            ['RateOfReturnOnEquity', 'IFRS'],  # 親会社所有者帰属持分利益率（IFRS ROE）
+            ['ReturnOnEquity', 'Summary'],  # 代替パターン
+            ['ROE'],  # 汎用
+        ]
+    else:
+        # 日本基準用キーワード
+        sales_keywords = [
+            ['NetSales', 'Summary'],  # 売上高（標準）
+            ['NetSales'],  # 売上高（汎用）
+            ['Sales', 'Summary'],  # 代替パターン
+        ]
+
+        profit_keywords = [
+            ['ProfitLoss', 'OwnersOfParent', 'Summary'],  # 親会社株主に帰属する当期純利益（標準）
+            ['ProfitLoss', 'Parent', 'Summary'],  # 代替パターン1
+            ['Profit', 'OwnersOfParent'],  # 代替パターン2
+            ['ProfitLoss', 'Summary'],  # 汎用
+        ]
+
+        net_assets_keywords = [
+            ['NetAssets', 'Summary'],  # 純資産額（標準）
+            ['NetAssets'],  # 純資産額（汎用）
+        ]
+
+        total_assets_keywords = [
+            ['TotalAssets', 'Summary'],  # 総資産額（標準）
+            ['TotalAssets'],  # 総資産額（汎用）
+        ]
+
+        equity_ratio_keywords = [
+            ['EquityToAssetRatio', 'Summary'],  # 自己資本比率（標準）
+            ['EquityToAsset', 'Summary'],  # 代替パターン
+            ['EquityRatio'],  # 汎用
+        ]
+
+        roe_keywords = [
+            ['RateOfReturnOnEquity', 'Summary'],  # 自己資本利益率（標準）
+            ['ReturnOnEquity', 'Summary'],  # 代替パターン
+            ['ROE'],  # 汎用
+        ]
 
     # 元シートの行番号を取得（部分一致検索）
-    sales_row = find_row_by_keywords(sales_keywords, '売上高')
-    profit_row = find_row_by_keywords(profit_keywords, '当期純利益')
-    net_assets_row = find_row_by_keywords(net_assets_keywords, '純資産額')
+    sales_row = find_row_by_keywords(sales_keywords, '売上高/売上収益')
+    profit_row = find_row_by_keywords(profit_keywords, '当期純利益/当期利益')
+
+    if is_ifrs:
+        # IFRS: 親会社の所有者に帰属する持分を直接使用
+        equity_row = find_row_by_keywords(equity_keywords, '親会社の所有者に帰属する持分')
+        net_assets_row = None  # IFRSでは使用しない
+    else:
+        # 日本基準: 純資産額を使用
+        net_assets_row = find_row_by_keywords(net_assets_keywords, '純資産額')
+        equity_row = None  # 日本基準では計算で求める
+
     total_assets_row = find_row_by_keywords(total_assets_keywords, '総資産額')
-    equity_ratio_row = find_row_by_keywords(equity_ratio_keywords, '自己資本比率')
+    equity_ratio_row = find_row_by_keywords(equity_ratio_keywords, '自己資本比率/親会社所有者帰属持分比率')
     roe_row = find_row_by_keywords(roe_keywords, 'ROE')
 
     # 売上高が見つからない場合は、セクションヘッダーの次の行を使用
@@ -138,13 +190,23 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
             debug_log(f"Sales row not found, using first item after header (row {sales_row})")
 
     # ROE分析に必要な項目がすべて存在するかチェック
-    required_items = {
-        '売上高': sales_row,
-        '当期純利益': profit_row,
-        '総資産額': total_assets_row,
-        '自己資本比率': equity_ratio_row,
-        'ROE': roe_row
-    }
+    if is_ifrs:
+        required_items = {
+            '売上収益': sales_row,
+            '当期利益（親会社帰属）': profit_row,
+            '親会社の所有者に帰属する持分': equity_row,
+            '総資産額': total_assets_row,
+            '親会社所有者帰属持分比率': equity_ratio_row,
+            'ROE': roe_row
+        }
+    else:
+        required_items = {
+            '売上高': sales_row,
+            '当期純利益': profit_row,
+            '総資産額': total_assets_row,
+            '自己資本比率': equity_ratio_row,
+            'ROE': roe_row
+        }
     missing_items = [name for name, row in required_items.items() if row is None]
     if missing_items:
         debug_log(f"ROE analysis skipped for '{source_sheet_name}': missing items: {', '.join(missing_items)}")
@@ -153,6 +215,9 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     # ヘッダー行と基本指標をすべて元シートから参照する形で追加
     def add_reference_row_full(source_row_num):
         """元シートの行全体を参照する行を追加"""
+        if source_row_num is None:
+            debug_log(f"Skipping row addition: source_row_num is None")
+            return
         row_data = []
         for col in range(1, num_cols + 1):
             col_letter = openpyxl.utils.get_column_letter(col)
@@ -186,7 +251,12 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     # 3-8行目: 基本指標（元シートから参照）
     add_reference_row_full(sales_row)
     add_reference_row_full(profit_row)
-    add_reference_row_full(net_assets_row)
+    if is_ifrs:
+        # IFRS: 親会社の所有者に帰属する持分を追加
+        add_reference_row_full(equity_row)
+    else:
+        # 日本基準: 純資産額を追加
+        add_reference_row_full(net_assets_row)
     add_reference_row_full(total_assets_row)
     add_reference_row_full(equity_ratio_row)
     add_reference_row_full(roe_row)
@@ -195,7 +265,12 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     current_row = analysis_ws.max_row
     sales_analysis_row = current_row - 5
     profit_analysis_row = current_row - 4
-    net_assets_analysis_row = current_row - 3
+    if is_ifrs:
+        equity_analysis_row = current_row - 3  # IFRS: 親会社の所有者に帰属する持分
+        net_assets_analysis_row = None
+    else:
+        net_assets_analysis_row = current_row - 3  # 日本基準: 純資産額
+        equity_analysis_row = None
     total_assets_analysis_row = current_row - 2
     equity_ratio_analysis_row = current_row - 1
     roe_analysis_row = current_row
@@ -204,14 +279,19 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     analysis_ws.append([''] * num_cols)
 
     # 計算指標
-    # 自己資本 = 総資産額 × 自己資本比率
-    equity_row_num = analysis_ws.max_row + 1
-    equity_row = ['　　　自己資本', '']
+    # 自己資本の計算
+    equity_calc_row_num = analysis_ws.max_row + 1
+    equity_calc_row = ['　　　自己資本', '']
     for col in range(3, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
-        formula = f"={col_letter}{total_assets_analysis_row}*{col_letter}{equity_ratio_analysis_row}"
-        equity_row.append(formula)
-    analysis_ws.append(equity_row)
+        if is_ifrs:
+            # IFRS: 親会社の所有者に帰属する持分を直接参照
+            formula = f"={col_letter}{equity_analysis_row}"
+        else:
+            # 日本基準: 総資産額 × 自己資本比率
+            formula = f"={col_letter}{total_assets_analysis_row}*{col_letter}{equity_ratio_analysis_row}"
+        equity_calc_row.append(formula)
+    analysis_ws.append(equity_calc_row)
 
     # 自己資本（平均） = AVERAGE(前期:当期)
     equity_avg_row_num = analysis_ws.max_row + 1
@@ -221,7 +301,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     for col in range(4, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
         prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
-        formula = f"=AVERAGE({prev_col_letter}{equity_row_num}:{col_letter}{equity_row_num})"
+        formula = f"=AVERAGE({prev_col_letter}{equity_calc_row_num}:{col_letter}{equity_calc_row_num})"
         equity_avg_row.append(formula)
     analysis_ws.append(equity_avg_row)
 
@@ -325,9 +405,10 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     for col in range(3, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
 
-        # 売上高、当期純利益、純資産額、総資産額: 整数カンマ区切り
-        for row_num in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row, total_assets_analysis_row]:
-            analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_integer
+        # 売上高、当期純利益、純資産額/親会社持分、総資産額: 整数カンマ区切り
+        for row_num in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row, equity_analysis_row, total_assets_analysis_row]:
+            if row_num is not None:
+                analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_integer
 
         # 自己資本比率、自己資本利益率: パーセント
         for row_num in [equity_ratio_analysis_row, roe_analysis_row]:
@@ -338,7 +419,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         col_letter = openpyxl.utils.get_column_letter(col)
 
         # 自己資本、自己資本（平均）、総資産（平均）: 整数カンマ区切り（括弧）
-        for row_num in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+        for row_num in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
             analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_decimal
 
     # ROE分析指標の表示形式
@@ -394,10 +475,18 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         yoy_header_row.append(f'={col_letter}1')
     analysis_ws.append(yoy_header_row)
 
+    # IFRS/日本基準で使用する行を決定
+    if is_ifrs:
+        # IFRS: 親会社の所有者に帰属する持分を使用
+        equity_or_net_assets_row = equity_analysis_row
+    else:
+        # 日本基準: 純資産額を使用
+        equity_or_net_assets_row = net_assets_analysis_row
+
     # 対前年増加率を計算する行の定義
-    # 行24-29: 基本指標（売上高、当期純利益、純資産額、総資産額、自己資本比率、ROE）
+    # 行24-29: 基本指標（売上高、当期純利益、純資産額/親会社持分、総資産額、自己資本比率、ROE）
     yoy_rows_basic = []
-    for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+    for source_row in [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                        total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
         yoy_row_num = analysis_ws.max_row + 1
         yoy_rows_basic.append(yoy_row_num)
@@ -417,7 +506,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
     # 行31-33: 計算指標（自己資本、自己資本（平均）、総資産（平均））
     yoy_rows_calc = []
-    for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+    for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
         yoy_row_num = analysis_ws.max_row + 1
         yoy_rows_calc.append(yoy_row_num)
         yoy_row = [f'=A{source_row}', '']
@@ -473,7 +562,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     latest_col_letter = openpyxl.utils.get_column_letter(latest_col)
 
     # 基準となる5つの指標がすべて揃っているかチェック
-    target_rows = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+    target_rows = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                    total_assets_analysis_row, equity_ratio_analysis_row]
 
     # Helper function to check if a column has all required data
@@ -604,7 +693,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
         # Q3-Q20: 簡単な比率計算（最新値/基準値）
         # 基本指標: Q3-Q8 (売上高、当期純利益、純資産額、総資産額、自己資本比率、ROE)
-        for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+        for source_row in [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                           total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
             ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
             analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
@@ -614,7 +703,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         # Q9: 空行（対応する行9が空行）
 
         # 計算指標: Q10-Q12 (自己資本、自己資本（平均）、総資産（平均）)
-        for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+        for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
             ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
             analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
             analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
@@ -638,7 +727,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         # CAGR計算: =(最新値/基準値)^(1/(YEAR(最新)-YEAR(基準)))-1
         # Q24-Q29: 基本指標
         for idx, row_num in enumerate(yoy_rows_basic):
-            source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+            source_cagr_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                              total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
             cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                           f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
@@ -649,7 +738,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
         # Q31-Q33: 計算指標
         for idx, row_num in enumerate(yoy_rows_calc):
-            source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+            source_cagr_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
             cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                           f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
@@ -703,13 +792,13 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                 analysis_ws[f'{r_col_letter}2'] = ''
 
                 # R3-R20: 比率計算
-                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                for source_row in [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                                   total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
                     ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
-                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
                     ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
@@ -727,7 +816,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
                 # R24-R41: CAGR計算 (base to mid)
                 for idx, row_num in enumerate(yoy_rows_basic):
-                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                                      total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
                     cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
@@ -735,7 +824,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                     analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
 
                 for idx, row_num in enumerate(yoy_rows_calc):
-                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    source_cagr_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
                     cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
                     analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
@@ -765,13 +854,13 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                 analysis_ws[f'{s_col_letter}2'] = ''
 
                 # S3-S20: 比率計算
-                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                for source_row in [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                                   total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
                     ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
                     analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
-                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
                     ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
                     analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
@@ -790,7 +879,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                 # S24-S41: CAGR計算 (mid to latest)
                 # Note: S列のCAGRは (latest/mid)^(1/(latest_year - mid_year)) - 1
                 for idx, row_num in enumerate(yoy_rows_basic):
-                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                                      total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
                     cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
@@ -798,7 +887,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                     analysis_ws[f'{s_col_letter}{row_num}'].number_format = number_format_percent
 
                 for idx, row_num in enumerate(yoy_rows_calc):
-                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    source_cagr_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
                     cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
                     analysis_ws[f'{s_col_letter}{row_num}'] = cagr_formula
@@ -836,13 +925,13 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                 analysis_ws[f'{r_col_letter}2'] = ''
 
                 # R3-R20: 比率計算
-                for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                for source_row in [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                                   total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
                     ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
-                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
                     ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
@@ -860,7 +949,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
                 # R24-R41: CAGR計算 (5years_ago to latest)
                 for idx, row_num in enumerate(yoy_rows_basic):
-                    source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                    source_cagr_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
                                      total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
                     cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
@@ -868,7 +957,7 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                     analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
 
                 for idx, row_num in enumerate(yoy_rows_calc):
-                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    source_cagr_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
                     cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
                     analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
@@ -1085,7 +1174,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
     analysis_ws.append([''] * num_cols)
 
     # 自己資本 = 総資産額 × 自己資本比率
-    equity_row_num = analysis_ws.max_row + 1
+    equity_calc_row_num = analysis_ws.max_row + 1
     equity_row = ['　　　自己資本', '']
     for col in range(3, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
@@ -1100,7 +1189,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
     for col in range(4, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
         prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
-        formula = f"=AVERAGE({prev_col_letter}{equity_row_num}:{col_letter}{equity_row_num})"
+        formula = f"=AVERAGE({prev_col_letter}{equity_calc_row_num}:{col_letter}{equity_calc_row_num})"
         equity_avg_row.append(formula)
     analysis_ws.append(equity_avg_row)
 
@@ -1203,7 +1292,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
 
     for col in range(3, num_cols + 1):
         col_letter = openpyxl.utils.get_column_letter(col)
-        for row_num in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+        for row_num in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
             analysis_ws[f'{col_letter}{row_num}'].number_format = number_format_decimal
 
     for col in range(4, num_cols + 1):
@@ -1255,7 +1344,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
     analysis_ws.append([''] * num_cols)
 
     yoy_rows_calc = []
-    for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+    for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
         yoy_row_num = analysis_ws.max_row + 1
         yoy_rows_calc.append(yoy_row_num)
         yoy_row = [f'=A{source_row}', '']
@@ -1394,7 +1483,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
             analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
             analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
-        for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+        for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
             ratio_formula = f"={latest_col_letter}{source_row}/{base_col_letter}{source_row}"
             analysis_ws[f'{growth_col_letter}{source_row}'] = ratio_formula
             analysis_ws[f'{growth_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
@@ -1417,7 +1506,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
 
         for idx, row_num in enumerate(yoy_rows_calc):
-            source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+            source_cagr_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
             cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                           f"^(1/(YEAR({latest_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
             analysis_ws[f'{growth_col_letter}{row_num}'] = cagr_formula
@@ -1455,7 +1544,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
-                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
                     ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
@@ -1479,7 +1568,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
 
                 for idx, row_num in enumerate(yoy_rows_calc):
-                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    source_cagr_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
                     cagr_formula = (f"=({mid_col_letter}{source_cagr_row}/{base_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({mid_col_letter}$1)-YEAR({base_col_letter}$1)))-1")
                     analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
@@ -1509,7 +1598,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
-                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
                     ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
                     analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
@@ -1533,7 +1622,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     analysis_ws[f'{s_col_letter}{row_num}'].number_format = number_format_percent
 
                 for idx, row_num in enumerate(yoy_rows_calc):
-                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    source_cagr_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
                     cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{mid_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({latest_col_letter}$1)-YEAR({mid_col_letter}$1)))-1")
                     analysis_ws[f'{s_col_letter}{row_num}'] = cagr_formula
@@ -1568,7 +1657,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
-                for source_row in [equity_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+                for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
                     ratio_formula = f"={latest_col_letter}{source_row}/{five_years_col_letter}{source_row}"
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
@@ -1592,7 +1681,7 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     analysis_ws[f'{r_col_letter}{row_num}'].number_format = number_format_percent
 
                 for idx, row_num in enumerate(yoy_rows_calc):
-                    source_cagr_row = [equity_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    source_cagr_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
                     cagr_formula = (f"=({latest_col_letter}{source_cagr_row}/{five_years_col_letter}{source_cagr_row})"
                                   f"^(1/(YEAR({latest_col_letter}$1)-YEAR({five_years_col_letter}$1)))-1")
                     analysis_ws[f'{r_col_letter}{row_num}'] = cagr_formula
