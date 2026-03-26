@@ -324,6 +324,9 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         header_row.append(formula)
     ppm_ws.append(header_row)
 
+    # Track row numbers for numeric data (Sales and Segment Profit)
+    sales_start_row = ppm_ws.max_row + 1  # Track where sales rows start
+
     # Rows 2-12: 売上 (Sales) - references rows 24-34 from analysis sheet
     for src_row in range(24, 35):  # 24-34 inclusive (11 rows)
         data_row = ["　売上"]  # Fixed account name in column A
@@ -332,6 +335,9 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             formula = f"=IF('{escaped_sheet_name}'!{col_letter}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{col_letter}{src_row})"
             data_row.append(formula)
         ppm_ws.append(data_row)
+
+    sales_end_row = ppm_ws.max_row  # Track where sales rows end
+    profit_start_row = ppm_ws.max_row + 1  # Track where profit rows start
 
     # Rows 13-23: セグメント利益 (Segment Profit) - references rows 35-45 from analysis sheet
     for src_row in range(35, 46):  # 35-45 inclusive (11 rows)
@@ -342,52 +348,63 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             data_row.append(formula)
         ppm_ws.append(data_row)
 
-    # Row 24: Empty row
+    profit_end_row = ppm_ws.max_row  # Track where profit rows end
+
+    # Empty row separator
     ppm_ws.append([""] * max_col)
 
-    # Row 25-35: 売上高対前年増加率 (Sales YoY Growth Rate)
-    # Rows 25-35: Each row references the corresponding year from B2-B12
-    for ppm_row in range(25, 36):  # Rows 25-35 (11 rows)
+    # Track growth rate rows
+    growth_start_row = ppm_ws.max_row + 1  # Track where growth rate rows start
+
+    # 売上高対前年増加率 (Sales YoY Growth Rate)
+    # Calculate number of data rows (should be 11 rows based on sales data)
+    num_data_rows = sales_end_row - sales_start_row + 1
+    for idx in range(num_data_rows):  # For each year
         growth_row = ["売上高対前年増加率"]
-        # Calculate which row in B2-B12 to reference
-        # Row 25 -> B2, Row 26 -> B3, ..., Row 35 -> B12
-        year_row_ref = ppm_row - 23  # Row 25 -> 2, Row 26 -> 3, etc.
+        # Calculate which row in sales data to reference
+        year_row_ref = sales_start_row + idx  # Reference to corresponding sales row
 
         for col_idx in range(2, max_col + 1):
             col_letter = get_column_letter(col_idx)
-            if col_idx == 2:  # Column B: reference the year from B2-B12
+            if col_idx == 2:  # Column B: reference the year from sales data
                 formula = f"=B{year_row_ref}"
-            elif ppm_row == 25:  # Row 25: empty data columns (first year has no growth rate)
+            elif idx == 0:  # First year: empty data columns (no previous year to compare)
                 formula = ""
-            else:  # Rows 26-35: Calculate growth rate
-                # Current year is in row (ppm_row - 23), previous year is in row (ppm_row - 24)
-                current_row_ref = ppm_row - 23  # Row 26 -> 3, Row 27 -> 4, etc.
-                previous_row_ref = ppm_row - 24  # Row 26 -> 2, Row 27 -> 3, etc.
+            else:  # Calculate growth rate
+                # Current year is in row (sales_start_row + idx), previous year is in row (sales_start_row + idx - 1)
+                current_row_ref = sales_start_row + idx
+                previous_row_ref = sales_start_row + idx - 1
                 formula = f"=IF(OR({col_letter}{current_row_ref}=\"\",{col_letter}{previous_row_ref}=\"\"),\"\",{col_letter}{current_row_ref}/{col_letter}{previous_row_ref}-1)"
             growth_row.append(formula)
         ppm_ws.append(growth_row)
 
-    # Row 36: Empty row
+    growth_end_row = ppm_ws.max_row  # Track where growth rate rows end
+
+    # Empty row separator
     ppm_ws.append([""] * max_col)
 
-    # Rows 37-47: 売上高利益率 (Sales Profit Margin)
-    for ppm_row in range(37, 48):  # Rows 37-47 (11 rows)
+    # Track profit margin rows
+    margin_start_row = ppm_ws.max_row + 1  # Track where profit margin rows start
+
+    # 売上高利益率 (Sales Profit Margin)
+    for idx in range(num_data_rows):  # For each year
         margin_row = ["売上高利益率"]
-        # Calculate which row in B2-B12 to reference
-        # Row 37 -> B2, Row 38 -> B3, ..., Row 47 -> B12
-        year_row_ref = ppm_row - 35  # Row 37 -> 2, Row 38 -> 3, etc.
+        # Calculate which row to reference
+        year_row_ref = sales_start_row + idx  # Reference to corresponding sales row
 
         for col_idx in range(2, max_col + 1):
             col_letter = get_column_letter(col_idx)
-            if col_idx == 2:  # Column B: reference the year from B2-B12
+            if col_idx == 2:  # Column B: reference the year from sales data
                 formula = f"=B{year_row_ref}"
             else:  # Columns C onwards: Calculate profit margin
-                # Sales is in row (ppm_row - 35 + 2), Segment profit is in row (ppm_row - 35 + 13)
-                sales_row_ref = ppm_row - 35  # Row 37 -> 2, Row 38 -> 3, etc.
-                profit_row_ref = ppm_row - 24  # Row 37 -> 13, Row 38 -> 14, etc.
+                # Sales is in sales rows, Segment profit is in profit rows
+                sales_row_ref = sales_start_row + idx
+                profit_row_ref = profit_start_row + idx
                 formula = f"=IF(OR({col_letter}{profit_row_ref}=\"\",{col_letter}{sales_row_ref}=\"\"),\"\",{col_letter}{profit_row_ref}/{col_letter}{sales_row_ref})"
             margin_row.append(formula)
         ppm_ws.append(margin_row)
+
+    margin_end_row = ppm_ws.max_row  # Track where profit margin rows end
 
     # Apply formatting
     # Freeze panes at B2
@@ -399,9 +416,17 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         col_letter = get_column_letter(col_idx)
         ppm_ws.column_dimensions[col_letter].width = 12
 
-    # Set number format for percentage rows (rows 25-47 except row 36)
+    # Set number format for data rows (Sales and Segment Profit)
+    # Format: #,##0_ ;[Red]\-#,##0 (thousand separators, negative in red)
+    for row_idx in range(sales_start_row, profit_end_row + 1):  # All Sales and Profit rows
+        for col_idx in range(3, max_col + 1):  # Starting from column C (data columns)
+            col_letter = get_column_letter(col_idx)
+            cell = ppm_ws[f'{col_letter}{row_idx}']
+            cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+
+    # Set number format for percentage rows (growth rate and profit margin)
     from openpyxl.styles import numbers
-    for row_idx in list(range(25, 36)) + list(range(37, 48)):  # Rows 25-35 and 37-47
+    for row_idx in list(range(growth_start_row, growth_end_row + 1)) + list(range(margin_start_row, margin_end_row + 1)):
         for col_idx in range(3, max_col + 1):  # Starting from column C (data columns)
             col_letter = get_column_letter(col_idx)
             cell = ppm_ws[f'{col_letter}{row_idx}']
