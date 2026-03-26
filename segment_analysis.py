@@ -523,7 +523,6 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # ===== Create Bubble Chart =====
     chart = BubbleChart()
     chart.style = 18  # Use a predefined style
-#    chart.legend = None # hide legend
 
     # Set chart title dynamically based on the latest year
     # Use the year_value_for_title we got earlier when creating the consolidated header
@@ -554,29 +553,27 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     chart.height = 15
     chart.width = 15
 
-    # Create data series - one series per segment for legend display
-    # Each series contains one bubble (one column of data)
-    # X values: Profit margin (row data_start_row + 1)
-    # Y values: Growth rate (row data_start_row + 2)
-    # Bubble size: Sales (row data_start_row + 3)
+    # Create data series
+    # X values: Profit margin (row data_start_row + 1, columns C to chart_end_col)
+    # Y values: Growth rate (row data_start_row + 2, columns C to chart_end_col)
+    # Bubble size: Sales (row data_start_row + 3, columns C to chart_end_col)
 
-    # Loop through each segment column (C to chart_end_col)
-    for col_idx in range(3, chart_end_col + 1):
-        # Get segment name directly from the analysis sheet (row 1)
-        segment_name = analysis_ws.cell(1, col_idx).value
-        if segment_name is None:
-            segment_name = ""
+    xvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 1, max_col=chart_end_col, max_row=data_start_row + 1)
+    yvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 2, max_col=chart_end_col, max_row=data_start_row + 2)
+    size = Reference(ppm_ws, min_col=3, min_row=data_start_row + 3, max_col=chart_end_col, max_row=data_start_row + 3)
 
-        # Create references for this single column (one bubble per series)
-        xvalues = Reference(ppm_ws, min_col=col_idx, min_row=data_start_row + 1, max_col=col_idx, max_row=data_start_row + 1)
-        yvalues = Reference(ppm_ws, min_col=col_idx, min_row=data_start_row + 2, max_col=col_idx, max_row=data_start_row + 2)
-        size = Reference(ppm_ws, min_col=col_idx, min_row=data_start_row + 3, max_col=col_idx, max_row=data_start_row + 3)
+    # For bubble charts, the Series API is: Series(values=yvalues, xvalues=xvalues, zvalues=size)
+    series = Series(values=yvalues, xvalues=xvalues, zvalues=size, title="")
 
-        # Create series with segment name as title (will appear in legend)
-        series = Series(values=yvalues, xvalues=xvalues, zvalues=size, title=segment_name)
-        series.dLbls = None  # Hide data labels
+    # Add data labels showing segment names
+    # Create individual data labels for each bubble with segment names
+    from openpyxl.chart.label import DataLabel
+    from openpyxl.chart.text import Text
+    from openpyxl.chart.data_source import StrRef
 
-        chart.series.append(series)
+    chart.legend = None # hide legend
+
+    chart.series.append(series)
 
     # Position chart starting at column B, below the data
     chart_row = data_end_row + 1
