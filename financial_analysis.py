@@ -2025,6 +2025,392 @@ def create_percentage_pl_sheet(workbook, source_sheet_name, debug_log=None):
     debug_log(f"Percentage PL sheet created: {analysis_sheet_name}")
 
 
+def create_percentage_bs_sheet_non_consolidated(workbook, source_sheet_name, debug_log=None):
+    """
+    貸借対照表（単体）から百分率BSシートを生成
+
+    Args:
+        workbook: openpyxlワークブック
+        source_sheet_name: 元シート名（例: "貸借対照表"）
+        debug_log: デバッグログ関数（オプション）
+    """
+    # デバッグログ関数がない場合はダミー関数を使用
+    if debug_log is None:
+        def debug_log(msg):
+            pass
+
+    if source_sheet_name not in workbook.sheetnames:
+        return
+
+    source_ws = workbook[source_sheet_name]
+    analysis_sheet_name = f"{source_sheet_name}_分析_百分率BS"
+
+    # 既存の分析シートがあれば削除
+    if analysis_sheet_name in workbook.sheetnames:
+        workbook.remove(workbook[analysis_sheet_name])
+
+    # 新しいシートを作成
+    analysis_ws = workbook.create_sheet(analysis_sheet_name)
+
+    # 元シートの行数と列数を取得
+    max_row = source_ws.max_row
+    max_col = source_ws.max_column
+
+    # Find Assets row (資産合計)
+    total_assets_row = None
+    for row in range(2, min(100, max_row + 1)):
+        b_val = source_ws.cell(row, 2).value
+        if b_val:
+            b_str = str(b_val)
+            if b_str in ('jppfs_cor_Assets', 'jppfs_cor_TotalAssets') or \
+               (b_str.endswith('_Assets') and 'Current' not in b_str and 'Noncurrent' not in b_str and
+                'Abstract' not in b_str and 'Lease' not in b_str and 'Property' not in b_str and
+                'Intangible' not in b_str and 'Investments' not in b_str and 'Deferred' not in b_str):
+                total_assets_row = row
+                debug_log(f"Found Assets row: {row} ({b_val})")
+                break
+
+    if total_assets_row is None:
+        debug_log(f"Percentage BS sheet (non-consolidated) skipped: Assets row not found in '{source_sheet_name}'")
+        return
+
+    # 1行目: ヘッダー行（元シートを参照）
+    header_row = []
+    for col in range(1, max_col + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"='{source_sheet_name}'!{col_letter}1"
+        header_row.append(formula)
+    analysis_ws.append(header_row)
+
+    # 2行目以降: データ行
+    for row in range(2, max_row + 1):
+        data_row = []
+        for col in range(1, max_col + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+
+            if col <= 2:
+                # A列とB列は元シートを参照
+                formula = f"='{source_sheet_name}'!{col_letter}{row}"
+                data_row.append(formula)
+            else:
+                # C列以降: 百分率計算
+                formula = (f"=IF(OR('{source_sheet_name}'!{col_letter}${total_assets_row}=\"\","
+                          f"'{source_sheet_name}'!{col_letter}{row}=\"\","
+                          f"'{source_sheet_name}'!{col_letter}${total_assets_row}=0),"
+                          f"\"\","
+                          f"'{source_sheet_name}'!{col_letter}{row}/'{source_sheet_name}'!{col_letter}${total_assets_row})")
+                data_row.append(formula)
+
+        analysis_ws.append(data_row)
+
+    # データ列のどれが有効かを判定（資産合計があるか）
+    def has_assets_data(col_num):
+        """指定した列に資産合計データがあるかチェック"""
+        if col_num < 3:
+            return False
+        try:
+            col_letter = openpyxl.utils.get_column_letter(col_num)
+            value = source_ws[f'{col_letter}{total_assets_row}'].value
+            return value is not None and value != ''
+        except Exception:
+            return False
+
+    # 最古と最新のデータ列を特定
+    oldest_col = None
+    latest_col = max_col
+
+    for col in range(3, max_col + 1):
+        if has_assets_data(col):
+            oldest_col = col
+            break
+
+    if oldest_col is None:
+        debug_log(f"Percentage BS sheet (non-consolidated) created but no valid data columns found")
+        return
+
+    # 期間を計算 (kikan = 最新列 - 最古列)
+    kikan = latest_col - oldest_col
+
+    # 比較列を追加
+    comparison_cols = []
+
+    if kikan >= 10:
+        # 10年以上データがある場合
+        ten_years_ago_col = latest_col - 10
+        if ten_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 1,
+                'latest': latest_col,
+                'base': ten_years_ago_col
+            })
+
+        five_years_ago_col = latest_col - 5
+        if five_years_ago_col >= oldest_col and ten_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 2,
+                'latest': five_years_ago_col,
+                'base': ten_years_ago_col
+            })
+
+        if five_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 3,
+                'latest': latest_col,
+                'base': five_years_ago_col
+            })
+    elif kikan >= 5:
+        # 5-9年データがある場合
+        comparison_cols.append({
+            'col': max_col + 1,
+            'latest': latest_col,
+            'base': oldest_col
+        })
+
+        five_years_ago_col = latest_col - 5
+        if five_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 2,
+                'latest': five_years_ago_col,
+                'base': oldest_col
+            })
+
+        if five_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 3,
+                'latest': latest_col,
+                'base': five_years_ago_col
+            })
+
+    # 比較列を追加
+    for comp in comparison_cols:
+        comp_col = comp['col']
+        comp_col_letter = openpyxl.utils.get_column_letter(comp_col)
+        latest_letter = openpyxl.utils.get_column_letter(comp['latest'])
+        base_letter = openpyxl.utils.get_column_letter(comp['base'])
+
+        # 1行目: 年度表示 (例: "2025-2015")
+        year_formula = f"=YEAR({latest_letter}1) & \"-\" & YEAR({base_letter}1)"
+        analysis_ws[f'{comp_col_letter}1'] = year_formula
+
+        # 2行目以降: 差分計算
+        for row in range(2, max_row + 1):
+            diff_formula = f"=IF(OR({latest_letter}{row}=\"\",{base_letter}{row}=\"\"),\"\",{latest_letter}{row}-{base_letter}{row})"
+            analysis_ws[f'{comp_col_letter}{row}'] = diff_formula
+
+    # 表示形式の設定
+    number_format_percent = r'0.0%;[Red]-0.0%'
+
+    # C列以降のすべてのデータセル（比較列含む）にパーセント表示を設定
+    total_cols = max_col + len(comparison_cols)
+    for col in range(3, total_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        for row in range(2, max_row + 1):
+            analysis_ws[f'{col_letter}{row}'].number_format = number_format_percent
+
+    # 列幅の設定
+    analysis_ws.column_dimensions['A'].width = 28
+    analysis_ws.column_dimensions['B'].hidden = True
+
+    for col in range(3, total_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        analysis_ws.column_dimensions[col_letter].width = 12
+
+    # ウィンドウ枠の固定 (B2)
+    analysis_ws.freeze_panes = 'B2'
+
+    debug_log(f"Percentage BS sheet (non-consolidated) created: {analysis_sheet_name}")
+
+
+def create_percentage_pl_sheet_non_consolidated(workbook, source_sheet_name, debug_log=None):
+    """
+    損益計算書（単体）から百分率PLシートを生成
+
+    Args:
+        workbook: openpyxlワークブック
+        source_sheet_name: 元シート名（例: "損益計算書"）
+        debug_log: デバッグログ関数（オプション）
+    """
+    # デバッグログ関数がない場合はダミー関数を使用
+    if debug_log is None:
+        def debug_log(msg):
+            pass
+
+    if source_sheet_name not in workbook.sheetnames:
+        return
+
+    source_ws = workbook[source_sheet_name]
+    analysis_sheet_name = f"{source_sheet_name} 分析_百分率PL"
+
+    # 既存の分析シートがあれば削除
+    if analysis_sheet_name in workbook.sheetnames:
+        workbook.remove(workbook[analysis_sheet_name])
+
+    # 新しいシートを作成
+    analysis_ws = workbook.create_sheet(analysis_sheet_name)
+
+    # 元シートの行数と列数を取得
+    max_row = source_ws.max_row
+    max_col = source_ws.max_column
+
+    # Find NetSales row (売上高)
+    net_sales_row = None
+    for row in range(2, min(100, max_row + 1)):
+        b_val = source_ws.cell(row, 2).value
+        if b_val and 'NetSales' in str(b_val):
+            net_sales_row = row
+            debug_log(f"Found NetSales row: {row}")
+            break
+
+    if net_sales_row is None:
+        debug_log(f"Percentage PL sheet (non-consolidated) skipped: NetSales row not found in '{source_sheet_name}'")
+        return
+
+    # 1行目: ヘッダー行（元シートを参照）
+    header_row = []
+    for col in range(1, max_col + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        formula = f"='{source_sheet_name}'!{col_letter}1"
+        header_row.append(formula)
+    analysis_ws.append(header_row)
+
+    # 2行目以降: データ行
+    for row in range(2, max_row + 1):
+        data_row = []
+        for col in range(1, max_col + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+
+            if col <= 2:
+                # A列とB列は元シートを参照
+                formula = f"='{source_sheet_name}'!{col_letter}{row}"
+                data_row.append(formula)
+            else:
+                # C列以降: 百分率計算
+                formula = (f"=IF(OR(ISBLANK('{source_sheet_name}'!{col_letter}{row}),"
+                          f"ISBLANK('{source_sheet_name}'!{col_letter}${net_sales_row})),"
+                          f"\"\","
+                          f"'{source_sheet_name}'!{col_letter}{row}/'{source_sheet_name}'!{col_letter}${net_sales_row})")
+                data_row.append(formula)
+
+        analysis_ws.append(data_row)
+
+    # データ列のどれが有効かを判定（売上高があるか）
+    def has_sales_data(col_num):
+        """指定した列に売上高データがあるかチェック"""
+        if col_num < 3:
+            return False
+        try:
+            col_letter = openpyxl.utils.get_column_letter(col_num)
+            value = source_ws[f'{col_letter}{net_sales_row}'].value
+            return value is not None and value != ''
+        except Exception:
+            return False
+
+    # 最古と最新のデータ列を特定
+    oldest_col = None
+    latest_col = max_col
+
+    for col in range(3, max_col + 1):
+        if has_sales_data(col):
+            oldest_col = col
+            break
+
+    if oldest_col is None:
+        debug_log(f"Percentage PL sheet (non-consolidated) created but no valid data columns found")
+        return
+
+    # 期間を計算 (kikan = 最新列 - 最古列)
+    kikan = latest_col - oldest_col
+
+    # 比較列を追加
+    comparison_cols = []
+
+    if kikan >= 10:
+        # 10年以上データがある場合
+        ten_years_ago_col = latest_col - 10
+        if ten_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 1,
+                'latest': latest_col,
+                'base': ten_years_ago_col
+            })
+
+        five_years_ago_col = latest_col - 5
+        if five_years_ago_col >= oldest_col and ten_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 2,
+                'latest': five_years_ago_col,
+                'base': ten_years_ago_col
+            })
+
+        if five_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 3,
+                'latest': latest_col,
+                'base': five_years_ago_col
+            })
+    elif kikan >= 5:
+        # 5-9年データがある場合
+        comparison_cols.append({
+            'col': max_col + 1,
+            'latest': latest_col,
+            'base': oldest_col
+        })
+
+        five_years_ago_col = latest_col - 5
+        if five_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 2,
+                'latest': five_years_ago_col,
+                'base': oldest_col
+            })
+
+        if five_years_ago_col >= oldest_col:
+            comparison_cols.append({
+                'col': max_col + 3,
+                'latest': latest_col,
+                'base': five_years_ago_col
+            })
+
+    # 比較列を追加
+    for comp in comparison_cols:
+        comp_col = comp['col']
+        comp_col_letter = openpyxl.utils.get_column_letter(comp_col)
+        latest_letter = openpyxl.utils.get_column_letter(comp['latest'])
+        base_letter = openpyxl.utils.get_column_letter(comp['base'])
+
+        # 1行目: 年度表示 (例: "2025-2015")
+        year_formula = f"=YEAR({latest_letter}1) & \"-\" & YEAR({base_letter}1)"
+        analysis_ws[f'{comp_col_letter}1'] = year_formula
+
+        # 2行目以降: 差分計算
+        for row in range(2, max_row + 1):
+            diff_formula = f"=IF(OR({latest_letter}{row}=\"\",{base_letter}{row}=\"\"),\"\",{latest_letter}{row}-{base_letter}{row})"
+            analysis_ws[f'{comp_col_letter}{row}'] = diff_formula
+
+    # 表示形式の設定
+    number_format_percent = r'0.0%;[Red]-0.0%'
+
+    # C列以降のすべてのデータセル（比較列含む）にパーセント表示を設定
+    total_cols = max_col + len(comparison_cols)
+    for col in range(3, total_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        for row in range(2, max_row + 1):
+            analysis_ws[f'{col_letter}{row}'].number_format = number_format_percent
+
+    # 列幅の設定
+    analysis_ws.column_dimensions['A'].width = 28
+    analysis_ws.column_dimensions['B'].hidden = True
+
+    for col in range(3, total_cols + 1):
+        col_letter = openpyxl.utils.get_column_letter(col)
+        analysis_ws.column_dimensions[col_letter].width = 12
+
+    # ウィンドウ枠の固定 (B2)
+    analysis_ws.freeze_panes = 'B2'
+
+    debug_log(f"Percentage PL sheet (non-consolidated) created: {analysis_sheet_name}")
+
+
 def add_financial_analysis_sheets(workbook, debug_log=None):
     """
     財務分析シートを追加する（メイン関数）
@@ -2071,3 +2457,19 @@ def add_financial_analysis_sheets(workbook, debug_log=None):
                 create_percentage_pl_sheet(workbook, sheet_name, debug_log)
             except Exception as e:
                 debug_log(f"Warning: Failed to create percentage PL sheet for '{sheet_name}': {e}")
+
+    # 貸借対照表（単体）シートを検索して百分率BSシートを生成
+    for sheet_name in workbook.sheetnames:
+        if sheet_name == '貸借対照表':
+            try:
+                create_percentage_bs_sheet_non_consolidated(workbook, sheet_name, debug_log)
+            except Exception as e:
+                debug_log(f"Warning: Failed to create percentage BS sheet (non-consolidated) for '{sheet_name}': {e}")
+
+    # 損益計算書（単体）シートを検索して百分率PLシートを生成
+    for sheet_name in workbook.sheetnames:
+        if sheet_name == '損益計算書':
+            try:
+                create_percentage_pl_sheet_non_consolidated(workbook, sheet_name, debug_log)
+            except Exception as e:
+                debug_log(f"Warning: Failed to create percentage PL sheet (non-consolidated) for '{sheet_name}': {e}")
