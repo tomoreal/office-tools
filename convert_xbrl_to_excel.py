@@ -75,6 +75,9 @@ except ImportError:
 # Import financial analysis module
 from financial_analysis import add_financial_analysis_sheets
 
+# Import segment analysis module
+from segment_analysis import add_segment_analysis_sheets
+
 # Import EDINET Taxonomy Dictionary
 from edinet_taxonomy_dict import common_dict as EDINET_COMMON_DICT
 
@@ -2727,6 +2730,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     wb = Workbook()
     default_sheet_removed = False
 
+    # List to collect segment sheet information for later processing
+    segment_sheets_info = []
+
     # Identify periods and standards for sheet planning
     t_sheet_planning_start = time.time()
     # Identify periods that are standalone (not consolidated)
@@ -3692,159 +3698,22 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         # Format: #,##0_;[Red]-#,##0
                         cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
                     
-        # --- NEW: Formatted Segment Analysis Sheet ---
+        # --- Collect Segment Information for Later Analysis ---
         if is_segment:
-            analysis_sheet_name = sheet_name + "_分析"
-            if len(analysis_sheet_name) > 31:
-                # Ensure it doesn't exceed 31 chars
-                analysis_sheet_name = sheet_name[:28] + "_分析"
-            
-            aws = wb.create_sheet(title=analysis_sheet_name)
-            used_sheet_names.add(analysis_sheet_name)
-            
-            # Segments as horizontal axis (unique dimensions)
-            unique_dims = []
-            for c in sorted_role_cols:
-                # c is (std, dim, period)
-                d = c[1] if len(c) == 3 else c[0]
-                if d not in unique_dims:
-                    unique_dims.append(d)
-            
-            # Dims are already in sorted order from sorted_role_cols
-            
-            # All available years for this role (ascending)
-            unique_periods = sorted(list(set(c[2] if len(c) == 3 else c[1] for c in role_columns)))
-            
-            # Header
-            aws.append(["勘定科目", "年度"] + unique_dims)
-            
-            seen_rows_analysis = set()
-            
-            for full_path_data in ordered_keys:
-                full_path, pref_label = full_path_data
-                el = full_path.split('::')[-1]
-                if '|' in el: el = el.split('|')[0]
-
-                # --- USER SUGGESTION: Skip irrelevant element types (Analysis) ---
-                if el.endswith(("TextBlock","Abstract","Axis","Member","Table")):
-                    continue
-                
-                parts = el.split('_')
-                base_name = parts[-1] if len(parts) > 1 else el
-                
-                if base_name in segment_dict:
-                    label = segment_dict[base_name]
-                elif base_name in common_dict:
-                    label = common_dict[base_name]
-                else:
-                    label = labels_map.get(el)
-                    if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
-                if not label:
-                    label = convert_camel_case_to_title(base_name)
-                
-                depth = len(full_path.split('::')) - 1
-                indent_prefix = "　" * depth
-
-                # Remove unwanted suffixes from label for Excel output
-                display_label = label
-                display_label = display_label.replace(' [目次項目]', '').replace(' [タイトル項目]', '')
-                display_label = display_label.replace('（IFRS）', '').replace('(IFRS)', '')
-                display_label = display_label.replace('、経営指標等', '')
-                display_label = display_label.replace('、流動資産', '').replace('、非流動資産', '')
-                display_label = display_label.replace('、流動負債', '').replace('、非流動負債', '')
-                display_label = display_label.strip()
-
-                # For each year, create a row
-                for period in unique_periods:
-                    row_data_analysis = [indent_prefix + display_label, period]
-                    has_numeric_data_analysis = False
-                    has_data_analysis = False
-                    
-                    for dim in unique_dims:
-                        # Search for (any_std, dim, period) - usually current_standard
-                        # Prefer current_standard, fallback to others if needed?
-                        found_v = ""
-                        stds_to_check = [current_standard] if current_standard != 'JP_ALL' else ['IFRS', 'JP', 'US', 'JMIS']
-                        for s in stds_to_check:
-                            v = all_years_data[role][full_path].get((s, dim, period))
-                            if v is not None:
-                                found_v = v
-                                break
-                        val = found_v
-                        
-                        if val:
-                            import unicodedata
-                            val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
-                            try:
-                                if val_clean and not any(c.isalpha() for c in val_clean):
-                                    val = float(val_clean)
-                                    has_numeric_data_analysis = True
-                            except Exception:
-                                pass
-                        row_data_analysis.append(val)
-                        if val != "":
-                            has_data_analysis = True
-                    
-                    if has_data_analysis:
-                        if not has_numeric_data_analysis:
-                            continue
-                        # Deduplication
-                        row_values_tuple = tuple(row_data_analysis[2:])
-                        row_key = (display_label, period, row_values_tuple)
-                        if row_key in seen_rows_analysis:
-                            continue
-                        seen_rows_analysis.add(row_key)
-                        aws.append(row_data_analysis)
-
-                # --- TAXONOMY STRUCTURE-BASED: Stop Cash Flow Analysis at natural end ---
-                # (allow both periodStartLabel and periodEndLabel to be displayed)
-                if 'キャッシュ・フロー' in sheet_name and 'CashAndCashEquivalents' in el:
-                    if pref_label and pref_label.endswith(('periodEndLabel', 'totalLabel')):
-                        # Check if this is at natural end of hierarchy
-                        current_idx = ordered_keys.index(full_path_data)
-                        if current_idx >= len(ordered_keys) - 1:
-                            break
-
-                        # Check if there are more CashAndCash items ahead
-                        has_more_cash_items = False
-                        for next_idx in range(current_idx + 1, len(ordered_keys)):
-                            next_fp, _ = ordered_keys[next_idx]
-                            next_el_name = next_fp.split('::')[-1]
-                            if '|' in next_el_name:
-                                next_el_name = next_el_name.split('|')[0]
-                            if next_el_name.endswith(("Abstract", "TextBlock", "Table", "Axis", "Member")):
-                                continue
-                            # If we find another CashAndCash item, don't break yet
-                            if 'CashAndCashEquivalents' in next_el_name:
-                                has_more_cash_items = True
-                                break
-                            break
-
-                        if has_more_cash_items:
-                            continue  # Don't break, process the next CashAndCash item
-
-                        # Check depth of next items if no more CashAndCash items
-                        current_depth = len(full_path.split('::')) - 1
-                        is_at_end = True
-                        for next_idx in range(current_idx + 1, len(ordered_keys)):
-                            next_fp, _ = ordered_keys[next_idx]
-                            next_el_name = next_fp.split('::')[-1]
-                            if '|' in next_el_name:
-                                next_el_name = next_el_name.split('|')[0]
-                            if next_el_name.endswith(("Abstract", "TextBlock", "Table", "Axis", "Member")):
-                                continue
-                            next_depth = len(next_fp.split('::')) - 1
-                            if next_depth > current_depth:
-                                is_at_end = False
-                            break
-                        if is_at_end:
-                            break
-
-            # Apply formatting to analysis sheet
-            for row in aws.iter_rows(min_row=2, max_row=aws.max_row, min_col=3, max_col=aws.max_column):
-                for cell in row:
-                    if isinstance(cell.value, (int, float)):
-                        cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+            # Collect information needed for segment analysis
+            segment_sheets_info.append({
+                'sheet_name': sheet_name,
+                'ordered_keys': ordered_keys,
+                'all_years_data': all_years_data,
+                'role': role,
+                'sorted_role_cols': sorted_role_cols,
+                'role_columns': role_columns,
+                'current_standard': current_standard,
+                'segment_dict': segment_dict,
+                'common_dict': common_dict,
+                'labels_map': labels_map,
+                'used_sheet_names': used_sheet_names
+            })
 
     debug_log(f"Sheet generation completed in {time.time() - t_sheet_generation_start:.2f}s")
 
@@ -3973,6 +3842,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     # ============================================================================
     # 財務分析シートを追加（financial_analysis.pyモジュールを使用）
     add_financial_analysis_sheets(wb, debug_log)
+
+    # ============================================================================
+    # SEGMENT ANALYSIS SHEETS (セグメント分析)
+    # ============================================================================
+    # セグメント分析シートを追加（segment_analysis.pyモジュールを使用）
+    add_segment_analysis_sheets(wb, segment_sheets_info, debug_log)
 
     # 最新の期末を取得してファイル名に追加
     latest_period = ''
