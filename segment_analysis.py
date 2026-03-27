@@ -587,10 +587,6 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         cell.number_format = r'#,##0_);[Red](#,##0)'
 
     # ===== Calculate axis ranges for charts =====
-    # We need the latest year (index = num_data_rows - 1) and 5 years ago (index = num_data_rows - 6)
-    # We only use columns from 3 to chart_end_col
-    # The axis range should be calculated from BOTH years combined
-
     def calculate_axis_range_multi_year(values_array, year_indices, col_start, col_end):
         """
         Calculate min and max for axis range from the values array across multiple years.
@@ -620,81 +616,40 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
         return (min(valid_values), max(valid_values))
 
-    # Calculate axis ranges for current year chart (latest year only)
+    # ===== Calculate common axis ranges for charts =====
+    # We need the latest year and 5 years ago (if available)
+    import math
+
+    def get_rounded_axis_range(min_val, max_val, unit=0.05):
+        if min_val is None or max_val is None:
+            return -0.05, 0.40
+        axis_min = math.floor(min_val / unit) * unit
+        axis_max = math.ceil(max_val / unit) * unit
+        if axis_min == axis_max:
+            axis_max += unit
+        return axis_min, axis_max
+
     latest_year_idx = num_data_rows - 1
-
-    # X-axis: Profit margin (売上高利益率) - current year
-    x_min_current, x_max_current = calculate_axis_range_multi_year(
-        profit_margins, [latest_year_idx], 3, chart_end_col
-    )
-
-    # Y-axis: Growth rate (売上高対前年増加率) - current year
-    y_min_current, y_max_current = calculate_axis_range_multi_year(
-        growth_rates, [latest_year_idx], 3, chart_end_col
-    )
-
-    # Set default ranges if no valid values found, otherwise add padding
-    if x_min_current is None or x_max_current is None:
-        x_min_current = -0.05
-        x_max_current = 0.35
-    else:
-        # Add some padding (10%) to the ranges for better visualization
-        x_range = x_max_current - x_min_current
-        # Avoid division by zero when all values are the same
-        if x_range == 0:
-            x_range = 0.1
-        x_min_current = x_min_current - x_range * 0.1
-        x_max_current = x_max_current + x_range * 0.1
-
-    if y_min_current is None or y_max_current is None:
-        y_min_current = -0.25
-        y_max_current = 0.40
-    else:
-        # Add some padding (10%) to the ranges for better visualization
-        y_range = y_max_current - y_min_current
-        # Avoid division by zero when all values are the same
-        if y_range == 0:
-            y_range = 0.1
-        y_min_current = y_min_current - y_range * 0.1
-        y_max_current = y_max_current + y_range * 0.1
-
-    # Calculate axis ranges for 5-year chart (latest year AND 5 years ago)
     five_year_ago_idx = num_data_rows - 6
+    five_years_ago_offset = 5
+    
+    # Identify relevant years for global axis calculation
+    relevant_years = [latest_year_idx]
+    if (sales_end_row - sales_start_row + 1) > five_years_ago_offset:
+        relevant_years.append(five_year_ago_idx)
 
-    # X-axis: Profit margin (売上高利益率) - both years
-    x_min_5y, x_max_5y = calculate_axis_range_multi_year(
-        profit_margins, [latest_year_idx, five_year_ago_idx], 3, chart_end_col
+    # Calculate global range for X-axis: Profit margin
+    raw_x_min, raw_x_max = calculate_axis_range_multi_year(
+        profit_margins, relevant_years, 3, chart_end_col
     )
+    common_x_min, common_x_max = get_rounded_axis_range(raw_x_min, raw_x_max)
 
-    # Y-axis: Growth rate (売上高対前年増加率) - both years
-    y_min_5y, y_max_5y = calculate_axis_range_multi_year(
-        growth_rates, [latest_year_idx, five_year_ago_idx], 3, chart_end_col
+    # Calculate global range for Y-axis: Growth rate
+    raw_y_min, raw_y_max = calculate_axis_range_multi_year(
+        growth_rates, relevant_years, 3, chart_end_col
     )
+    common_y_min, common_y_max = get_rounded_axis_range(raw_y_min, raw_y_max)
 
-    # Set default ranges if no valid values found, otherwise add padding
-    if x_min_5y is None or x_max_5y is None:
-        x_min_5y = -0.05
-        x_max_5y = 0.35
-    else:
-        # Add some padding (10%) to the ranges for better visualization
-        x_range_5y = x_max_5y - x_min_5y
-        # Avoid division by zero when all values are the same
-        if x_range_5y == 0:
-            x_range_5y = 0.1
-        x_min_5y = x_min_5y - x_range_5y * 0.1
-        x_max_5y = x_max_5y + x_range_5y * 0.1
-
-    if y_min_5y is None or y_max_5y is None:
-        y_min_5y = -0.25
-        y_max_5y = 0.40
-    else:
-        # Add some padding (10%) to the ranges for better visualization
-        y_range_5y = y_max_5y - y_min_5y
-        # Avoid division by zero when all values are the same
-        if y_range_5y == 0:
-            y_range_5y = 0.1
-        y_min_5y = y_min_5y - y_range_5y * 0.1
-        y_max_5y = y_max_5y + y_range_5y * 0.1
 
     # ===== Create Bubble Chart =====
     chart = BubbleChart()
@@ -745,11 +700,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     chart.x_axis.delete = False
     chart.y_axis.delete = False
 
-    # 軸の範囲設定 (計算された値を使用)
-    chart.x_axis.scaling.min = x_min_current
-    chart.x_axis.scaling.max = x_max_current
-    chart.y_axis.scaling.min = y_min_current
-    chart.y_axis.scaling.max = y_max_current
+    # 軸の範囲設定 (計算された共通の値を使用)
+    chart.x_axis.scaling.min = common_x_min
+    chart.x_axis.scaling.max = common_x_max
+    chart.y_axis.scaling.min = common_y_min
+    chart.y_axis.scaling.max = common_y_max
+
 
     # Create data series
     # X values: Profit margin (row data_start_row + 1, columns C to chart_end_col)
@@ -784,8 +740,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # Find the row for 5 years ago (6th row from the end in sales data, since last row is latest)
     # Sales data is in rows sales_start_row to sales_end_row (11 rows for 11 years)
     # 5 years ago would be at: sales_end_row - 5
-    five_years_ago_offset = 5
     if (sales_end_row - sales_start_row + 1) > five_years_ago_offset:
+
         five_year_sales_row = sales_end_row - five_years_ago_offset
         five_year_profit_row = profit_end_row - five_years_ago_offset
         five_year_growth_row = growth_end_row - five_years_ago_offset
@@ -891,11 +847,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         chart_5y.x_axis.delete = False
         chart_5y.y_axis.delete = False
 
-        # 軸の範囲設定 (計算された値を使用 - 最新年と5年前の両方のデータから計算)
-        chart_5y.x_axis.scaling.min = x_min_5y
-        chart_5y.x_axis.scaling.max = x_max_5y
-        chart_5y.y_axis.scaling.min = y_min_5y
-        chart_5y.y_axis.scaling.max = y_max_5y
+        # 軸の範囲設定 (計算された共通の値を使用)
+        chart_5y.x_axis.scaling.min = common_x_min
+        chart_5y.x_axis.scaling.max = common_x_max
+        chart_5y.y_axis.scaling.min = common_y_min
+        chart_5y.y_axis.scaling.max = common_y_max
+
 
         # Create data series for 5-year-old data
         xvalues_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 1, max_col=chart_end_col, max_row=five_year_data_start_row + 1)
