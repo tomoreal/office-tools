@@ -54,9 +54,16 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
 
         # Create PPM analysis sheet for Japanese GAAP only
         if '日本基準' in info['sheet_name']:
+            # Use the same sheet name transformation as _create_segment_analysis_sheet
+            # (replacing "注記" with "連結")
+            base_name = info['sheet_name'].replace("注記", "連結")
+            analysis_sheet_name = base_name + "_分析"
+            if len(analysis_sheet_name) > 31:
+                analysis_sheet_name = base_name[:28] + "_分析"
+
             _create_ppm_analysis_sheet(
                 workbook=workbook,
-                analysis_sheet_name=info['sheet_name'] + '_分析',
+                analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
                 debug_log=debug_log
             )
