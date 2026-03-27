@@ -5,7 +5,7 @@ ROE分析やその他の財務分析機能を提供するモジュール
 """
 
 import openpyxl.utils
-
+import re
 
 def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     """
@@ -25,7 +25,23 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         return
 
     source_ws = workbook[source_sheet_name]
-    analysis_sheet_name = f"{source_sheet_name}_ROE分析"
+
+    # 正規表現で「最初のカッコ内」と「それ以降」を抽出
+    # \1: 最初のカッコの中身（連結）
+    # \2: それ以降の文字列（(日本基準)）
+    match = re.search(r'[（\(](.*?)[）\)](.*)', source_sheet_name)
+
+    if match:
+        # 「連結」 + 「(日本基準)」 の形にする
+        short_name = f"{match.group(1)}{match.group(2)}"
+    else:
+        # カッコが含まれない場合のフォールバック
+        short_name = source_sheet_name
+
+    analysis_sheet_name = f"{short_name}_ROE分析"
+
+    # シート名31文字制限対策（念のため）
+    analysis_sheet_name = analysis_sheet_name[:31]
 
     # 既存の分析シートがあれば削除
     if analysis_sheet_name in workbook.sheetnames:
@@ -999,7 +1015,24 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
         return
 
     source_ws = workbook[source_sheet_name]
-    analysis_sheet_name = f"{source_sheet_name}_ROE分析"
+
+    # 正規表現で「最初のカッコ内」と「それ以降」を抽出
+    # \1: 最初のカッコの中身（連結）
+    # \2: それ以降の文字列（(日本基準)）
+    match = re.search(r'[（\(](.*?)[）\)](.*)', source_sheet_name)
+
+    if match:
+        # 単体の形にする
+        short_name = f"{match.group(1)}"
+    else:
+        # カッコが含まれない場合のフォールバック
+        short_name = source_sheet_name
+
+    analysis_sheet_name = f"{short_name}_ROE分析"
+
+    # シート名31文字制限対策（念のため）
+    analysis_sheet_name = analysis_sheet_name[:31]
+
 
     # 既存の分析シートがあれば削除
     if analysis_sheet_name in workbook.sheetnames:
@@ -2931,13 +2964,13 @@ def add_financial_analysis_sheets(workbook, debug_log=None):
                 debug_log(f"Warning: Failed to create ROE analysis sheet for '{sheet_name}': {e}")
                 # ROE分析シート生成に失敗してもメイン処理は継続
 
-    # 主要な経営指標等の推移（単体）シートを検索してROE分析シートを生成
+    # 連結財政状態計算書(IFRS)シートを検索して百分率BSシートを生成
     for sheet_name in workbook.sheetnames:
-        if '主要な経営指標等の推移' in sheet_name and '単体' in sheet_name and '_' not in sheet_name:
+        if '財政状態計算書' in sheet_name and 'IFRS' in sheet_name and '_' not in sheet_name:
             try:
-                create_roe_analysis_sheet_non_consolidated(workbook, sheet_name, debug_log)
+                create_percentage_ifrs_financial_position_sheet(workbook, sheet_name, debug_log)
             except Exception as e:
-                debug_log(f"Warning: Failed to create ROE analysis sheet for '{sheet_name}': {e}")
+                debug_log(f"Warning: Failed to create percentage Financial Position sheet (IFRS) for '{sheet_name}': {e}")
 
     # 連結貸借対照表シートを検索して百分率BSシートを生成
     for sheet_name in workbook.sheetnames:
@@ -2947,6 +2980,14 @@ def add_financial_analysis_sheets(workbook, debug_log=None):
             except Exception as e:
                 debug_log(f"Warning: Failed to create percentage BS sheet for '{sheet_name}': {e}")
 
+    # 連結損益計算書(IFRS)シートを検索して百分率PLシートを生成
+    for sheet_name in workbook.sheetnames:
+        if '損益計算書' in sheet_name and 'IFRS' in sheet_name and '包括' not in sheet_name and '_' not in sheet_name:
+            try:
+                create_percentage_ifrs_income_sheet(workbook, sheet_name, debug_log)
+            except Exception as e:
+                debug_log(f"Warning: Failed to create percentage Income sheet (IFRS) for '{sheet_name}': {e}")
+
     # 連結損益計算書シートを検索して百分率PLシートを生成
     for sheet_name in workbook.sheetnames:
         if '連結損益計算書' in sheet_name and '日本基準' in sheet_name and '_' not in sheet_name:
@@ -2954,6 +2995,14 @@ def add_financial_analysis_sheets(workbook, debug_log=None):
                 create_percentage_pl_sheet(workbook, sheet_name, debug_log)
             except Exception as e:
                 debug_log(f"Warning: Failed to create percentage PL sheet for '{sheet_name}': {e}")
+
+    # 主要な経営指標等の推移（単体）シートを検索してROE分析シートを生成
+    for sheet_name in workbook.sheetnames:
+        if '主要な経営指標等の推移' in sheet_name and '単体' in sheet_name and '_' not in sheet_name:
+            try:
+                create_roe_analysis_sheet_non_consolidated(workbook, sheet_name, debug_log)
+            except Exception as e:
+                debug_log(f"Warning: Failed to create ROE analysis sheet for '{sheet_name}': {e}")
 
     # 貸借対照表（単体）シートを検索して百分率BSシートを生成
     for sheet_name in workbook.sheetnames:
@@ -2970,19 +3019,3 @@ def add_financial_analysis_sheets(workbook, debug_log=None):
                 create_percentage_pl_sheet_non_consolidated(workbook, sheet_name, debug_log)
             except Exception as e:
                 debug_log(f"Warning: Failed to create percentage PL sheet (non-consolidated) for '{sheet_name}': {e}")
-
-    # 連結財政状態計算書(IFRS)シートを検索して百分率BSシートを生成
-    for sheet_name in workbook.sheetnames:
-        if '財政状態計算書' in sheet_name and 'IFRS' in sheet_name and '_' not in sheet_name:
-            try:
-                create_percentage_ifrs_financial_position_sheet(workbook, sheet_name, debug_log)
-            except Exception as e:
-                debug_log(f"Warning: Failed to create percentage Financial Position sheet (IFRS) for '{sheet_name}': {e}")
-
-    # 連結損益計算書(IFRS)シートを検索して百分率PLシートを生成
-    for sheet_name in workbook.sheetnames:
-        if '損益計算書' in sheet_name and 'IFRS' in sheet_name and '包括' not in sheet_name and '_' not in sheet_name:
-            try:
-                create_percentage_ifrs_income_sheet(workbook, sheet_name, debug_log)
-            except Exception as e:
-                debug_log(f"Warning: Failed to create percentage Income sheet (IFRS) for '{sheet_name}': {e}")

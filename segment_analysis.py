@@ -84,11 +84,17 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
         used_sheet_names: 使用済みシート名のセット
         debug_log: デバッグログ関数
     """
-    # 分析シート名を生成
-    analysis_sheet_name = sheet_name + "_分析"
+    # 1. 「注記」を「連結」に置換
+    base_name = sheet_name.replace("注記", "連結")
+
+    # 2. 分析シート名を生成
+    analysis_sheet_name = base_name + "_分析"
+
+    # 3. Excelのシート名制限（31文字）をチェック
     if len(analysis_sheet_name) > 31:
-        # Excel sheet name limit is 31 characters
-        analysis_sheet_name = sheet_name[:28] + "_分析"
+        # 31文字を超える場合は、置換後の名前をカットして "_分析" を結合
+        # (31 - 3 = 28文字分を本体から取得)
+        analysis_sheet_name = base_name[:28] + "_分析"
 
     debug_log(f"[Segment Analysis] Creating analysis sheet: {analysis_sheet_name}")
 

@@ -1164,7 +1164,7 @@ XBRL to Excel Converter - Main UI Template
 
                         // 高さが一定以上＝広告描画完了とみなす
                         if (rect.height > 50) {
-                            const scrollTarget = window.pageYOffset + rect.bottom + 10;
+                            const scrollTarget = window.pageYOffset + (rect.bottom * 2) + 10;
 
                             window.scrollTo({
                                 top: scrollTarget,
