@@ -374,23 +374,50 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # 売上高対前年増加率 (Sales YoY Growth Rate)
     # Calculate number of data rows (should be 11 rows based on sales data)
     num_data_rows = sales_end_row - sales_start_row + 1
+
+    # Array to store actual growth rate values for axis calculation
+    # growth_rates[year_idx][col_idx] = growth rate value (or None if empty)
+    growth_rates = []
+
     for idx in range(num_data_rows):  # For each year
         growth_row = ["売上高対前年増加率"]
         # Calculate which row in sales data to reference
         year_row_ref = sales_start_row + idx  # Reference to corresponding sales row
 
+        # Store growth rate values for this year
+        year_growth_rates = [None, None]  # A and B columns (label and year)
+
         for col_idx in range(2, max_col + 1):
             col_letter = get_column_letter(col_idx)
             if col_idx == 2:  # Column B: reference the year from sales data
                 formula = f"=B{year_row_ref}"
+                year_growth_rates.append(None)
             elif idx == 0:  # First year: empty data columns (no previous year to compare)
                 formula = ""
+                year_growth_rates.append(None)
             else:  # Calculate growth rate
                 # Current year is in row (sales_start_row + idx), previous year is in row (sales_start_row + idx - 1)
                 current_row_ref = sales_start_row + idx
                 previous_row_ref = sales_start_row + idx - 1
                 formula = f"=IF(OR({col_letter}{current_row_ref}=\"\",{col_letter}{previous_row_ref}=\"\"),\"\",{col_letter}{current_row_ref}/{col_letter}{previous_row_ref}-1)"
+
+                # Get actual values from analysis sheet to calculate growth rate
+                # analysis_ws rows 24-34 contain sales data (11 years)
+                # idx corresponds to year index (0-10), so analysis row = 24 + idx
+                current_analysis_row = 24 + idx
+                prev_analysis_row = 24 + idx - 1
+                current_val = analysis_ws.cell(current_analysis_row, col_idx).value
+                prev_val = analysis_ws.cell(prev_analysis_row, col_idx).value
+
+                if current_val and prev_val and prev_val != 0:
+                    growth_rate = current_val / prev_val - 1
+                    year_growth_rates.append(growth_rate)
+                else:
+                    year_growth_rates.append(None)
+
             growth_row.append(formula)
+
+        growth_rates.append(year_growth_rates)
         ppm_ws.append(growth_row)
 
     growth_end_row = ppm_ws.max_row  # Track where growth rate rows end
@@ -401,22 +428,48 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # Track profit margin rows
     margin_start_row = ppm_ws.max_row + 1  # Track where profit margin rows start
 
+    # Array to store actual profit margin values for axis calculation
+    # profit_margins[year_idx][col_idx] = profit margin value (or None if empty)
+    profit_margins = []
+
     # 売上高利益率 (Sales Profit Margin)
     for idx in range(num_data_rows):  # For each year
         margin_row = ["売上高利益率"]
         # Calculate which row to reference
         year_row_ref = sales_start_row + idx  # Reference to corresponding sales row
 
+        # Store profit margin values for this year
+        year_profit_margins = [None, None]  # A and B columns (label and year)
+
         for col_idx in range(2, max_col + 1):
             col_letter = get_column_letter(col_idx)
             if col_idx == 2:  # Column B: reference the year from sales data
                 formula = f"=B{year_row_ref}"
+                year_profit_margins.append(None)
             else:  # Columns C onwards: Calculate profit margin
                 # Sales is in sales rows, Segment profit is in profit rows
                 sales_row_ref = sales_start_row + idx
                 profit_row_ref = profit_start_row + idx
                 formula = f"=IF(OR({col_letter}{profit_row_ref}=\"\",{col_letter}{sales_row_ref}=\"\"),\"\",{col_letter}{profit_row_ref}/{col_letter}{sales_row_ref})"
+
+                # Get actual values from analysis sheet to calculate profit margin
+                # analysis_ws rows 24-34 contain sales data (11 years)
+                # analysis_ws rows 35-45 contain profit data (11 years)
+                # idx corresponds to year index (0-10)
+                sales_analysis_row = 24 + idx
+                profit_analysis_row = 35 + idx
+                sales_val = analysis_ws.cell(sales_analysis_row, col_idx).value
+                profit_val = analysis_ws.cell(profit_analysis_row, col_idx).value
+
+                if sales_val and profit_val and sales_val != 0:
+                    profit_margin = profit_val / sales_val
+                    year_profit_margins.append(profit_margin)
+                else:
+                    year_profit_margins.append(None)
+
             margin_row.append(formula)
+
+        profit_margins.append(year_profit_margins)
         ppm_ws.append(margin_row)
 
     margin_end_row = ppm_ws.max_row  # Track where profit margin rows end
@@ -533,6 +586,116 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         cell = ppm_ws[f'{col_letter}{data_start_row + 3}']
         cell.number_format = r'#,##0_);[Red](#,##0)'
 
+    # ===== Calculate axis ranges for charts =====
+    # We need the latest year (index = num_data_rows - 1) and 5 years ago (index = num_data_rows - 6)
+    # We only use columns from 3 to chart_end_col
+    # The axis range should be calculated from BOTH years combined
+
+    def calculate_axis_range_multi_year(values_array, year_indices, col_start, col_end):
+        """
+        Calculate min and max for axis range from the values array across multiple years.
+
+        Args:
+            values_array: 2D array [year_idx][col_idx] containing values (or None)
+            year_indices: List of year indices to extract values from
+            col_start: Starting column index (inclusive)
+            col_end: Ending column index (inclusive)
+
+        Returns:
+            (min_val, max_val) tuple, or (None, None) if no valid values
+        """
+        valid_values = []
+
+        for year_idx in year_indices:
+            if year_idx < 0 or year_idx >= len(values_array):
+                continue
+
+            year_values = values_array[year_idx]
+            for col_idx in range(col_start, col_end + 1):
+                if col_idx < len(year_values) and year_values[col_idx] is not None:
+                    valid_values.append(year_values[col_idx])
+
+        if not valid_values:
+            return (None, None)
+
+        return (min(valid_values), max(valid_values))
+
+    # Calculate axis ranges for current year chart (latest year only)
+    latest_year_idx = num_data_rows - 1
+
+    # X-axis: Profit margin (売上高利益率) - current year
+    x_min_current, x_max_current = calculate_axis_range_multi_year(
+        profit_margins, [latest_year_idx], 3, chart_end_col
+    )
+
+    # Y-axis: Growth rate (売上高対前年増加率) - current year
+    y_min_current, y_max_current = calculate_axis_range_multi_year(
+        growth_rates, [latest_year_idx], 3, chart_end_col
+    )
+
+    # Set default ranges if no valid values found, otherwise add padding
+    if x_min_current is None or x_max_current is None:
+        x_min_current = -0.05
+        x_max_current = 0.35
+    else:
+        # Add some padding (10%) to the ranges for better visualization
+        x_range = x_max_current - x_min_current
+        # Avoid division by zero when all values are the same
+        if x_range == 0:
+            x_range = 0.1
+        x_min_current = x_min_current - x_range * 0.1
+        x_max_current = x_max_current + x_range * 0.1
+
+    if y_min_current is None or y_max_current is None:
+        y_min_current = -0.25
+        y_max_current = 0.40
+    else:
+        # Add some padding (10%) to the ranges for better visualization
+        y_range = y_max_current - y_min_current
+        # Avoid division by zero when all values are the same
+        if y_range == 0:
+            y_range = 0.1
+        y_min_current = y_min_current - y_range * 0.1
+        y_max_current = y_max_current + y_range * 0.1
+
+    # Calculate axis ranges for 5-year chart (latest year AND 5 years ago)
+    five_year_ago_idx = num_data_rows - 6
+
+    # X-axis: Profit margin (売上高利益率) - both years
+    x_min_5y, x_max_5y = calculate_axis_range_multi_year(
+        profit_margins, [latest_year_idx, five_year_ago_idx], 3, chart_end_col
+    )
+
+    # Y-axis: Growth rate (売上高対前年増加率) - both years
+    y_min_5y, y_max_5y = calculate_axis_range_multi_year(
+        growth_rates, [latest_year_idx, five_year_ago_idx], 3, chart_end_col
+    )
+
+    # Set default ranges if no valid values found, otherwise add padding
+    if x_min_5y is None or x_max_5y is None:
+        x_min_5y = -0.05
+        x_max_5y = 0.35
+    else:
+        # Add some padding (10%) to the ranges for better visualization
+        x_range_5y = x_max_5y - x_min_5y
+        # Avoid division by zero when all values are the same
+        if x_range_5y == 0:
+            x_range_5y = 0.1
+        x_min_5y = x_min_5y - x_range_5y * 0.1
+        x_max_5y = x_max_5y + x_range_5y * 0.1
+
+    if y_min_5y is None or y_max_5y is None:
+        y_min_5y = -0.25
+        y_max_5y = 0.40
+    else:
+        # Add some padding (10%) to the ranges for better visualization
+        y_range_5y = y_max_5y - y_min_5y
+        # Avoid division by zero when all values are the same
+        if y_range_5y == 0:
+            y_range_5y = 0.1
+        y_min_5y = y_min_5y - y_range_5y * 0.1
+        y_max_5y = y_max_5y + y_range_5y * 0.1
+
     # ===== Create Bubble Chart =====
     chart = BubbleChart()
     chart.style = 2  # Use a predefined style
@@ -582,11 +745,11 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     chart.x_axis.delete = False
     chart.y_axis.delete = False
 
-    # 軸の範囲設定
-    chart.x_axis.scaling.min = -0.05
-    chart.x_axis.scaling.max = 0.35
-    chart.y_axis.scaling.min = -.25
-    chart.y_axis.scaling.max = 0.40
+    # 軸の範囲設定 (計算された値を使用)
+    chart.x_axis.scaling.min = x_min_current
+    chart.x_axis.scaling.max = x_max_current
+    chart.y_axis.scaling.min = y_min_current
+    chart.y_axis.scaling.max = y_max_current
 
     # Create data series
     # X values: Profit margin (row data_start_row + 1, columns C to chart_end_col)
@@ -728,11 +891,11 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         chart_5y.x_axis.delete = False
         chart_5y.y_axis.delete = False
 
-        # 軸の範囲設定
-        chart_5y.x_axis.scaling.min = -0.05
-        chart_5y.x_axis.scaling.max = 0.35
-        chart_5y.y_axis.scaling.min = -.25
-        chart_5y.y_axis.scaling.max = 0.40
+        # 軸の範囲設定 (計算された値を使用 - 最新年と5年前の両方のデータから計算)
+        chart_5y.x_axis.scaling.min = x_min_5y
+        chart_5y.x_axis.scaling.max = x_max_5y
+        chart_5y.y_axis.scaling.min = y_min_5y
+        chart_5y.y_axis.scaling.max = y_max_5y
 
         # Create data series for 5-year-old data
         xvalues_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 1, max_col=chart_end_col, max_row=five_year_data_start_row + 1)
