@@ -450,9 +450,9 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         header_val = analysis_ws.cell(1, col_idx).value
         if header_val:
             header_str = str(header_val).strip()
-            # Look for the column that contains "報告セグメント" without "以外" or "及び" or "その他"
+            # Look for the column that contains "報告セグメント" without "以外" or "その他"
             # This should match columns like "報告セグメント", "報告セグメント合計" etc.
-            if "報告セグメント" in header_str and "以外" not in header_str and "及び" not in header_str:
+            if "報告セグメント" in header_str and "以外" not in header_str:
                 chart_end_col = col_idx
                 break
 
@@ -592,8 +592,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     chart.series.append(series)
 
     # Position chart starting at column B, below the data
-    chart_row = data_end_row + 1
-    ppm_ws.add_chart(chart, f'B{chart_row}')
+    # chart_row = data_end_row + 1
+    # ppm_ws.add_chart(chart, f'B{chart_row}')
 
     # ===== Create 5-year-old data section =====
     # Add blank row separator
@@ -714,10 +714,14 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         chart_5y.legend = None
         chart_5y.series.append(series_5y)
 
+        # Position chart starting at column B, below the data
+        chart_row = five_year_data_end_row + 2
+        ppm_ws.add_chart(chart, f'B{chart_row}')
+
         # Position the 5-year chart to the right of the current chart
         # Current chart is at column B (column 2), width 15 columns
         # Position new chart at column Q (column 17) to give some spacing
-        chart_5y_col = 'Q'
+        chart_5y_col = 'I'
         ppm_ws.add_chart(chart_5y, f'{chart_5y_col}{chart_row}')
 
         debug_log(f"[PPM Analysis] Added 5-year-old data section and chart")
