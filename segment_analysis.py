@@ -582,6 +582,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     chart.x_axis.delete = False
     chart.y_axis.delete = False
 
+    # 軸の範囲設定
+    chart.x_axis.scaling.min = -0.05
+    chart.x_axis.scaling.max = 0.35
+    chart.y_axis.scaling.min = -.25
+    chart.y_axis.scaling.max = 0.40
+
     # Create data series
     # X values: Profit margin (row data_start_row + 1, columns C to chart_end_col)
     # Y values: Growth rate (row data_start_row + 2, columns C to chart_end_col)
@@ -713,10 +719,20 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         # Configure axes
         chart_5y.x_axis.title = "売上高利益率"
         chart_5y.y_axis.title = "売上高対前年増加率"
+
+        # 目盛ラベル表示
         chart_5y.x_axis.tickLblPos = "nextTo"
         chart_5y.y_axis.tickLblPos = "nextTo"
+
+        # 軸自体も明示的に有効化
         chart_5y.x_axis.delete = False
         chart_5y.y_axis.delete = False
+
+        # 軸の範囲設定
+        chart_5y.x_axis.scaling.min = -0.05
+        chart_5y.x_axis.scaling.max = 0.35
+        chart_5y.y_axis.scaling.min = -.25
+        chart_5y.y_axis.scaling.max = 0.40
 
         # Create data series for 5-year-old data
         xvalues_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 1, max_col=chart_end_col, max_row=five_year_data_start_row + 1)
