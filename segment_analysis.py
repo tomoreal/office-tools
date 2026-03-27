@@ -125,16 +125,19 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
     # ヘッダー行を作成
     aws.append(["勘定科目", "年度"] + unique_dims)
 
-    seen_rows_analysis = set()
+    # 1. 有効な年度の特定と、勘定科目データのアグリゲーション（同じラベルの項目をマージ）
+    valid_periods = set()
+    label_to_data = {}   # display_label -> {period -> {dim -> value}}
+    label_info = {}      # display_label -> {full_path, depth, pref_label, el}
+    label_order = []     # 登場順を保持
 
-    # データ行を作成
     for full_path_data in ordered_keys:
         full_path, pref_label = full_path_data
         el = full_path.split('::')[-1]
         if '|' in el:
             el = el.split('|')[0]
 
-        # Skip irrelevant element types
+        # 不要な要素タイプをスキップ
         if el.endswith(("TextBlock", "Abstract", "Axis", "Member", "Table")):
             continue
 
@@ -154,10 +157,6 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
         if not label:
             label = _convert_camel_case_to_title(base_name)
 
-        # インデントを計算
-        depth = len(full_path.split('::')) - 1
-        indent_prefix = "　" * depth
-
         # ラベルから不要な接尾辞を削除
         display_label = label
         display_label = display_label.replace(' [目次項目]', '').replace(' [タイトル項目]', '')
@@ -167,57 +166,107 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
         display_label = display_label.replace('、流動負債', '').replace('、非流動負債', '')
         display_label = display_label.strip()
 
-        # 各年度ごとに行を作成
-        for period in unique_periods:
-            row_data_analysis = [indent_prefix + display_label, period]
-            has_numeric_data_analysis = False
-            has_data_analysis = False
+        depth = len(full_path.split('::')) - 1
+        
+        if display_label not in label_to_data:
+            label_to_data[display_label] = {}
+            label_order.append(display_label)
+        
+        # メタデータを更新（後から出現したものを優先）
+        label_info[display_label] = {
+            'full_path': full_path,
+            'depth': depth,
+            'pref_label': pref_label,
+            'el': el
+        }
 
+        is_sales_item = (display_label == "外部顧客への売上高") or ("売上高" in display_label and "計" in display_label)
+
+        for period in unique_periods:
             for dim in unique_dims:
-                # Search for (any_std, dim, period) - usually current_standard
-                found_v = ""
+                found_v = None
                 stds_to_check = [current_standard] if current_standard != 'JP_ALL' else ['IFRS', 'JP', 'US', 'JMIS']
                 for s in stds_to_check:
                     v = all_years_data[role][full_path].get((s, dim, period))
                     if v is not None:
                         found_v = v
                         break
-                val = found_v
+                
+                if found_v is not None and found_v != "":
+                    if period not in label_to_data[display_label]:
+                        label_to_data[display_label][period] = {}
+                    
+                    # データをマージ（後から出現したパスのデータで上書き）
+                    label_to_data[display_label][period][dim] = found_v
+                    
+                    # 数値チェックと売上高判定による有効年度追加
+                    val_clean = unicodedata.normalize('NFKC', str(found_v)).replace(',', '').strip()
+                    try:
+                        if val_clean and not any(c.isalpha() for c in val_clean):
+                            if is_sales_item:
+                                valid_periods.add(period)
+                    except:
+                        pass
 
-                # 数値データかどうかをチェック
+    # 全期間通して一度もデータ（数値・非数値問わず）がない項目を削除
+    final_label_order = [l for l in label_order if label_to_data[l]]
+
+    # 有効年度を確定（売上高がない場合は全年度を使用）
+    sorted_valid_periods = sorted(list(valid_periods))
+    if not sorted_valid_periods:
+        sorted_valid_periods = unique_periods
+
+    debug_log(f"[Segment Analysis] Aligned to {len(sorted_valid_periods)} valid periods by merging duplicate labels")
+
+    # 3. データ行を作成
+    seen_rows_analysis = set()
+    for d_label in final_label_order:
+        info = label_info[d_label]
+        it_depth = info['depth']
+        indent_prefix = "　" * it_depth
+        it_el = info['el']
+        it_pref_label = info['pref_label']
+        it_full_path = info['full_path'] # CF判定用
+        it_fp_data = (it_full_path, it_pref_label)
+
+        for period in sorted_valid_periods:
+            row_data_analysis = [indent_prefix + d_label, period]
+            
+            # マージ済みのデータを取得
+            period_data = label_to_data[d_label].get(period, {})
+
+            for dim in unique_dims:
+                val = period_data.get(dim, "")
+
                 if val:
                     val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
                     try:
                         if val_clean and not any(c.isalpha() for c in val_clean):
                             val = float(val_clean)
-                            has_numeric_data_analysis = True
-                    except Exception:
+                    except:
                         pass
-
+                
                 row_data_analysis.append(val)
-                if val != "":
-                    has_data_analysis = True
 
-            # データがある場合のみ行を追加
-            if has_data_analysis:
-                if not has_numeric_data_analysis:
-                    continue
-
-                # 重複チェック
-                row_values_tuple = tuple(row_data_analysis[2:])
-                row_key = (display_label, period, row_values_tuple)
-                if row_key in seen_rows_analysis:
-                    continue
-                seen_rows_analysis.add(row_key)
-                aws.append(row_data_analysis)
+            # 有効年度内であれば、データが空でも行を出力（ただし項目自体が全期間空の場合はスルー済み）
+            # 重複チェックはラベルと年度の組み合わせで行う
+            row_key = (d_label, period)
+            if row_key in seen_rows_analysis:
+                continue
+            seen_rows_analysis.add(row_key)
+            aws.append(row_data_analysis)
 
         # キャッシュ・フロー計算書の場合、特定の要素で停止
-        if 'キャッシュ・フロー' in sheet_name and 'CashAndCashEquivalents' in el:
-            if pref_label and pref_label.endswith(('periodEndLabel', 'totalLabel')):
+        if 'キャッシュ・フロー' in sheet_name and 'CashAndCashEquivalents' in it_el:
+            if it_pref_label and it_pref_label.endswith(('periodEndLabel', 'totalLabel')):
                 # Check if this is at natural end of hierarchy
-                current_idx = ordered_keys.index(full_path_data)
-                if current_idx >= len(ordered_keys) - 1:
-                    break
+                try:
+                    current_idx = ordered_keys.index(it_fp_data)
+                    if current_idx >= len(ordered_keys) - 1:
+                        break
+                except ValueError:
+                    # Should not happen if it's in final_label_order
+                    pass
 
                 # Check if there are more CashAndCash items ahead
                 has_more_cash_items = False
