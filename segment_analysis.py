@@ -82,6 +82,13 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 debug_log=debug_log
             )
 
+            _create_ebitda_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
 
 def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years_data,
                                    role, sorted_role_cols, role_columns, current_standard,
@@ -969,3 +976,240 @@ def _create_yoy_growth_sheet(workbook, analysis_sheet_name, used_sheet_names, de
             cell.number_format = '0%'
 
     debug_log(f"[YoY] Completed YoY growth sheet: {yoy_sheet_name}")
+
+
+def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+    """
+    EBITDA分析シートを作成（内部関数）
+
+    分析シートから売上高（「計」）・セグメント利益（最初の「利益」or「損失」）・
+    償却費/償却額を含む全勘定・減損損失を動的に検出し、EBITDAを計算するシートを生成する。
+
+    Args:
+        workbook: openpyxlワークブック
+        analysis_sheet_name: 参照元の分析シート名
+        used_sheet_names: 使用済みシート名のセット
+        debug_log: デバッグログ関数
+    """
+    import re
+    from openpyxl.utils import get_column_letter
+
+    ebitda_sheet_name = analysis_sheet_name + "_EBITDA"
+    if len(ebitda_sheet_name) > 31:
+        ebitda_sheet_name = analysis_sheet_name[:24] + "_EBITDA"
+
+    debug_log(f"[EBITDA] Creating EBITDA sheet: {ebitda_sheet_name}")
+
+    if analysis_sheet_name not in workbook.sheetnames:
+        debug_log(f"[EBITDA] Analysis sheet '{analysis_sheet_name}' not found, skipping")
+        return
+
+    analysis_ws = workbook[analysis_sheet_name]
+    ebitda_ws = workbook.create_sheet(title=ebitda_sheet_name)
+    used_sheet_names.add(ebitda_sheet_name)
+
+    escaped = analysis_sheet_name.replace("'", "''")
+    max_col = analysis_ws.max_column
+
+    # -----------------------------------------------------------------------
+    # 1. analysis_ws を走査してラベルと年度のルックアップを構築
+    # -----------------------------------------------------------------------
+    unique_labels_ordered = []
+    lookup = {}
+    max_year = -1
+
+    def _extract_year(period_val):
+        if period_val is None:
+            return None
+        if hasattr(period_val, 'year'):
+            return period_val.year
+        s = str(period_val)
+        if '-' in s:
+            try:
+                return int(s.split('-')[0])
+            except ValueError:
+                pass
+        m = re.search(r'(\d{4})', s)
+        return int(m.group(1)) if m else None
+
+    for r in range(2, analysis_ws.max_row + 1):
+        label_val = analysis_ws.cell(r, 1).value
+        period_val = analysis_ws.cell(r, 2).value
+        if not label_val:
+            continue
+        norm_label = str(label_val).strip()
+        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
+            unique_labels_ordered.append(norm_label)
+        year = _extract_year(period_val)
+        if year:
+            lookup[(norm_label, year)] = r
+            if year > max_year:
+                max_year = year
+
+    if max_year == -1:
+        debug_log("[EBITDA] No years found in analysis sheet, skipping")
+        return
+
+    # -----------------------------------------------------------------------
+    # 2. 対象ラベルを検索
+    # -----------------------------------------------------------------------
+    target_sales_label = None
+    target_profit_label = None
+    amortization_labels = []
+    impairment_label = None
+
+    for label in unique_labels_ordered:
+        if target_sales_label is None and label == "計":
+            target_sales_label = label
+        if target_profit_label is None and ("利益" in label or "損失" in label):
+            target_profit_label = label
+        if ("償却費" in label or "償却額" in label) and label not in amortization_labels:
+            amortization_labels.append(label)
+        if impairment_label is None and "減損損失" in label:
+            impairment_label = label
+
+    # EBITDA構成要素: セグメント利益 + 償却費/償却額 + 減損損失
+    ebitda_items = []
+    if target_profit_label:
+        ebitda_items.append(target_profit_label)
+    ebitda_items.extend(amortization_labels)
+    if impairment_label and impairment_label not in ebitda_items:
+        ebitda_items.append(impairment_label)
+
+    debug_log(f"[EBITDA] max_year={max_year}, Sales='{target_sales_label}', "
+              f"EBITDA items={ebitda_items}")
+
+    # -----------------------------------------------------------------------
+    # 3. 11年分の年度リスト（昇順）
+    # -----------------------------------------------------------------------
+    NUM_YEARS = 11
+    target_years = list(range(max_year - 10, max_year + 1))
+
+    # -----------------------------------------------------------------------
+    # 4. シートを構築
+    # -----------------------------------------------------------------------
+
+    # --- ヘッダー行 ---
+    header_row = []
+    for col_idx in range(1, max_col + 1):
+        cl = get_column_letter(col_idx)
+        header_row.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    ebitda_ws.append(header_row)
+
+    def _write_data_block(label, src_rows_list, display_label=None):
+        """11年分データブロックを書き込み、ブロック開始行を返す"""
+        block_start = ebitda_ws.max_row + 1
+        lbl = display_label if display_label is not None else label
+        for idx, src_row in enumerate(src_rows_list):
+            row_data = [lbl]
+            for col_idx in range(2, max_col + 1):
+                cl = get_column_letter(col_idx)
+                if col_idx == 2:
+                    formula = f"='{escaped}'!B{src_row}" if src_row else target_years[idx]
+                else:
+                    formula = (
+                        f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
+                        if src_row else ""
+                    )
+                row_data.append(formula)
+            ebitda_ws.append(row_data)
+        return block_start
+
+    # 売上高ブロック
+    sales_src_rows = [
+        lookup.get((target_sales_label, y)) if target_sales_label else None
+        for y in target_years
+    ]
+    sales_block_start = _write_data_block(
+        target_sales_label or "売上高", sales_src_rows, "　売上高"
+    )
+
+    # EBITDAアイテムのブロック
+    item_block_starts = []
+    for item_label in ebitda_items:
+        item_src_rows = [lookup.get((item_label, y)) for y in target_years]
+        block_start = _write_data_block(item_label, item_src_rows)
+        item_block_starts.append(block_start)
+
+    # --- 空行 ---
+    ebitda_ws.append([""] * max_col)
+
+    # --- EBITDAブロック ---
+    ebitda_block_start = ebitda_ws.max_row + 1
+    for idx in range(NUM_YEARS):
+        row_data = ["　EBITDA"]
+        row_data.append(f"=B{sales_block_start + idx}")
+        for col_idx in range(3, max_col + 1):
+            cl = get_column_letter(col_idx)
+            if item_block_starts:
+                refs = ",".join(f"{cl}{start + idx}" for start in item_block_starts)
+                formula = f"=IF(COUNT({refs})=0,\"\",SUM({refs}))"
+            else:
+                formula = ""
+            row_data.append(formula)
+        ebitda_ws.append(row_data)
+    ebitda_block_end = ebitda_ws.max_row
+
+    # --- 空行 ---
+    ebitda_ws.append([""] * max_col)
+
+    # --- EBITDA/売上高ブロック ---
+    ratio_block_start = ebitda_ws.max_row + 1
+    for idx in range(NUM_YEARS):
+        row_data = ["EBITDA/売上高"]
+        row_data.append(f"=B{sales_block_start + idx}")
+        for col_idx in range(3, max_col + 1):
+            cl = get_column_letter(col_idx)
+            ebitda_row = ebitda_block_start + idx
+            sales_row = sales_block_start + idx
+            formula = (
+                f"=IF(OR({cl}{ebitda_row}=\"\",{cl}{sales_row}=\"\"),"
+                f"\"\",{cl}{ebitda_row}/{cl}{sales_row})"
+            )
+            row_data.append(formula)
+        ebitda_ws.append(row_data)
+
+    # --- 空行 ---
+    ebitda_ws.append([""] * max_col)
+
+    # --- EBITDA対前年増加率ブロック ---
+    for idx in range(NUM_YEARS):
+        row_data = ["EBITDA対前年増加率"]
+        row_data.append(f"=B{sales_block_start + idx}")
+        if idx == 0:
+            # 最古年度は前年データなしのため空白
+            row_data += [""] * (max_col - 2)
+        else:
+            for col_idx in range(3, max_col + 1):
+                cl = get_column_letter(col_idx)
+                cur_row = ebitda_block_start + idx
+                prev_row = ebitda_block_start + idx - 1
+                formula = (
+                    f"=IF(OR({cl}{cur_row}=\"\",{cl}{prev_row}=\"\"),"
+                    f"\"\",{cl}{cur_row}/{cl}{prev_row}-1)"
+                )
+                row_data.append(formula)
+        ebitda_ws.append(row_data)
+
+    # -----------------------------------------------------------------------
+    # 5. 書式設定
+    # -----------------------------------------------------------------------
+    # 数値書式（ヘッダー以降〜EBITDAブロック末: 金額）
+    for row in ebitda_ws.iter_rows(min_row=2, max_row=ebitda_block_end, min_col=3, max_col=max_col):
+        for cell in row:
+            cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+
+    # % 書式（EBITDA/売上高、EBITDA対前年増加率）
+    for row in ebitda_ws.iter_rows(min_row=ratio_block_start, max_row=ebitda_ws.max_row, min_col=3, max_col=max_col):
+        for cell in row:
+            cell.number_format = '0%'
+
+    # ウィンドウ枠固定
+    ebitda_ws.freeze_panes = 'B2'
+
+    # 列幅
+    ebitda_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, max_col + 1):
+        ebitda_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    debug_log(f"[EBITDA] Completed EBITDA sheet: {ebitda_sheet_name}")
