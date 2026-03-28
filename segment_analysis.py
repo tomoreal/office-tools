@@ -95,6 +95,13 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
+            _create_ppm_analysis_sheet_ifrs(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
             _create_ebitda_sheet_ifrs(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
@@ -187,6 +194,20 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
                 reporting_dims_for_total = list(unique_dims)
                 unique_dims.append("報告セグメント合計")
                 synthetic_total_dim = "報告セグメント合計"
+
+    # 報告セグメント合計列のSUM式用: 列位置を事前計算
+    # unique_dims 内の synthetic_total_dim の位置 → シート上の列番号 (A=1, B=2, C=3...)
+    synthetic_total_col_idx = None   # シート列番号（1-based）
+    synthetic_sum_first_col = None   # SUM範囲の先頭列レター
+    synthetic_sum_last_col  = None   # SUM範囲の末尾列レター
+    if synthetic_total_dim:
+        from openpyxl.utils import get_column_letter as _gcl
+        tot_pos = unique_dims.index(synthetic_total_dim)   # 0-based in unique_dims
+        synthetic_total_col_idx = 3 + tot_pos              # C=3 が unique_dims[0]
+        # reporting_dims_for_total は unique_dims の 0 ~ tot_pos-1
+        synthetic_sum_first_col = _gcl(3)                  # C
+        synthetic_sum_last_col  = _gcl(3 + tot_pos - 1)   # tot_pos 列分の最後
+        del _gcl
 
     # All available years for this role (ascending)
     unique_periods = sorted(list(set(c[2] if len(c) == 3 else c[1] for c in role_columns)))
@@ -341,6 +362,14 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             if row_key in seen_rows_analysis:
                 continue
             seen_rows_analysis.add(row_key)
+
+            # 報告セグメント合計列をSUM式で上書き
+            if synthetic_total_dim and synthetic_sum_first_col and synthetic_sum_last_col:
+                next_row = aws.max_row + 1
+                row_data_analysis[synthetic_total_col_idx - 1] = (
+                    f"=SUM({synthetic_sum_first_col}{next_row}:{synthetic_sum_last_col}{next_row})"
+                )
+
             aws.append(row_data_analysis)
 
         # キャッシュ・フロー計算書の場合、特定の要素で停止
@@ -796,8 +825,9 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         vals = []
         for yi in year_indices:
             if 0 <= yi < len(arr):
-                for v in arr[yi]:
-                    if v is not None:
+                for ci, v in enumerate(arr[yi]):
+                    # chart_end_col より右（調整項目等）は除外
+                    if ci >= 3 and ci <= chart_end_col and v is not None:
                         vals.append(v)
         return vals
 
@@ -876,6 +906,457 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         ppm_ws.add_chart(chart_5y, f'I{chart_row}')
 
     debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name}")
+
+
+def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+    """
+    IFRS用PPM分析シートを作成（内部関数）
+
+    IFRSセグメント分析シートから売上収益・セグメント利益を検出し、
+    日本基準PPM分析と同一フォーマットのシートを生成する。
+    ラベル検出ロジックは _create_ebitda_sheet_ifrs と共通。
+    """
+    import re
+    import math
+    import datetime
+    from openpyxl.utils import get_column_letter
+    from openpyxl.chart import BubbleChart, Reference, Series
+
+    # --- PPM分析シート名を生成 ---
+    ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
+    if len(ppm_sheet_name) > 31:
+        ppm_sheet_name = analysis_sheet_name[:18] + "_PPM分析用"
+
+    debug_log(f"[PPM IFRS] Creating PPM analysis sheet: {ppm_sheet_name}")
+
+    if analysis_sheet_name not in workbook.sheetnames:
+        debug_log(f"[PPM IFRS] Analysis sheet '{analysis_sheet_name}' not found, skipping PPM sheet")
+        return
+
+    analysis_ws = workbook[analysis_sheet_name]
+    ppm_ws = workbook.create_sheet(title=ppm_sheet_name)
+    used_sheet_names.add(ppm_sheet_name)
+
+    escaped_sheet_name = analysis_sheet_name.replace("'", "''")
+    max_col = analysis_ws.max_column
+
+    # -----------------------------------------------------------------------
+    # 1. analysis_ws を走査して (ラベル, 年度) -> 行番号 のルックアップを構築
+    # -----------------------------------------------------------------------
+    unique_labels_ordered = []
+    lookup = {}
+    max_year = -1
+
+    def _extract_year(period_val):
+        if period_val is None:
+            return None
+        if hasattr(period_val, 'year'):
+            return period_val.year
+        s = str(period_val)
+        if '-' in s:
+            try:
+                return int(s.split('-')[0])
+            except ValueError:
+                pass
+        m = re.search(r'(\d{4})', s)
+        return int(m.group(1)) if m else None
+
+    for r in range(2, analysis_ws.max_row + 1):
+        label_val = analysis_ws.cell(r, 1).value
+        period_val = analysis_ws.cell(r, 2).value
+        if not label_val:
+            continue
+        norm_label = str(label_val).strip()
+        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
+            unique_labels_ordered.append(norm_label)
+        year = _extract_year(period_val)
+        if year:
+            lookup[(norm_label, year)] = r
+            if year > max_year:
+                max_year = year
+
+    if max_year == -1:
+        debug_log("[PPM IFRS] No years found in analysis sheet, skipping PPM sheet")
+        return
+
+    # -----------------------------------------------------------------------
+    # 2. IFRSラベル検出（_create_ebitda_sheet_ifrs と同一ロジック）
+    #    売上収益: 「収益」or「売上」を含み、「外部顧客」「セグメント間」を除く
+    #    利益: 最初の「利益」ヒット
+    # -----------------------------------------------------------------------
+    target_sales_label = None
+    target_profit_label = None
+
+    for label in unique_labels_ordered:
+        if target_sales_label is None:
+            if (("収益" in label or "売上" in label)
+                    and "外部顧客" not in label
+                    and "セグメント間" not in label):
+                target_sales_label = label
+        if target_profit_label is None and "利益" in label:
+            target_profit_label = label
+        if target_sales_label and target_profit_label:
+            break
+
+    debug_log(f"[PPM IFRS] max_year={max_year}, Sales label='{target_sales_label}', Profit label='{target_profit_label}'")
+
+    # -----------------------------------------------------------------------
+    # 3. 11年分の年度リスト（昇順: max_year-10 ～ max_year）
+    # -----------------------------------------------------------------------
+    NUM_YEARS = 11
+    target_years = list(range(max_year - 10, max_year + 1))
+
+    sales_src_rows  = [lookup.get((target_sales_label,  y)) if target_sales_label  else None for y in target_years]
+    profit_src_rows = [lookup.get((target_profit_label, y)) if target_profit_label else None for y in target_years]
+
+    # -----------------------------------------------------------------------
+    # 4. ppm_ws の構築（日本基準PPMと同一）
+    # -----------------------------------------------------------------------
+
+    # --- ヘッダー行 ---
+    header_row = []
+    for col_idx in range(1, max_col + 1):
+        cl = get_column_letter(col_idx)
+        header_row.append(f"=IF('{escaped_sheet_name}'!{cl}1=\"\",\"\",'{escaped_sheet_name}'!{cl}1)")
+    ppm_ws.append(header_row)
+
+    # --- 売上行 (11行) ---
+    sales_start_row = ppm_ws.max_row + 1
+    for idx, src_row in enumerate(sales_src_rows):
+        data_row = ["　売上収益"]
+        for col_idx in range(2, max_col + 1):
+            cl = get_column_letter(col_idx)
+            if col_idx == 2:
+                formula = f"='{escaped_sheet_name}'!B{src_row}" if src_row else target_years[idx]
+            else:
+                formula = (f"=IF('{escaped_sheet_name}'!{cl}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{cl}{src_row})"
+                           if src_row else "")
+            data_row.append(formula)
+        ppm_ws.append(data_row)
+    sales_end_row = ppm_ws.max_row
+
+    # --- セグメント利益行 (11行) ---
+    profit_start_row = ppm_ws.max_row + 1
+    for idx, src_row in enumerate(profit_src_rows):
+        data_row = ["　セグメント利益"]
+        for col_idx in range(2, max_col + 1):
+            cl = get_column_letter(col_idx)
+            if col_idx == 2:
+                formula = f"='{escaped_sheet_name}'!B{src_row}" if src_row else target_years[idx]
+            else:
+                formula = (f"=IF('{escaped_sheet_name}'!{cl}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{cl}{src_row})"
+                           if src_row else "")
+            data_row.append(formula)
+        ppm_ws.append(data_row)
+    profit_end_row = ppm_ws.max_row
+
+    # --- 空行区切り ---
+    ppm_ws.append([""] * max_col)
+
+    # -----------------------------------------------------------------------
+    # 「報告セグメント」列（chart_end_col）を事前検出
+    # SUM式セルは個別列を合計して実値に変換するヘルパーも定義
+    # -----------------------------------------------------------------------
+    chart_end_col = max_col
+    for _ci in range(3, max_col + 1):
+        _hv = analysis_ws.cell(1, _ci).value
+        if _hv and "報告セグメント" in str(_hv) and "以外" not in str(_hv):
+            chart_end_col = _ci
+            break
+
+    def _read_numeric(ws, row, col):
+        """セルの実数値を返す。SUM式セルは col-1 までの列を合計して代替する。"""
+        if row is None:
+            return None
+        val = ws.cell(row, col).value
+        if isinstance(val, (int, float)):
+            return val
+        # SUM式セル（報告セグメント合計列など）は個別列を合計
+        if isinstance(val, str) and val.startswith('=SUM('):
+            total = 0.0
+            has_val = False
+            for c in range(3, col):
+                v = ws.cell(row, c).value
+                if isinstance(v, (int, float)):
+                    total += v
+                    has_val = True
+            return total if has_val else None
+        return None
+
+    # -----------------------------------------------------------------------
+    # 5. 売上高対前年増加率 (11行)
+    # -----------------------------------------------------------------------
+    growth_start_row = ppm_ws.max_row + 1
+    growth_rates = []
+
+    for idx in range(NUM_YEARS):
+        year_row_ref = sales_start_row + idx
+        growth_row = ["売上収益対前年増加率"]
+        year_growth_rates = [None, None]
+
+        for col_idx in range(2, max_col + 1):
+            cl = get_column_letter(col_idx)
+            if col_idx == 2:
+                formula = f"=B{year_row_ref}"
+                year_growth_rates.append(None)
+            elif idx == 0:
+                formula = ""
+                year_growth_rates.append(None)
+            else:
+                cur_ref  = sales_start_row + idx
+                prev_ref = sales_start_row + idx - 1
+                formula  = (f"=IF(OR({cl}{cur_ref}=\"\",{cl}{prev_ref}=\"\"),"
+                            f"\"\",{cl}{cur_ref}/{cl}{prev_ref}-1)")
+                cur_src  = sales_src_rows[idx]
+                prev_src = sales_src_rows[idx - 1]
+                cur_val  = _read_numeric(analysis_ws, cur_src,  col_idx)
+                prev_val = _read_numeric(analysis_ws, prev_src, col_idx)
+                if cur_val is not None and prev_val is not None and prev_val != 0:
+                    year_growth_rates.append(cur_val / prev_val - 1)
+                else:
+                    year_growth_rates.append(None)
+            growth_row.append(formula)
+
+        growth_rates.append(year_growth_rates)
+        ppm_ws.append(growth_row)
+
+    growth_end_row = ppm_ws.max_row
+
+    # --- 空行区切り ---
+    ppm_ws.append([""] * max_col)
+
+    # -----------------------------------------------------------------------
+    # 6. 売上高利益率 (11行)
+    # -----------------------------------------------------------------------
+    margin_start_row = ppm_ws.max_row + 1
+    profit_margins = []
+
+    for idx in range(NUM_YEARS):
+        year_row_ref = sales_start_row + idx
+        margin_row = ["売上高利益率"]
+        year_profit_margins = [None, None]
+
+        for col_idx in range(2, max_col + 1):
+            cl = get_column_letter(col_idx)
+            if col_idx == 2:
+                formula = f"=B{year_row_ref}"
+                year_profit_margins.append(None)
+            else:
+                s_ref = sales_start_row  + idx
+                p_ref = profit_start_row + idx
+                formula = (f"=IF(OR({cl}{p_ref}=\"\",{cl}{s_ref}=\"\"),"
+                           f"\"\",{cl}{p_ref}/{cl}{s_ref})")
+                s_src = sales_src_rows[idx]
+                p_src = profit_src_rows[idx]
+                s_val = _read_numeric(analysis_ws, s_src, col_idx)
+                p_val = _read_numeric(analysis_ws, p_src, col_idx)
+                if s_val is not None and p_val is not None and s_val != 0:
+                    year_profit_margins.append(p_val / s_val)
+                else:
+                    year_profit_margins.append(None)
+            margin_row.append(formula)
+
+        profit_margins.append(year_profit_margins)
+        ppm_ws.append(margin_row)
+
+    margin_end_row = ppm_ws.max_row
+
+    # 売上実値（セグメント完全性チェック用）
+    sales_values = []
+    for idx in range(NUM_YEARS):
+        year_sales = [None, None]
+        for col_idx in range(2, max_col + 1):
+            if col_idx == 2:
+                year_sales.append(None)
+            else:
+                s_src = sales_src_rows[idx]
+                year_sales.append(_read_numeric(analysis_ws, s_src, col_idx))
+        sales_values.append(year_sales)
+
+    # -----------------------------------------------------------------------
+    # 7. 書式設定
+    # -----------------------------------------------------------------------
+    ppm_ws.freeze_panes = 'B2'
+    ppm_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, max_col + 1):
+        ppm_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    for row_idx in range(sales_start_row, profit_end_row + 1):
+        for col_idx in range(3, max_col + 1):
+            ppm_ws.cell(row_idx, col_idx).number_format = r'#,##0_ ;[Red]\-#,##0 '
+
+    for row_idx in list(range(growth_start_row, growth_end_row + 1)) + list(range(margin_start_row, margin_end_row + 1)):
+        for col_idx in range(3, max_col + 1):
+            ppm_ws.cell(row_idx, col_idx).number_format = '0%'
+
+    # -----------------------------------------------------------------------
+    # 8. チャート用集約データエリア
+    # -----------------------------------------------------------------------
+    ppm_ws.append([""] * max_col)
+    ppm_ws.append([""] * max_col)
+
+    LATEST_IDX     = NUM_YEARS - 1
+    FIVE_AGO_IDX   = NUM_YEARS - 6
+    FIVE_AGO_OFFSET = 5
+
+    latest_src = sales_src_rows[LATEST_IDX] or profit_src_rows[LATEST_IDX]
+    year_val_for_title = analysis_ws.cell(latest_src, 2).value if latest_src else target_years[LATEST_IDX]
+
+    def _fmt_year_str(yv):
+        if yv is None:
+            return ""
+        if hasattr(yv, 'strftime'):
+            return yv.strftime('%Y/%m')
+        s = str(yv)
+        if '-' in s:
+            try:
+                return datetime.datetime.strptime(s, '%Y-%m-%d').strftime('%Y/%m')
+            except ValueError:
+                return s[:7].replace('-', '/')
+        return s[:4]
+
+    def _valid_cols(year_idx):
+        result = []
+        for ci in range(3, chart_end_col + 1):
+            if (ci < len(profit_margins[year_idx])  and profit_margins[year_idx][ci]  is not None and
+                ci < len(growth_rates[year_idx])    and growth_rates[year_idx][ci]    is not None and
+                ci < len(sales_values[year_idx])    and sales_values[year_idx][ci]    is not None):
+                result.append(ci)
+        return result
+
+    def _append_data_section(year_idx, sales_row, growth_row, margin_row):
+        sec_start = ppm_ws.max_row + 1
+        vcols = _valid_cols(year_idx)
+
+        hrow = [f"=B{sales_row}", "セグメント名"]
+        for ci in vcols:
+            hrow.append(f"={get_column_letter(ci)}1")
+        if vcols and vcols[-1] == chart_end_col:
+            hrow[-1] = "計"
+        ppm_ws.append(hrow)
+
+        mrow = [f"=B{margin_row}", f"=A{margin_row}"]
+        for ci in vcols:
+            mrow.append(f"={get_column_letter(ci)}{margin_row}")
+        ppm_ws.append(mrow)
+
+        grow = [f"=B{growth_row}", f"=A{growth_row}"]
+        for ci in vcols:
+            grow.append(f"={get_column_letter(ci)}{growth_row}")
+        ppm_ws.append(grow)
+
+        srow = [f"=B{sales_row}", f"=TRIM(A{sales_row})"]
+        for ci in vcols:
+            cl = get_column_letter(ci)
+            srow.append(f"={cl}{sales_row}*1%" if ci == chart_end_col else f"={cl}{sales_row}")
+        ppm_ws.append(srow)
+
+        sec_end = ppm_ws.max_row
+        sec_max_col = max(3, 2 + len(vcols))
+
+        for ci in range(3, sec_max_col + 1):
+            cl = get_column_letter(ci)
+            ppm_ws[f'{cl}{sec_start + 1}'].number_format = '0%'
+            ppm_ws[f'{cl}{sec_start + 2}'].number_format = '0%'
+            ppm_ws[f'{cl}{sec_start + 3}'].number_format = r'#,##0_);[Red](#,##0)'
+
+        return sec_start, sec_end, sec_max_col, vcols
+
+    latest_sales_row  = sales_end_row
+    latest_growth_row = growth_end_row
+    latest_margin_row = margin_end_row
+
+    lat_start, lat_end, lat_max_col, _ = _append_data_section(
+        LATEST_IDX, latest_sales_row, latest_growth_row, latest_margin_row
+    )
+
+    # -----------------------------------------------------------------------
+    # 9. 軸範囲計算
+    # -----------------------------------------------------------------------
+    def _axis_values(arr, year_indices):
+        vals = []
+        for yi in year_indices:
+            if 0 <= yi < len(arr):
+                for ci, v in enumerate(arr[yi]):
+                    # chart_end_col より右（調整項目等）は除外
+                    if ci >= 3 and ci <= chart_end_col and v is not None:
+                        vals.append(v)
+        return vals
+
+    def _rounded_range(vals):
+        if not vals:
+            return -0.05, 0.40
+        mn, mx = min(vals), max(vals)
+        return math.floor(mn / 0.05) * 0.05, math.ceil(mx / 0.05) * 0.05
+
+    rel_years = [LATEST_IDX]
+    if NUM_YEARS > FIVE_AGO_OFFSET:
+        rel_years.append(FIVE_AGO_IDX)
+
+    common_x_min, common_x_max = _rounded_range(_axis_values(profit_margins, rel_years))
+    common_y_min, common_y_max = _rounded_range(_axis_values(growth_rates,  rel_years))
+
+    # -----------------------------------------------------------------------
+    # 10. バブルチャートを作成するヘルパー
+    # -----------------------------------------------------------------------
+    def _make_chart(title_str):
+        chart = BubbleChart()
+        chart.style = 2
+        chart.height, chart.width = 15, 15
+        chart.title = f"PPM分析 {title_str}"
+        chart.x_axis.title = "売上高利益率"
+        chart.y_axis.title = "売上収益対前年増加率"
+        chart.x_axis.tickLblPos = "nextTo"
+        chart.y_axis.tickLblPos = "nextTo"
+        chart.x_axis.delete = False
+        chart.y_axis.delete = False
+        chart.x_axis.scaling.min = common_x_min
+        chart.x_axis.scaling.max = common_x_max
+        chart.y_axis.scaling.min = common_y_min
+        chart.y_axis.scaling.max = common_y_max
+        chart.legend = None
+        return chart
+
+    def _add_series(chart, ws, sec_start, sec_max_col):
+        xv = Reference(ws, min_col=3, min_row=sec_start + 1, max_col=sec_max_col, max_row=sec_start + 1)
+        yv = Reference(ws, min_col=3, min_row=sec_start + 2, max_col=sec_max_col, max_row=sec_start + 2)
+        sz = Reference(ws, min_col=3, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
+        chart.series.append(Series(values=yv, xvalues=xv, zvalues=sz, title=""))
+
+    chart_latest = _make_chart(_fmt_year_str(year_val_for_title))
+    _add_series(chart_latest, ppm_ws, lat_start, lat_max_col)
+
+    # -----------------------------------------------------------------------
+    # 11. 5年前データセクション
+    # -----------------------------------------------------------------------
+    ppm_ws.append([""] * max_col)
+
+    chart_5y = None
+    if NUM_YEARS > FIVE_AGO_OFFSET:
+        five_sales_row  = sales_end_row  - FIVE_AGO_OFFSET
+        five_growth_row = growth_end_row - FIVE_AGO_OFFSET
+        five_margin_row = margin_end_row - FIVE_AGO_OFFSET
+
+        y_val_5y = (analysis_ws.cell(sales_src_rows[FIVE_AGO_IDX], 2).value
+                    if sales_src_rows[FIVE_AGO_IDX] else target_years[FIVE_AGO_IDX])
+
+        five_start, five_end, five_max_col, _ = _append_data_section(
+            FIVE_AGO_IDX, five_sales_row, five_growth_row, five_margin_row
+        )
+
+        chart_5y = _make_chart(_fmt_year_str(y_val_5y))
+        _add_series(chart_5y, ppm_ws, five_start, five_max_col)
+        debug_log("[PPM IFRS] Added 5-year comparison section")
+
+    # -----------------------------------------------------------------------
+    # 12. チャートをシートに配置
+    # -----------------------------------------------------------------------
+    chart_row = ppm_ws.max_row + 2
+    ppm_ws.add_chart(chart_latest, f'B{chart_row}')
+    if chart_5y:
+        ppm_ws.add_chart(chart_5y, f'I{chart_row}')
+
+    debug_log(f"[PPM IFRS] Completed PPM analysis sheet: {ppm_sheet_name}")
 
 
 def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
