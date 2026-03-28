@@ -102,6 +102,20 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 debug_log=debug_log
             )
 
+            _create_composition_ratio_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
+            _create_yoy_growth_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
 
 def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years_data,
                                    role, sorted_role_cols, role_columns, current_standard,
@@ -150,6 +164,29 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
         d = c[1] if len(c) == 3 else c[0]
         if d not in unique_dims:
             unique_dims.append(d)
+
+    # IFRS: 報告セグメント合計列が存在しない場合は合成列を追加
+    synthetic_total_dim = None
+    reporting_dims_for_total = []
+
+    if 'IFRS' in sheet_name:
+        has_total = any(
+            "報告セグメント" in str(d) and "以外" not in str(d)
+            for d in unique_dims
+        )
+        if not has_total:
+            ikai_idx = next(
+                (i for i, d in enumerate(unique_dims) if "以外" in str(d)),
+                None
+            )
+            if ikai_idx is not None and ikai_idx > 0:
+                reporting_dims_for_total = unique_dims[:ikai_idx]
+                unique_dims.insert(ikai_idx, "報告セグメント合計")
+                synthetic_total_dim = "報告セグメント合計"
+            elif ikai_idx is None and unique_dims:
+                reporting_dims_for_total = list(unique_dims)
+                unique_dims.append("報告セグメント合計")
+                synthetic_total_dim = "報告セグメント合計"
 
     # All available years for this role (ascending)
     unique_periods = sorted(list(set(c[2] if len(c) == 3 else c[1] for c in role_columns)))
@@ -270,16 +307,32 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             period_data = label_to_data[d_label].get(period, {})
 
             for dim in unique_dims:
-                val = period_data.get(dim, "")
+                if dim == synthetic_total_dim:
+                    # 報告セグメント合計: 各報告セグメントの合計を計算
+                    total_val = 0.0
+                    has_any_val = False
+                    for rd in reporting_dims_for_total:
+                        rv = period_data.get(rd, "")
+                        if rv:
+                            rv_clean = unicodedata.normalize('NFKC', str(rv)).replace(',', '').strip()
+                            try:
+                                if rv_clean and not any(c.isalpha() for c in rv_clean):
+                                    total_val += float(rv_clean)
+                                    has_any_val = True
+                            except:
+                                pass
+                    val = total_val if has_any_val else ""
+                else:
+                    val = period_data.get(dim, "")
 
-                if val:
-                    val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
-                    try:
-                        if val_clean and not any(c.isalpha() for c in val_clean):
-                            val = float(val_clean)
-                    except:
-                        pass
-                
+                    if val:
+                        val_clean = unicodedata.normalize('NFKC', str(val)).replace(',', '').strip()
+                        try:
+                            if val_clean and not any(c.isalpha() for c in val_clean):
+                                val = float(val_clean)
+                        except:
+                            pass
+
                 row_data_analysis.append(val)
 
             # 有効年度内であれば、データが空でも行を出力（ただし項目自体が全期間空の場合はスルー済み）
