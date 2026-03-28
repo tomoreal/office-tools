@@ -1126,10 +1126,12 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
 
     # EBITDAアイテムのブロック
     item_block_starts = []
+    item_is_negative = []  # 負ののれんを含む場合はTrue
     for item_label in ebitda_items:
         item_src_rows = [lookup.get((item_label, y)) for y in target_years]
         block_start = _write_data_block(item_label, item_src_rows)
         item_block_starts.append(block_start)
+        item_is_negative.append("負ののれん" in item_label)
 
     # --- 空行 ---
     ebitda_ws.append([""] * max_col)
@@ -1142,8 +1144,22 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
         for col_idx in range(3, max_col + 1):
             cl = get_column_letter(col_idx)
             if item_block_starts:
-                refs = ",".join(f"{cl}{start + idx}" for start in item_block_starts)
-                formula = f"=IF(COUNT({refs})=0,\"\",SUM({refs}))"
+                refs = ",".join(
+                    f"{cl}{start + idx}"
+                    for start, is_neg in zip(item_block_starts, item_is_negative)
+                    if not is_neg
+                )
+                refs_minus = ",".join(
+                    f"{cl}{start + idx}"
+                    for start, is_neg in zip(item_block_starts, item_is_negative)
+                    if is_neg
+                )
+                if not refs_minus:
+                    formula = f"=IF(COUNT({refs})=0,\"\",SUM({refs}))" if refs else ""
+                else:
+                    count_refs = refs if refs else refs_minus
+                    sum_part = f"SUM({refs})-SUM({refs_minus})" if refs else f"-SUM({refs_minus})"
+                    formula = f"=IF(COUNT({count_refs})=0,\"\",{sum_part})"
             else:
                 formula = ""
             row_data.append(formula)
