@@ -344,20 +344,25 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     """
     PPM分析シートを作成（内部関数）
 
+    売上（計）とセグメント利益（利益/損失を含む最初のラベル）を
+    分析シートから動的に検出し、直近11年分（最新年度 - 10年 ～ 最新年度）の
+    データを参照するPPM分析用シートを生成する。
+
     Args:
         workbook: openpyxlワークブック
         analysis_sheet_name: 参照元の分析シート名
         used_sheet_names: 使用済みシート名のセット
         debug_log: デバッグログ関数
     """
+    import re
+    import math
+    import datetime
     from openpyxl.utils import get_column_letter
     from openpyxl.chart import BubbleChart, Reference, Series
-    from openpyxl.chart.label import DataLabelList
 
-    # PPM分析シート名を生成
+    # --- PPM分析シート名を生成 ---
     ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
     if len(ppm_sheet_name) > 31:
-        # Excel sheet name limit is 31 characters
         ppm_sheet_name = analysis_sheet_name[:18] + "_PPM分析用"
 
     debug_log(f"[PPM Analysis] Creating PPM analysis sheet: {ppm_sheet_name}")
@@ -367,570 +372,420 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         debug_log(f"[PPM Analysis] Analysis sheet '{analysis_sheet_name}' not found, skipping PPM sheet")
         return
 
-    # Get the analysis sheet
     analysis_ws = workbook[analysis_sheet_name]
-
-    # PPM分析シートを作成
     ppm_ws = workbook.create_sheet(title=ppm_sheet_name)
     used_sheet_names.add(ppm_sheet_name)
 
-    # Escape single quotes in sheet name for formula
     escaped_sheet_name = analysis_sheet_name.replace("'", "''")
-
-    # Get the number of columns in the analysis sheet
     max_col = analysis_ws.max_column
 
-    # Row 1: Header row (references from analysis sheet row 1)
+    # -----------------------------------------------------------------------
+    # 1. analysis_ws を走査して (ラベル, 年度) -> 行番号 のルックアップを構築
+    # -----------------------------------------------------------------------
+    unique_labels_ordered = []   # 上から順に初登場のラベル
+    lookup = {}                  # (normalized_label, year_int) -> row_index
+    max_year = -1
+
+    def _extract_year(period_val):
+        """period セルの値から年（int）を取り出す。取得できなければ None。"""
+        if period_val is None:
+            return None
+        if hasattr(period_val, 'year'):
+            return period_val.year
+        s = str(period_val)
+        if '-' in s:
+            try:
+                return int(s.split('-')[0])
+            except ValueError:
+                pass
+        m = re.search(r'(\d{4})', s)
+        return int(m.group(1)) if m else None
+
+    for r in range(2, analysis_ws.max_row + 1):
+        label_val = analysis_ws.cell(r, 1).value
+        period_val = analysis_ws.cell(r, 2).value
+        if not label_val:
+            continue
+        norm_label = str(label_val).strip()
+
+        # 初登場ラベルだけ順序リストに追加
+        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
+            unique_labels_ordered.append(norm_label)
+
+        year = _extract_year(period_val)
+        if year:
+            lookup[(norm_label, year)] = r
+            if year > max_year:
+                max_year = year
+
+    if max_year == -1:
+        debug_log("[PPM Analysis] No years found in analysis sheet, skipping PPM sheet")
+        return
+
+    # -----------------------------------------------------------------------
+    # 2. 対象ラベルを先頭から順に検索
+    #    売上  : 最初に見つかる「計」
+    #    利益  : 最初に見つかる「利益」または「損失」を含むラベル
+    # -----------------------------------------------------------------------
+    target_sales_label = None
+    target_profit_label = None
+    for label in unique_labels_ordered:
+        if target_sales_label is None and label == "計":
+            target_sales_label = label
+        if target_profit_label is None and ("利益" in label or "損失" in label):
+            target_profit_label = label
+        if target_sales_label and target_profit_label:
+            break
+
+    debug_log(f"[PPM Analysis] max_year={max_year}, Sales label='{target_sales_label}', Profit label='{target_profit_label}'")
+
+    # -----------------------------------------------------------------------
+    # 3. 11年分の年度リスト（昇順: max_year-10 ～ max_year）
+    # -----------------------------------------------------------------------
+    NUM_YEARS = 11
+    target_years = list(range(max_year - 10, max_year + 1))
+
+    # 各年の analysis_ws 行番号（データなし年は None）
+    sales_src_rows  = [lookup.get((target_sales_label,  y)) if target_sales_label  else None for y in target_years]
+    profit_src_rows = [lookup.get((target_profit_label, y)) if target_profit_label else None for y in target_years]
+
+    # -----------------------------------------------------------------------
+    # 4. ppm_ws の構築
+    # -----------------------------------------------------------------------
+
+    # --- ヘッダー行 ---
     header_row = []
     for col_idx in range(1, max_col + 1):
-        col_letter = get_column_letter(col_idx)
-        formula = f"=IF('{escaped_sheet_name}'!{col_letter}1=\"\",\"\",'{escaped_sheet_name}'!{col_letter}1)"
-        header_row.append(formula)
+        cl = get_column_letter(col_idx)
+        header_row.append(f"=IF('{escaped_sheet_name}'!{cl}1=\"\",\"\",'{escaped_sheet_name}'!{cl}1)")
     ppm_ws.append(header_row)
 
-    # Track row numbers for numeric data (Sales and Segment Profit)
-    sales_start_row = ppm_ws.max_row + 1  # Track where sales rows start
-
-    # Rows 2-12: 売上 (Sales) - references rows 24-34 from analysis sheet
-    for src_row in range(24, 35):  # 24-34 inclusive (11 rows)
-        data_row = ["　売上"]  # Fixed account name in column A
+    # --- 売上行 (11行) ---
+    sales_start_row = ppm_ws.max_row + 1
+    for idx, src_row in enumerate(sales_src_rows):
+        data_row = ["　売上"]
         for col_idx in range(2, max_col + 1):
-            col_letter = get_column_letter(col_idx)
-            formula = f"=IF('{escaped_sheet_name}'!{col_letter}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{col_letter}{src_row})"
+            cl = get_column_letter(col_idx)
+            if col_idx == 2:  # 年度列
+                formula = f"='{escaped_sheet_name}'!B{src_row}" if src_row else target_years[idx]
+            else:
+                formula = (f"=IF('{escaped_sheet_name}'!{cl}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{cl}{src_row})"
+                           if src_row else "")
             data_row.append(formula)
         ppm_ws.append(data_row)
+    sales_end_row = ppm_ws.max_row
 
-    sales_end_row = ppm_ws.max_row  # Track where sales rows end
-    profit_start_row = ppm_ws.max_row + 1  # Track where profit rows start
-
-    # Rows 13-23: セグメント利益 (Segment Profit) - references rows 35-45 from analysis sheet
-    for src_row in range(35, 46):  # 35-45 inclusive (11 rows)
-        data_row = ["　セグメント利益"]  # Fixed account name in column A
+    # --- セグメント利益行 (11行) ---
+    profit_start_row = ppm_ws.max_row + 1
+    for idx, src_row in enumerate(profit_src_rows):
+        data_row = ["　セグメント利益"]
         for col_idx in range(2, max_col + 1):
-            col_letter = get_column_letter(col_idx)
-            formula = f"=IF('{escaped_sheet_name}'!{col_letter}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{col_letter}{src_row})"
+            cl = get_column_letter(col_idx)
+            if col_idx == 2:  # 年度列
+                formula = f"='{escaped_sheet_name}'!B{src_row}" if src_row else target_years[idx]
+            else:
+                formula = (f"=IF('{escaped_sheet_name}'!{cl}{src_row}=\"\",\"\",'{escaped_sheet_name}'!{cl}{src_row})"
+                           if src_row else "")
             data_row.append(formula)
         ppm_ws.append(data_row)
+    profit_end_row = ppm_ws.max_row
 
-    profit_end_row = ppm_ws.max_row  # Track where profit rows end
-
-    # Empty row separator
+    # --- 空行区切り ---
     ppm_ws.append([""] * max_col)
 
-    # Track growth rate rows
-    growth_start_row = ppm_ws.max_row + 1  # Track where growth rate rows start
+    # -----------------------------------------------------------------------
+    # 5. 売上高対前年増加率 (11行)
+    # -----------------------------------------------------------------------
+    growth_start_row = ppm_ws.max_row + 1
+    growth_rates = []   # growth_rates[idx][col_idx] = float or None
 
-    # 売上高対前年増加率 (Sales YoY Growth Rate)
-    # Calculate number of data rows (should be 11 rows based on sales data)
-    num_data_rows = sales_end_row - sales_start_row + 1
-
-    # Array to store actual growth rate values for axis calculation
-    # growth_rates[year_idx][col_idx] = growth rate value (or None if empty)
-    growth_rates = []
-
-    for idx in range(num_data_rows):  # For each year
+    for idx in range(NUM_YEARS):
+        year_row_ref = sales_start_row + idx
         growth_row = ["売上高対前年増加率"]
-        # Calculate which row in sales data to reference
-        year_row_ref = sales_start_row + idx  # Reference to corresponding sales row
-
-        # Store growth rate values for this year
-        year_growth_rates = [None, None]  # A and B columns (label and year)
+        year_growth_rates = [None, None]   # col 0(A) と col 1(B) はラベル/年度
 
         for col_idx in range(2, max_col + 1):
-            col_letter = get_column_letter(col_idx)
-            if col_idx == 2:  # Column B: reference the year from sales data
+            cl = get_column_letter(col_idx)
+            if col_idx == 2:
                 formula = f"=B{year_row_ref}"
                 year_growth_rates.append(None)
-            elif idx == 0:  # First year: empty data columns (no previous year to compare)
+            elif idx == 0:
                 formula = ""
                 year_growth_rates.append(None)
-            else:  # Calculate growth rate
-                # Current year is in row (sales_start_row + idx), previous year is in row (sales_start_row + idx - 1)
-                current_row_ref = sales_start_row + idx
-                previous_row_ref = sales_start_row + idx - 1
-                formula = f"=IF(OR({col_letter}{current_row_ref}=\"\",{col_letter}{previous_row_ref}=\"\"),\"\",{col_letter}{current_row_ref}/{col_letter}{previous_row_ref}-1)"
-
-                # Get actual values from analysis sheet to calculate growth rate
-                # analysis_ws rows 24-34 contain sales data (11 years)
-                # idx corresponds to year index (0-10), so analysis row = 24 + idx
-                current_analysis_row = 24 + idx
-                prev_analysis_row = 24 + idx - 1
-                current_val = analysis_ws.cell(current_analysis_row, col_idx).value
-                prev_val = analysis_ws.cell(prev_analysis_row, col_idx).value
-
-                if current_val and prev_val and prev_val != 0:
-                    growth_rate = current_val / prev_val - 1
-                    year_growth_rates.append(growth_rate)
+            else:
+                cur_ref  = sales_start_row + idx
+                prev_ref = sales_start_row + idx - 1
+                formula  = (f"=IF(OR({cl}{cur_ref}=\"\",{cl}{prev_ref}=\"\"),"
+                            f"\"\",{cl}{cur_ref}/{cl}{prev_ref}-1)")
+                # 実値（軸計算用）
+                cur_src  = sales_src_rows[idx]
+                prev_src = sales_src_rows[idx - 1]
+                cur_val  = analysis_ws.cell(cur_src,  col_idx).value if cur_src  else None
+                prev_val = analysis_ws.cell(prev_src, col_idx).value if prev_src else None
+                if isinstance(cur_val, (int, float)) and isinstance(prev_val, (int, float)) and prev_val != 0:
+                    year_growth_rates.append(cur_val / prev_val - 1)
                 else:
                     year_growth_rates.append(None)
-
             growth_row.append(formula)
 
         growth_rates.append(year_growth_rates)
         ppm_ws.append(growth_row)
 
-    growth_end_row = ppm_ws.max_row  # Track where growth rate rows end
+    growth_end_row = ppm_ws.max_row
 
-    # Empty row separator
+    # --- 空行区切り ---
     ppm_ws.append([""] * max_col)
 
-    # Track profit margin rows
-    margin_start_row = ppm_ws.max_row + 1  # Track where profit margin rows start
+    # -----------------------------------------------------------------------
+    # 6. 売上高利益率 (11行)
+    # -----------------------------------------------------------------------
+    margin_start_row = ppm_ws.max_row + 1
+    profit_margins = []   # profit_margins[idx][col_idx] = float or None
 
-    # Array to store actual profit margin values for axis calculation
-    # profit_margins[year_idx][col_idx] = profit margin value (or None if empty)
-    profit_margins = []
-
-    # 売上高利益率 (Sales Profit Margin)
-    for idx in range(num_data_rows):  # For each year
+    for idx in range(NUM_YEARS):
+        year_row_ref = sales_start_row + idx
         margin_row = ["売上高利益率"]
-        # Calculate which row to reference
-        year_row_ref = sales_start_row + idx  # Reference to corresponding sales row
-
-        # Store profit margin values for this year
-        year_profit_margins = [None, None]  # A and B columns (label and year)
+        year_profit_margins = [None, None]   # col 0(A) と col 1(B)
 
         for col_idx in range(2, max_col + 1):
-            col_letter = get_column_letter(col_idx)
-            if col_idx == 2:  # Column B: reference the year from sales data
+            cl = get_column_letter(col_idx)
+            if col_idx == 2:
                 formula = f"=B{year_row_ref}"
                 year_profit_margins.append(None)
-            else:  # Columns C onwards: Calculate profit margin
-                # Sales is in sales rows, Segment profit is in profit rows
-                sales_row_ref = sales_start_row + idx
-                profit_row_ref = profit_start_row + idx
-                formula = f"=IF(OR({col_letter}{profit_row_ref}=\"\",{col_letter}{sales_row_ref}=\"\"),\"\",{col_letter}{profit_row_ref}/{col_letter}{sales_row_ref})"
-
-                # Get actual values from analysis sheet to calculate profit margin
-                # analysis_ws rows 24-34 contain sales data (11 years)
-                # analysis_ws rows 35-45 contain profit data (11 years)
-                # idx corresponds to year index (0-10)
-                sales_analysis_row = 24 + idx
-                profit_analysis_row = 35 + idx
-                sales_val = analysis_ws.cell(sales_analysis_row, col_idx).value
-                profit_val = analysis_ws.cell(profit_analysis_row, col_idx).value
-
-                if sales_val and profit_val and sales_val != 0:
-                    profit_margin = profit_val / sales_val
-                    year_profit_margins.append(profit_margin)
+            else:
+                s_ref = sales_start_row  + idx
+                p_ref = profit_start_row + idx
+                formula = (f"=IF(OR({cl}{p_ref}=\"\",{cl}{s_ref}=\"\"),"
+                           f"\"\",{cl}{p_ref}/{cl}{s_ref})")
+                # 実値（軸計算用）
+                s_src = sales_src_rows[idx]
+                p_src = profit_src_rows[idx]
+                s_val = analysis_ws.cell(s_src, col_idx).value if s_src else None
+                p_val = analysis_ws.cell(p_src, col_idx).value if p_src else None
+                if isinstance(s_val, (int, float)) and isinstance(p_val, (int, float)) and s_val != 0:
+                    year_profit_margins.append(p_val / s_val)
                 else:
                     year_profit_margins.append(None)
-
             margin_row.append(formula)
 
         profit_margins.append(year_profit_margins)
         ppm_ws.append(margin_row)
 
-    # Array to store actual sales values for checking segment completeness
+    margin_end_row = ppm_ws.max_row
+
+    # 売上実値（セグメント完全性チェック用）
     sales_values = []
-    for idx in range(num_data_rows):
-        year_sales = [None, None]  # A and B columns
+    for idx in range(NUM_YEARS):
+        year_sales = [None, None]
         for col_idx in range(2, max_col + 1):
             if col_idx == 2:
                 year_sales.append(None)
             else:
-                sales_analysis_row = 24 + idx
-                sales_val = analysis_ws.cell(sales_analysis_row, col_idx).value
-                if isinstance(sales_val, (int, float)):
-                    year_sales.append(sales_val)
-                else:
-                    year_sales.append(None)
+                s_src = sales_src_rows[idx]
+                s_val = analysis_ws.cell(s_src, col_idx).value if s_src else None
+                year_sales.append(s_val if isinstance(s_val, (int, float)) else None)
         sales_values.append(year_sales)
 
-    margin_end_row = ppm_ws.max_row  # Track where profit margin rows end
-
-
-    # Apply formatting
-    # Freeze panes at B2
+    # -----------------------------------------------------------------------
+    # 7. 書式設定
+    # -----------------------------------------------------------------------
     ppm_ws.freeze_panes = 'B2'
-
-    # Set column widths
     ppm_ws.column_dimensions['A'].width = 31
     for col_idx in range(2, max_col + 1):
-        col_letter = get_column_letter(col_idx)
-        ppm_ws.column_dimensions[col_letter].width = 12
+        ppm_ws.column_dimensions[get_column_letter(col_idx)].width = 12
 
-    # Set number format for data rows (Sales and Segment Profit)
-    # Format: #,##0_ ;[Red]\-#,##0 (thousand separators, negative in red)
-    for row_idx in range(sales_start_row, profit_end_row + 1):  # All Sales and Profit rows
-        for col_idx in range(3, max_col + 1):  # Starting from column C (data columns)
-            col_letter = get_column_letter(col_idx)
-            cell = ppm_ws[f'{col_letter}{row_idx}']
-            cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+    for row_idx in range(sales_start_row, profit_end_row + 1):
+        for col_idx in range(3, max_col + 1):
+            ppm_ws.cell(row_idx, col_idx).number_format = r'#,##0_ ;[Red]\-#,##0 '
 
-    # Set number format for percentage rows (growth rate and profit margin)
-    from openpyxl.styles import numbers
     for row_idx in list(range(growth_start_row, growth_end_row + 1)) + list(range(margin_start_row, margin_end_row + 1)):
-        for col_idx in range(3, max_col + 1):  # Starting from column C (data columns)
-            col_letter = get_column_letter(col_idx)
-            cell = ppm_ws[f'{col_letter}{row_idx}']
-            cell.number_format = '0%'  # Display as percentage (0% format like in sample)
+        for col_idx in range(3, max_col + 1):
+            ppm_ws.cell(row_idx, col_idx).number_format = '0%'
 
-    # ===== Create consolidated data area for bubble chart =====
-    # Empty row separators (two rows for spacing)
+    # -----------------------------------------------------------------------
+    # 8. チャート用集約データエリア
+    # -----------------------------------------------------------------------
     ppm_ws.append([""] * max_col)
     ppm_ws.append([""] * max_col)
-
-    # Data consolidation starts here (transposed format for chart)
     data_start_row = ppm_ws.max_row + 1
-    latest_year_idx = num_data_rows - 1
-    five_year_ago_idx = num_data_rows - 6
-    five_years_ago_offset = 5
 
+    LATEST_IDX     = NUM_YEARS - 1   # 最新年（インデックス10）
+    FIVE_AGO_IDX   = NUM_YEARS - 6   # 5年前（インデックス5）
+    FIVE_AGO_OFFSET = 5
 
-    # Find the column containing "報告セグメント" in the header row (row 1)
-    # This will be the last column for chart data
-    # We want the column that has JUST "報告セグメント" or ends with it (not combined columns)
+    # 「報告セグメント」列を chart_end_col に設定
     chart_end_col = max_col
     for col_idx in range(3, max_col + 1):
-        header_val = analysis_ws.cell(1, col_idx).value
-        if header_val:
-            header_str = str(header_val).strip()
-            # Look for the column that contains "報告セグメント" without "以外" or "その他"
-            # This should match columns like "報告セグメント", "報告セグメント合計" etc.
-            if "報告セグメント" in header_str and "以外" not in header_str:
-                chart_end_col = col_idx
-                break
+        hv = analysis_ws.cell(1, col_idx).value
+        if hv and "報告セグメント" in str(hv) and "以外" not in str(hv):
+            chart_end_col = col_idx
+            break
 
-    # Get the year value from the source for chart title
-    year_value_for_title = analysis_ws.cell(sales_end_row, 2).value
+    # チャートタイトル用の期間値
+    latest_src = sales_src_rows[LATEST_IDX] or profit_src_rows[LATEST_IDX]
+    year_val_for_title = analysis_ws.cell(latest_src, 2).value if latest_src else target_years[LATEST_IDX]
 
-    # Identify valid columns that have all 3 metrics (Margin, Growth, Sales) for latest year
-    valid_col_indices = []
-    for col_idx in range(3, chart_end_col + 1):
-        if (col_idx < len(profit_margins[latest_year_idx]) and profit_margins[latest_year_idx][col_idx] is not None and
-            col_idx < len(growth_rates[latest_year_idx]) and growth_rates[latest_year_idx][col_idx] is not None and
-            col_idx < len(sales_values[latest_year_idx]) and sales_values[latest_year_idx][col_idx] is not None):
-            valid_col_indices.append(col_idx)
-
-    # Row 1: Year and Segment names
-    consolidated_header = [f"=B{sales_end_row}", "セグメント名"]
-    for col_idx in valid_col_indices:
-        col_letter = get_column_letter(col_idx)
-        consolidated_header.append(f"={col_letter}1")
-    
-    # If segments exist, replace last column header with "計" if it was included
-    if valid_col_indices and valid_col_indices[-1] == chart_end_col:
-        consolidated_header[-1] = "計"
-    ppm_ws.append(consolidated_header)
-
-    # Row 2: Profit margin
-    margin_data_row = [f"=B{margin_end_row}", f"=A{margin_end_row}"]
-    for col_idx in valid_col_indices:
-        col_letter = get_column_letter(col_idx)
-        margin_data_row.append(f"={col_letter}{margin_end_row}")
-    ppm_ws.append(margin_data_row)
-
-    # Row 3: Growth rate
-    growth_data_row = [f"=B{growth_end_row}", f"=A{growth_end_row}"]
-    for col_idx in valid_col_indices:
-        col_letter = get_column_letter(col_idx)
-        growth_data_row.append(f"={col_letter}{growth_end_row}")
-    ppm_ws.append(growth_data_row)
-
-    # Row 4: Sales
-    sales_data_row = [f"=B{sales_end_row}", f"=TRIM(A{sales_end_row})"]
-    for col_idx in valid_col_indices:
-        col_letter = get_column_letter(col_idx)
-        if col_idx == chart_end_col:
-            # Last column (Total): Scale down by 1%
-            sales_data_row.append(f"={col_letter}{sales_end_row}*1%")
-        else:
-            sales_data_row.append(f"={col_letter}{sales_end_row}")
-    ppm_ws.append(sales_data_row)
-
-    data_end_row = ppm_ws.max_row
-    chart_max_col = max(3, 2 + len(valid_col_indices))
-
-
-    # Apply formatting to consolidated data area
-    for col_idx in range(3, chart_max_col + 1):
-        col_letter = get_column_letter(col_idx)
-        ppm_ws[f'{col_letter}{data_start_row + 1}'].number_format = '0%'
-        ppm_ws[f'{col_letter}{data_start_row + 2}'].number_format = '0%'
-        ppm_ws[f'{col_letter}{data_start_row + 3}'].number_format = r'#,##0_);[Red](#,##0)'
-
-
-    # ===== Calculate axis ranges for charts =====
-    def calculate_axis_range_multi_year(values_array, year_indices, col_start, col_end):
-        """
-        Calculate min and max for axis range from the values array across multiple years.
-
-        Args:
-            values_array: 2D array [year_idx][col_idx] containing values (or None)
-            year_indices: List of year indices to extract values from
-            col_start: Starting column index (inclusive)
-            col_end: Ending column index (inclusive)
-
-        Returns:
-            (min_val, max_val) tuple, or (None, None) if no valid values
-        """
-        valid_values = []
-
-        for year_idx in year_indices:
-            if year_idx < 0 or year_idx >= len(values_array):
-                continue
-
-            year_values = values_array[year_idx]
-            for col_idx in range(col_start, col_end + 1):
-                if col_idx < len(year_values) and year_values[col_idx] is not None:
-                    valid_values.append(year_values[col_idx])
-
-        if not valid_values:
-            return (None, None)
-
-        return (min(valid_values), max(valid_values))
-
-    # ===== Calculate common axis ranges for charts =====
-    # We need the latest year and 5 years ago (if available)
-    import math
-
-    def get_rounded_axis_range(min_val, max_val, unit=0.05):
-        if min_val is None or max_val is None:
-            return -0.05, 0.40
-        axis_min = math.floor(min_val / unit) * unit
-        axis_max = math.ceil(max_val / unit) * unit
-        if axis_min == axis_max:
-            axis_max += unit
-        return axis_min, axis_max
-
-    # Identify relevant years for global axis calculation
-
-    relevant_years = [latest_year_idx]
-    if (sales_end_row - sales_start_row + 1) > five_years_ago_offset:
-        relevant_years.append(five_year_ago_idx)
-
-    # Calculate global range for X-axis: Profit margin
-    raw_x_min, raw_x_max = calculate_axis_range_multi_year(
-        profit_margins, relevant_years, 3, chart_end_col
-    )
-    common_x_min, common_x_max = get_rounded_axis_range(raw_x_min, raw_x_max)
-
-    # Calculate global range for Y-axis: Growth rate
-    raw_y_min, raw_y_max = calculate_axis_range_multi_year(
-        growth_rates, relevant_years, 3, chart_end_col
-    )
-    common_y_min, common_y_max = get_rounded_axis_range(raw_y_min, raw_y_max)
-
-
-    # ===== Create Bubble Chart =====
-    chart = BubbleChart()
-    chart.style = 2  # Use a predefined style
-
-    # Set chart title dynamically based on the latest year
-    # Use the year_value_for_title we got earlier when creating the consolidated header
-    if year_value_for_title:
-        # Format as YYYY/MM
-        if isinstance(year_value_for_title, str):
-            # It's already a string, try to parse it
-            import datetime
+    def _fmt_year_str(yv):
+        if yv is None:
+            return ""
+        if hasattr(yv, 'strftime'):
+            return yv.strftime('%Y/%m')
+        s = str(yv)
+        if '-' in s:
             try:
-                if '-' in year_value_for_title:
-                    date_obj = datetime.datetime.strptime(year_value_for_title, '%Y-%m-%d')
-                    year_str = date_obj.strftime('%Y/%m')
-                else:
-                    year_str = year_value_for_title[:7].replace('-', '/')  # Simple conversion
-            except:
-                year_str = ""
-        elif hasattr(year_value_for_title, 'strftime'):
-            # It's a datetime object
-            year_str = year_value_for_title.strftime('%Y/%m')
-        else:
-            year_str = ""
-    else:
-        year_str = ""
+                return datetime.datetime.strptime(s, '%Y-%m-%d').strftime('%Y/%m')
+            except ValueError:
+                return s[:7].replace('-', '/')
+        return s[:4]
 
-    chart.title = f"PPM分析 {year_str}"
+    def _valid_cols(arr, year_idx):
+        """3指標すべてが揃っている列のリストを返す"""
+        result = []
+        for ci in range(3, chart_end_col + 1):
+            if (ci < len(profit_margins[year_idx])  and profit_margins[year_idx][ci]  is not None and
+                ci < len(growth_rates[year_idx])    and growth_rates[year_idx][ci]    is not None and
+                ci < len(sales_values[year_idx])    and sales_values[year_idx][ci]    is not None):
+                result.append(ci)
+        return result
 
-    # Configure chart
-    chart.height = 15
-    chart.width = 15
+    def _append_data_section(year_idx, sales_row, profit_row, growth_row, margin_row):
+        """集約データ4行（ヘッダ・利益率・成長率・売上）を追加して開始行を返す"""
+        sec_start = ppm_ws.max_row + 1
+        vcols = _valid_cols(profit_margins if year_idx == LATEST_IDX else profit_margins, year_idx)
 
-    # Configure X-axis (売上高利益率)
-    chart.x_axis.title = "売上高利益率"
-    #chart.x_axis.majorGridlines = None  # Remove gridlines if needed
+        # ヘッダ行
+        hrow = [f"=B{sales_row}", "セグメント名"]
+        for ci in vcols:
+            hrow.append(f"={get_column_letter(ci)}1")
+        if vcols and vcols[-1] == chart_end_col:
+            hrow[-1] = "計"
+        ppm_ws.append(hrow)
 
-    # Configure Y-axis (売上高対前年増加率)
-    chart.y_axis.title = "売上高対前年増加率"
-    #chart.y_axis.majorGridlines = None  # Remove gridlines if needed
+        # 利益率行
+        mrow = [f"=B{margin_row}", f"=A{margin_row}"]
+        for ci in vcols:
+            mrow.append(f"={get_column_letter(ci)}{margin_row}")
+        ppm_ws.append(mrow)
 
-    # 目盛ラベル表示
-    chart.x_axis.tickLblPos = "nextTo"
-    chart.y_axis.tickLblPos = "nextTo"
+        # 成長率行
+        grow = [f"=B{growth_row}", f"=A{growth_row}"]
+        for ci in vcols:
+            grow.append(f"={get_column_letter(ci)}{growth_row}")
+        ppm_ws.append(grow)
 
-    # 軸自体も明示的に有効化
-    chart.x_axis.delete = False
-    chart.y_axis.delete = False
+        # 売上行
+        srow = [f"=B{sales_row}", f"=TRIM(A{sales_row})"]
+        for ci in vcols:
+            cl = get_column_letter(ci)
+            srow.append(f"={cl}{sales_row}*1%" if ci == chart_end_col else f"={cl}{sales_row}")
+        ppm_ws.append(srow)
 
-    # 軸の範囲設定 (計算された共通の値を使用)
-    chart.x_axis.scaling.min = common_x_min
-    chart.x_axis.scaling.max = common_x_max
-    chart.y_axis.scaling.min = common_y_min
-    chart.y_axis.scaling.max = common_y_max
+        sec_end = ppm_ws.max_row
+        sec_max_col = max(3, 2 + len(vcols))
 
-    # Create data series
-    xvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 1, max_col=chart_max_col, max_row=data_start_row + 1)
-    yvalues = Reference(ppm_ws, min_col=3, min_row=data_start_row + 2, max_col=chart_max_col, max_row=data_start_row + 2)
-    size = Reference(ppm_ws, min_col=3, min_row=data_start_row + 3, max_col=chart_max_col, max_row=data_start_row + 3)
+        # 書式
+        for ci in range(3, sec_max_col + 1):
+            cl = get_column_letter(ci)
+            ppm_ws[f'{cl}{sec_start + 1}'].number_format = '0%'
+            ppm_ws[f'{cl}{sec_start + 2}'].number_format = '0%'
+            ppm_ws[f'{cl}{sec_start + 3}'].number_format = r'#,##0_);[Red](#,##0)'
 
+        return sec_start, sec_end, sec_max_col, vcols
 
-    # For bubble charts, the Series API is: Series(values=yvalues, xvalues=xvalues, zvalues=size)
-    series = Series(values=yvalues, xvalues=xvalues, zvalues=size, title="")
+    # 最新年データ
+    latest_sales_row  = sales_end_row
+    latest_profit_row = profit_end_row
+    latest_growth_row = growth_end_row
+    latest_margin_row = margin_end_row
 
-    # Add data labels showing segment names
-    # Create individual data labels for each bubble with segment names
-    from openpyxl.chart.label import DataLabel
-    from openpyxl.chart.text import Text
-    from openpyxl.chart.data_source import StrRef
+    lat_start, lat_end, lat_max_col, _ = _append_data_section(
+        LATEST_IDX, latest_sales_row, latest_profit_row, latest_growth_row, latest_margin_row
+    )
 
-    chart.legend = None # hide legend
+    # -----------------------------------------------------------------------
+    # 9. 軸範囲計算（最新年 + 5年前 の共通スケール）
+    # -----------------------------------------------------------------------
+    def _axis_values(arr, year_indices):
+        vals = []
+        for yi in year_indices:
+            if 0 <= yi < len(arr):
+                for v in arr[yi]:
+                    if v is not None:
+                        vals.append(v)
+        return vals
 
-    chart.series.append(series)
+    def _rounded_range(vals):
+        if not vals:
+            return -0.05, 0.40
+        mn, mx = min(vals), max(vals)
+        return math.floor(mn / 0.05) * 0.05, math.ceil(mx / 0.05) * 0.05
 
-    # Position chart starting at column B, below the data
-    # chart_row = data_end_row + 1
-    # ppm_ws.add_chart(chart, f'B{chart_row}')
+    rel_years = [LATEST_IDX]
+    if NUM_YEARS > FIVE_AGO_OFFSET:
+        rel_years.append(FIVE_AGO_IDX)
 
-    # ===== Create 5-year-old data section =====
-    # Add blank row separator
+    common_x_min, common_x_max = _rounded_range(_axis_values(profit_margins, rel_years))
+    common_y_min, common_y_max = _rounded_range(_axis_values(growth_rates,  rel_years))
+
+    # -----------------------------------------------------------------------
+    # 10. バブルチャートを作成するヘルパー
+    # -----------------------------------------------------------------------
+    def _make_chart(title_str):
+        chart = BubbleChart()
+        chart.style = 2
+        chart.height, chart.width = 15, 15
+        chart.title = f"PPM分析 {title_str}"
+        chart.x_axis.title = "売上高利益率"
+        chart.y_axis.title = "売上高対前年増加率"
+        chart.x_axis.tickLblPos = "nextTo"
+        chart.y_axis.tickLblPos = "nextTo"
+        chart.x_axis.delete = False
+        chart.y_axis.delete = False
+        chart.x_axis.scaling.min = common_x_min
+        chart.x_axis.scaling.max = common_x_max
+        chart.y_axis.scaling.min = common_y_min
+        chart.y_axis.scaling.max = common_y_max
+        chart.legend = None
+        return chart
+
+    def _add_series(chart, ws, sec_start, sec_max_col):
+        xv = Reference(ws, min_col=3, min_row=sec_start + 1, max_col=sec_max_col, max_row=sec_start + 1)
+        yv = Reference(ws, min_col=3, min_row=sec_start + 2, max_col=sec_max_col, max_row=sec_start + 2)
+        sz = Reference(ws, min_col=3, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
+        chart.series.append(Series(values=yv, xvalues=xv, zvalues=sz, title=""))
+
+    chart_latest = _make_chart(_fmt_year_str(year_val_for_title))
+    _add_series(chart_latest, ppm_ws, lat_start, lat_max_col)
+
+    # -----------------------------------------------------------------------
+    # 11. 5年前データセクション（存在する場合）
+    # -----------------------------------------------------------------------
     ppm_ws.append([""] * max_col)
 
-    # Find the row for 5 years ago (6th row from the end in sales data, since last row is latest)
-    # Sales data is in rows sales_start_row to sales_end_row (11 rows for 11 years)
-    # 5 years ago would be at: sales_end_row - 5
-    if (sales_end_row - sales_start_row + 1) > five_years_ago_offset:
+    chart_5y = None
+    if NUM_YEARS > FIVE_AGO_OFFSET:
+        five_sales_row  = sales_end_row  - FIVE_AGO_OFFSET
+        five_profit_row = profit_end_row - FIVE_AGO_OFFSET
+        five_growth_row = growth_end_row - FIVE_AGO_OFFSET
+        five_margin_row = margin_end_row - FIVE_AGO_OFFSET
 
-        five_year_sales_row = sales_end_row - five_years_ago_offset
-        five_year_profit_row = profit_end_row - five_years_ago_offset
-        five_year_growth_row = growth_end_row - five_years_ago_offset
-        five_year_margin_row = margin_end_row - five_years_ago_offset
+        y_val_5y = (analysis_ws.cell(sales_src_rows[FIVE_AGO_IDX], 2).value
+                    if sales_src_rows[FIVE_AGO_IDX] else target_years[FIVE_AGO_IDX])
 
-        # Data consolidation for 5-year-old data starts here
-        five_year_data_start_row = ppm_ws.max_row + 1
+        five_start, five_end, five_max_col, _ = _append_data_section(
+            FIVE_AGO_IDX, five_sales_row, five_profit_row, five_growth_row, five_margin_row
+        )
 
-        # Get the year value from 5 years ago for chart title
-        year_value_five_years_ago = analysis_ws.cell(five_year_sales_row, 2).value
+        chart_5y = _make_chart(_fmt_year_str(y_val_5y))
+        _add_series(chart_5y, ppm_ws, five_start, five_max_col)
+        debug_log("[PPM Analysis] Added 5-year comparison section")
 
-        # Identify valid columns for 5-year ago data
-        valid_col_indices_5y = []
-        for col_idx in range(3, chart_end_col + 1):
-            if (col_idx < len(profit_margins[five_year_ago_idx]) and profit_margins[five_year_ago_idx][col_idx] is not None and
-                col_idx < len(growth_rates[five_year_ago_idx]) and growth_rates[five_year_ago_idx][col_idx] is not None and
-                col_idx < len(sales_values[five_year_ago_idx]) and sales_values[five_year_ago_idx][col_idx] is not None):
-                valid_col_indices_5y.append(col_idx)
+    # -----------------------------------------------------------------------
+    # 12. チャートをシートに配置
+    # -----------------------------------------------------------------------
+    chart_row = ppm_ws.max_row + 2
+    ppm_ws.add_chart(chart_latest, f'B{chart_row}')
+    if chart_5y:
+        ppm_ws.add_chart(chart_5y, f'I{chart_row}')
 
-        # Row 1: Year and Segment names
-        five_year_header = [f"=B{five_year_sales_row}", "セグメント名"]
-        for col_idx in valid_col_indices_5y:
-            col_letter = get_column_letter(col_idx)
-            five_year_header.append(f"={col_letter}1")
-        if valid_col_indices_5y and valid_col_indices_5y[-1] == chart_end_col:
-            five_year_header[-1] = "計"
-        ppm_ws.append(five_year_header)
-
-        # Row 2: Profit margin
-        five_year_margin_data = [f"=B{five_year_margin_row}", f"=A{five_year_margin_row}"]
-        for col_idx in valid_col_indices_5y:
-            col_letter = get_column_letter(col_idx)
-            five_year_margin_data.append(f"={col_letter}{five_year_margin_row}")
-        ppm_ws.append(five_year_margin_data)
-
-        # Row 3: Growth rate
-        five_year_growth_data = [f"=B{five_year_growth_row}", f"=A{five_year_growth_row}"]
-        for col_idx in valid_col_indices_5y:
-            col_letter = get_column_letter(col_idx)
-            five_year_growth_data.append(f"={col_letter}{five_year_growth_row}")
-        ppm_ws.append(five_year_growth_data)
-
-        # Row 4: Sales
-        five_year_sales_data = [f"=B{five_year_sales_row}", f"=TRIM(A{five_year_sales_row})"]
-        for col_idx in valid_col_indices_5y:
-            col_letter = get_column_letter(col_idx)
-            if col_idx == chart_end_col:
-                five_year_sales_data.append(f"={col_letter}{five_year_sales_row}*1%")
-            else:
-                five_year_sales_data.append(f"={col_letter}{five_year_sales_row}")
-        ppm_ws.append(five_year_sales_data)
-
-        five_year_data_end_row = ppm_ws.max_row
-        chart_max_col_5y = max(3, 2 + len(valid_col_indices_5y))
-
-
-        # Apply formatting to 5-year-old data area
-        for col_idx in range(3, chart_max_col_5y + 1):
-            col_letter = get_column_letter(col_idx)
-            ppm_ws[f'{col_letter}{five_year_data_start_row + 1}'].number_format = '0%'
-            ppm_ws[f'{col_letter}{five_year_data_start_row + 2}'].number_format = '0%'
-            ppm_ws[f'{col_letter}{five_year_data_start_row + 3}'].number_format = r'#,##0_);[Red](#,##0)'
-
-
-        # ===== Create Bubble Chart for 5-year-old data =====
-        chart_5y = BubbleChart()
-        chart_5y.style = 2
-
-        # Set chart title for 5 years ago
-        if year_value_five_years_ago:
-            if isinstance(year_value_five_years_ago, str):
-                import datetime
-                try:
-                    if '-' in year_value_five_years_ago:
-                        date_obj = datetime.datetime.strptime(year_value_five_years_ago, '%Y-%m-%d')
-                        year_str_5y = date_obj.strftime('%Y/%m')
-                    else:
-                        year_str_5y = year_value_five_years_ago[:7].replace('-', '/')
-                except:
-                    year_str_5y = ""
-            elif hasattr(year_value_five_years_ago, 'strftime'):
-                year_str_5y = year_value_five_years_ago.strftime('%Y/%m')
-            else:
-                year_str_5y = ""
-        else:
-            year_str_5y = ""
-
-        chart_5y.title = f"PPM分析 {year_str_5y}"
-
-        # Configure chart
-        chart_5y.height = 15
-        chart_5y.width = 15
-
-        # Configure axes
-        chart_5y.x_axis.title = "売上高利益率"
-        chart_5y.y_axis.title = "売上高対前年増加率"
-
-        # 目盛ラベル表示
-        chart_5y.x_axis.tickLblPos = "nextTo"
-        chart_5y.y_axis.tickLblPos = "nextTo"
-
-        # 軸自体も明示的に有効化
-        chart_5y.x_axis.delete = False
-        chart_5y.y_axis.delete = False
-
-        # 軸の範囲設定 (計算された共通の値を使用)
-        chart_5y.x_axis.scaling.min = common_x_min
-        chart_5y.x_axis.scaling.max = common_x_max
-        chart_5y.y_axis.scaling.min = common_y_min
-        chart_5y.y_axis.scaling.max = common_y_max
-
-        # Create data series for 5-year-old data
-        xvalues_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 1, max_col=chart_max_col_5y, max_row=five_year_data_start_row + 1)
-        yvalues_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 2, max_col=chart_max_col_5y, max_row=five_year_data_start_row + 2)
-        size_5y = Reference(ppm_ws, min_col=3, min_row=five_year_data_start_row + 3, max_col=chart_max_col_5y, max_row=five_year_data_start_row + 3)
-
-
-        series_5y = Series(values=yvalues_5y, xvalues=xvalues_5y, zvalues=size_5y, title="")
-        chart_5y.legend = None
-        chart_5y.series.append(series_5y)
-
-        # Position chart starting at column B, below the data
-        chart_row = five_year_data_end_row + 2
-        ppm_ws.add_chart(chart, f'B{chart_row}')
-
-        # Position the 5-year chart to the right of the current chart
-        # Current chart is at column B (column 2), width 15 columns
-        # Position new chart at column Q (column 17) to give some spacing
-        chart_5y_col = 'I'
-        ppm_ws.add_chart(chart_5y, f'{chart_5y_col}{chart_row}')
-
-        debug_log(f"[PPM Analysis] Added 5-year-old data section and chart")
-
-    debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name} with {ppm_ws.max_row} rows and bubble chart(s)")
+    debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name}")
