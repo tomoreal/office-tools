@@ -337,9 +337,9 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
     # A列: 31
     aws.column_dimensions['A'].width = 31
     # B列以降: 12
+    from openpyxl.utils import get_column_letter
     for col_idx in range(2, aws.max_column + 1):
-        col_letter = chr(64 + col_idx)  # B=66, C=67, etc.
-        aws.column_dimensions[col_letter].width = 12
+        aws.column_dimensions[get_column_letter(col_idx)].width = 12
 
     debug_log(f"[Segment Analysis] Completed analysis sheet: {analysis_sheet_name} with {aws.max_row - 1} data rows")
 
