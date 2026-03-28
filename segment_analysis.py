@@ -1105,7 +1105,7 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
             for col_idx in range(2, max_col + 1):
                 cl = get_column_letter(col_idx)
                 if col_idx == 2:
-                    formula = f"='{escaped}'!B{src_row}" if src_row else target_years[idx]
+                    formula = f"='{escaped}'!B{src_row}" if src_row else ""
                 else:
                     formula = (
                         f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
