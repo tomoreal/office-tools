@@ -68,6 +68,20 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 debug_log=debug_log
             )
 
+            _create_composition_ratio_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
+            _create_yoy_growth_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
 
 def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years_data,
                                    role, sorted_role_cols, role_columns, current_standard,
@@ -789,3 +803,169 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         ppm_ws.add_chart(chart_5y, f'I{chart_row}')
 
     debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name}")
+
+
+def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+    """
+    構成比シートを作成（内部関数）
+
+    分析シートの各セルを「報告セグメント」列で割った構成比を表示するシートを生成する。
+    数式: =IF(OR('分析'!C2="", '分析'!$H2=""), "", '分析'!C2/'分析'!$H2)
+
+    Args:
+        workbook: openpyxlワークブック
+        analysis_sheet_name: 参照元の分析シート名
+        used_sheet_names: 使用済みシート名のセット
+        debug_log: デバッグログ関数
+    """
+    from openpyxl.utils import get_column_letter
+
+    comp_sheet_name = analysis_sheet_name + "_構成比"
+    if len(comp_sheet_name) > 31:
+        comp_sheet_name = analysis_sheet_name[:25] + "_構成比"
+
+    debug_log(f"[Composition] Creating composition ratio sheet: {comp_sheet_name}")
+
+    if analysis_sheet_name not in workbook.sheetnames:
+        debug_log(f"[Composition] Analysis sheet '{analysis_sheet_name}' not found, skipping")
+        return
+
+    analysis_ws = workbook[analysis_sheet_name]
+    comp_ws = workbook.create_sheet(title=comp_sheet_name)
+    used_sheet_names.add(comp_sheet_name)
+
+    escaped = analysis_sheet_name.replace("'", "''")
+    max_col = analysis_ws.max_column
+    max_row = analysis_ws.max_row
+
+    # 「報告セグメント」列を動的に検出
+    denom_col = max_col
+    for col_idx in range(3, max_col + 1):
+        hv = analysis_ws.cell(1, col_idx).value
+        if hv and "報告セグメント" in str(hv) and "以外" not in str(hv):
+            denom_col = col_idx
+            break
+
+    denom_cl = get_column_letter(denom_col)
+
+    # ヘッダ行（行1）: 勘定科目・年度・各セグメント列をそのままコピー参照（報告セグメントまで）
+    header = ["勘定科目", "年度"]
+    for col_idx in range(3, denom_col + 1):
+        cl = get_column_letter(col_idx)
+        header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    comp_ws.append(header)
+
+    # データ行（行2以降）
+    for row in range(2, max_row + 1):
+        row_data = []
+        # A列: 勘定科目
+        row_data.append(f"='{escaped}'!A{row}")
+        # B列: 年度
+        row_data.append(f"='{escaped}'!B{row}")
+        # C列以降: 構成比（報告セグメント列まで）
+        for col_idx in range(3, denom_col + 1):
+            cl = get_column_letter(col_idx)
+            formula = (
+                f"=IF(OR('{escaped}'!{cl}{row}=\"\","
+                f"'{escaped}'!${denom_cl}{row}=\"\"),"
+                f"\"\","
+                f"'{escaped}'!{cl}{row}/'{escaped}'!${denom_cl}{row})"
+            )
+            row_data.append(formula)
+        comp_ws.append(row_data)
+
+    # 書式設定
+    comp_ws.freeze_panes = 'B2'
+    comp_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, denom_col + 1):
+        comp_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    # 数値セル（C列以降、2行目以降）に % 書式を設定
+    for row in comp_ws.iter_rows(min_row=2, min_col=3, max_col=denom_col):
+        for cell in row:
+            cell.number_format = '0%'
+
+    debug_log(f"[Composition] Completed composition ratio sheet: {comp_sheet_name}")
+
+
+def _create_yoy_growth_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+    """
+    対前年増加率シートを作成（内部関数）
+
+    分析シートの各セルについて、当年/前年 - 1 の対前年増加率を表示するシートを生成する。
+    数式: =IF(OR('分析'!C2="", '分析'!C3=""), "", '分析'!C2/'分析'!C3-1)
+    全カラム（max_col まで）を出力する。
+
+    Args:
+        workbook: openpyxlワークブック
+        analysis_sheet_name: 参照元の分析シート名
+        used_sheet_names: 使用済みシート名のセット
+        debug_log: デバッグログ関数
+    """
+    from openpyxl.utils import get_column_letter
+
+    yoy_sheet_name = analysis_sheet_name + "_対前年増加率"
+    if len(yoy_sheet_name) > 31:
+        yoy_sheet_name = analysis_sheet_name[:22] + "_対前年増加率"
+
+    debug_log(f"[YoY] Creating YoY growth sheet: {yoy_sheet_name}")
+
+    if analysis_sheet_name not in workbook.sheetnames:
+        debug_log(f"[YoY] Analysis sheet '{analysis_sheet_name}' not found, skipping")
+        return
+
+    analysis_ws = workbook[analysis_sheet_name]
+    yoy_ws = workbook.create_sheet(title=yoy_sheet_name)
+    used_sheet_names.add(yoy_sheet_name)
+
+    escaped = analysis_sheet_name.replace("'", "''")
+    max_col = analysis_ws.max_column
+    max_row = analysis_ws.max_row
+
+    # 各勘定科目グループの先頭行（一番古い年度）を検出
+    # A列の値が変わる行 = 新しい勘定科目の先頭
+    first_rows_of_group = set()
+    prev_label = object()  # sentinel
+    for row in range(2, max_row + 1):
+        label = analysis_ws.cell(row, 1).value
+        if label != prev_label:
+            first_rows_of_group.add(row)
+            prev_label = label
+
+    # ヘッダ行（行1）
+    header = ["勘定科目", "年度"]
+    for col_idx in range(3, max_col + 1):
+        cl = get_column_letter(col_idx)
+        header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    yoy_ws.append(header)
+
+    # 行2以降: 各勘定の先頭行はデータ列を空白、それ以外は対前年増加率
+    for row in range(2, max_row + 1):
+        row_data = [f"='{escaped}'!A{row}", f"='{escaped}'!B{row}"]
+        if row in first_rows_of_group:
+            # 一番古い年度: 前年データなしのため空白
+            row_data += [""] * (max_col - 2)
+        else:
+            for col_idx in range(3, max_col + 1):
+                cl = get_column_letter(col_idx)
+                formula = (
+                    f"=IF(OR('{escaped}'!{cl}{row - 1}=\"\","
+                    f"'{escaped}'!{cl}{row}=\"\"),"
+                    f"\"\","
+                    f"'{escaped}'!{cl}{row - 1}/'{escaped}'!{cl}{row}-1)"
+                )
+                row_data.append(formula)
+        yoy_ws.append(row_data)
+
+    # 書式設定
+    yoy_ws.freeze_panes = 'B2'
+    yoy_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, max_col + 1):
+        yoy_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    # 数値セル（C列以降、3行目以降）に % 書式を設定
+    for row in yoy_ws.iter_rows(min_row=3, min_col=3, max_col=max_col):
+        for cell in row:
+            cell.number_format = '0%'
+
+    debug_log(f"[YoY] Completed YoY growth sheet: {yoy_sheet_name}")
