@@ -3838,16 +3838,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         debug_log(f"  - {out_ws.title}: {out_ws.max_row} rows")
 
     # ============================================================================
-    # SEGMENT ANALYSIS SHEETS (セグメント分析)
-    # ============================================================================
-    # セグメント分析シートを追加（segment_analysis.pyモジュールを使用）
-    add_segment_analysis_sheets(wb, segment_sheets_info, debug_log)
-
-    # ============================================================================
     # FINANCIAL ANALYSIS SHEETS (ROE分析など)
     # ============================================================================
     # 財務分析シートを追加（financial_analysis.pyモジュールを使用）
     add_financial_analysis_sheets(wb, debug_log)
+
+    # ============================================================================
+    # SEGMENT ANALYSIS SHEETS (セグメント分析)
+    # ============================================================================
+    # セグメント分析シートを追加（segment_analysis.pyモジュールを使用）
+    add_segment_analysis_sheets(wb, segment_sheets_info, debug_log)
 
     # 最新の期末を取得してファイル名に追加
     latest_period = ''
