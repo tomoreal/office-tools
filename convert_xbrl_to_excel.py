@@ -1574,6 +1574,53 @@ def merge_sequences(master, new_seq):
             res.append(item)
     return res
 
+def merge_ordered_items(master, new_items):
+    """Smart-merge create_hierarchy output tuples from new_items into master.
+
+    Items are (node_name, full_path, depth, pref_label) tuples.
+    Elements that exist in master are skipped.
+    New elements are inserted at the position dictated by their neighbors in new_items
+    that ARE already present in master — preserving relative order from the newer sequence.
+
+    Called newest-year-first so the newest year's sequence is the authoritative order,
+    and older years only contribute elements missing from newer years, placed correctly.
+    """
+    if not master:
+        return list(new_items)
+
+    # Index master by full_path for O(1) lookup
+    path_to_pos = {item[1]: i for i, item in enumerate(master)}
+    result = list(master)
+
+    for ni, new_item in enumerate(new_items):
+        new_path = new_item[1]
+        if new_path in path_to_pos:
+            continue  # Already present
+
+        # Find the rightmost predecessor in new_items that is in result
+        insert_after = -1
+        for j in range(ni - 1, -1, -1):
+            p = new_items[j][1]
+            if p in path_to_pos:
+                insert_after = path_to_pos[p]
+                break
+
+        # Find the leftmost successor in new_items that is in result
+        insert_before = len(result)
+        for j in range(ni + 1, len(new_items)):
+            s = new_items[j][1]
+            if s in path_to_pos:
+                insert_before = path_to_pos[s]
+                break
+
+        insert_pos = min(insert_after + 1, insert_before)
+        result.insert(insert_pos, new_item)
+
+        # Rebuild index (insert shifts all positions at/after insert_pos)
+        path_to_pos = {item[1]: i for i, item in enumerate(result)}
+
+    return result
+
 # ============================================================================
 # CORE LAYER - Main Processing Pipeline
 # ============================================================================
@@ -1634,6 +1681,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         
     global_element_period_values = {} # {element: {col_key: value}}
     merged_trees = {} # {role_name: {(parent, child): order}}
+    per_year_role_arcs = {} # {role_name: [arcs_newest, arcs_year2, ...]} for smart ordering
     seen_children_in_role = {} # {role_name: set(children)}
     labels_map = {} # {element: label_text}
     labels_map_priorities = {} # {element: priority}
@@ -1972,22 +2020,22 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if role not in merged_trees:
                     merged_trees[role] = {}
                     seen_children_in_role[role] = set()
-                    
+
+                # Collect per-year arcs for smart ordering (skip SegmentInformation
+                # which uses sub_role_idx offsets to separate sub-roles)
+                if 'SegmentInformation' not in base_name:
+                    if role not in per_year_role_arcs:
+                        per_year_role_arcs[role] = []
+                    per_year_role_arcs[role].append(list(tree_arcs))
+
                 for arc in tree_arcs:
                     p, c, o, i, pl = arc['parent'], arc['child'], arc['order'], arc.get('index', 0), arc.get('preferredLabel')
                     # Unique key including preferredLabel to allow duplicates in CF statements
                     arc_key = (p, c, pl)
-                    # Newest report wins (results is sorted year DESC)
-                    # However, if same element appears with different preferredLabels, use the one with smallest order
+                    # Collect all arcs from all years into merged_trees for parent-child relationships.
+                    # Ordering is handled separately via per_year_role_arcs + merge_ordered_items.
                     if arc_key not in merged_trees[role]:
                         merged_trees[role][arc_key] = (float(o) + sub_role_idx, i)
-                    else:
-                        # Element already exists - check if we should update it with a better order
-                        existing_order, existing_idx = merged_trees[role][arc_key]
-                        new_order = float(o) + sub_role_idx
-                        if new_order < existing_order:
-                            merged_trees[role][arc_key] = (new_order, i)
-                            debug_log(f"  [Order-Update] Updated {c} in {role}: {existing_order} -> {new_order}")
 
         # --- Build element-to-statement-type mapping (FIX V7 - IMPROVED) ---
         # Use a smarter approach: if an element appears in multiple statement types,
@@ -2366,9 +2414,18 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if 'Revenue' in arc['child'] or 'ProfitLoss' in arc['child'] or 'Tax' in arc['child']:
                     debug_log(f"  parent={arc['parent']}, child={arc['child']}, order={arc['order']}, pref={arc.get('preferredLabel')}")
 
-        # Create hierarchy using presentation order (order attribute from linkbase)
-        # This preserves the proper display order defined in XBRL presentation linkbase
-        ordered_items = create_hierarchy(tree_arcs)
+        # Build ordered_items by smart-merging per-year sequences (newest year first).
+        # This ensures the latest year's order is authoritative, while elements that
+        # only appear in older years are inserted at their correct relative positions
+        # (between the same neighboring elements as in the older year's linkbase).
+        # For SegmentInformation (uses sub_role_idx), fall back to merged_trees ordering.
+        if role in per_year_role_arcs:
+            ordered_items = []
+            for year_arcs in per_year_role_arcs[role]:
+                year_ordered = create_hierarchy(year_arcs)
+                ordered_items = merge_ordered_items(ordered_items, year_ordered)
+        else:
+            ordered_items = create_hierarchy(tree_arcs)
 
         # Debug: Log ordered items for BusinessResults roles
         if 'BusinessResults' in base_name and len(ordered_items) > 0:
