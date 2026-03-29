@@ -443,10 +443,12 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
                     break
 
     # プレゼンテーションツリーに含まれない追加項目をシート末尾に追加
-    # (研究開発費、設備投資額など)
+    # (研究開発費、設備投資額、従業員数など)
     _EXTRA_SEGMENT_ELEMENTS = [
         ('jpcrp_cor_ResearchAndDevelopmentExpensesResearchAndDevelopmentActivities', '研究開発費'),
         ('jpcrp_cor_CapitalExpendituresOverviewOfCapitalExpendituresEtc', '設備投資額'),
+        ('jpcrp_cor_NumberOfEmployees', '従業員数'),
+        ('jpcrp_cor_AverageNumberOfTemporaryWorkers', '平均臨時雇用人員'),
     ]
     fact_std = current_standard if current_standard not in ('JP_ALL',) else 'JP'
 
@@ -549,13 +551,15 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
 
 def _append_rd_to_notes_sheet(workbook, sheet_name, sorted_role_cols,
                               global_element_period_values, debug_log):
-    """元の注記シートの末尾にセグメント別研究開発費行を追加する"""
+    """元の注記シートの末尾にセグメント別に追加項目（研究開発費等）の行を追加する"""
     if sheet_name not in workbook.sheetnames:
         return
 
     _EXTRA_SEGMENT_ELEMENTS = [
         ('jpcrp_cor_ResearchAndDevelopmentExpensesResearchAndDevelopmentActivities', '研究開発費'),
         ('jpcrp_cor_CapitalExpendituresOverviewOfCapitalExpendituresEtc', '設備投資額'),
+        ('jpcrp_cor_NumberOfEmployees', '従業員数'),
+        ('jpcrp_cor_AverageNumberOfTemporaryWorkers', '平均臨時雇用人員'),
     ]
 
     non_segment_dims = ('全体', '単体', '連結', '全社', '連結財務諸表計上額')
