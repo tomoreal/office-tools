@@ -550,19 +550,17 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     # 2. 対象ラベルを先頭から順に検索
     #    売上  : 最初に見つかる「計」
-    #    利益  : 最初に見つかる「利益」または「損失」を含むラベル
+    #    利益  : 「利益」または「損失」を含むラベルを全候補として収集
     # -----------------------------------------------------------------------
     target_sales_label = None
-    target_profit_label = None
+    profit_label_candidates = []
     for label in unique_labels_ordered:
         if target_sales_label is None and label == "計":
             target_sales_label = label
-        if target_profit_label is None and ("利益" in label or "損失" in label):
-            target_profit_label = label
-        if target_sales_label and target_profit_label:
-            break
+        if "利益" in label or "損失" in label:
+            profit_label_candidates.append(label)
 
-    debug_log(f"[PPM Analysis] max_year={max_year}, Sales label='{target_sales_label}', Profit label='{target_profit_label}'")
+    debug_log(f"[PPM Analysis] max_year={max_year}, Sales label='{target_sales_label}', Profit candidates={profit_label_candidates}")
 
     # -----------------------------------------------------------------------
     # 3. 11年分の年度リスト（昇順: max_year-10 ～ max_year）
@@ -571,8 +569,28 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     target_years = list(range(max_year - 10, max_year + 1))
 
     # 各年の analysis_ws 行番号（データなし年は None）
-    sales_src_rows  = [lookup.get((target_sales_label,  y)) if target_sales_label  else None for y in target_years]
-    profit_src_rows = [lookup.get((target_profit_label, y)) if target_profit_label else None for y in target_years]
+    # 利益は年度ごとに候補を順に試し、最初にデータがある行を採用する
+    # （ラベル名が年度途中で変わった場合や行は存在するがデータ空の場合に対応）
+    def _row_has_data(row):
+        """analysis_ws の指定行（列3以降）に数値データが1つ以上あるか確認する。"""
+        if row is None:
+            return False
+        for c in range(3, max_col + 1):
+            v = analysis_ws.cell(row, c).value
+            if isinstance(v, (int, float)):
+                return True
+        return False
+
+    sales_src_rows = [lookup.get((target_sales_label, y)) if target_sales_label else None for y in target_years]
+    profit_src_rows = []
+    for y in target_years:
+        src_row = None
+        for candidate in profit_label_candidates:
+            row = lookup.get((candidate, y))
+            if row is not None and _row_has_data(row):
+                src_row = row
+                break
+        profit_src_rows.append(src_row)
 
     # -----------------------------------------------------------------------
     # 4. ppm_ws の構築
@@ -991,10 +1009,10 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # 2. IFRSラベル検出（_create_ebitda_sheet_ifrs と同一ロジック）
     #    売上収益: 「収益」or「売上」を含み、「外部顧客」「セグメント間」を除く
-    #    利益: 最初の「利益」ヒット
+    #    利益: 「利益」を含むラベルを全候補として収集
     # -----------------------------------------------------------------------
     target_sales_label = None
-    target_profit_label = None
+    profit_label_candidates = []
 
     for label in unique_labels_ordered:
         if target_sales_label is None:
@@ -1002,12 +1020,10 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                     and "外部顧客" not in label
                     and "セグメント間" not in label):
                 target_sales_label = label
-        if target_profit_label is None and "利益" in label:
-            target_profit_label = label
-        if target_sales_label and target_profit_label:
-            break
+        if "利益" in label:
+            profit_label_candidates.append(label)
 
-    debug_log(f"[PPM IFRS] max_year={max_year}, Sales label='{target_sales_label}', Profit label='{target_profit_label}'")
+    debug_log(f"[PPM IFRS] max_year={max_year}, Sales label='{target_sales_label}', Profit candidates={profit_label_candidates}")
 
     # -----------------------------------------------------------------------
     # 3. 11年分の年度リスト（昇順: max_year-10 ～ max_year）
@@ -1015,8 +1031,28 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     NUM_YEARS = 11
     target_years = list(range(max_year - 10, max_year + 1))
 
-    sales_src_rows  = [lookup.get((target_sales_label,  y)) if target_sales_label  else None for y in target_years]
-    profit_src_rows = [lookup.get((target_profit_label, y)) if target_profit_label else None for y in target_years]
+    def _row_has_data(row):
+        """analysis_ws の指定行（列3以降）に数値データが1つ以上あるか確認する。"""
+        if row is None:
+            return False
+        for c in range(3, max_col + 1):
+            v = analysis_ws.cell(row, c).value
+            if isinstance(v, (int, float)):
+                return True
+        return False
+
+    sales_src_rows = [lookup.get((target_sales_label, y)) if target_sales_label else None for y in target_years]
+    # 利益は年度ごとに候補を順に試し、最初に実データがある行を採用する
+    # （ラベル名が年度途中で変わった場合や行は存在するがデータ空の場合に対応）
+    profit_src_rows = []
+    for y in target_years:
+        src_row = None
+        for candidate in profit_label_candidates:
+            row = lookup.get((candidate, y))
+            if row is not None and _row_has_data(row):
+                src_row = row
+                break
+        profit_src_rows.append(src_row)
 
     # -----------------------------------------------------------------------
     # 4. ppm_ws の構築（日本基準PPMと同一）
@@ -1863,7 +1899,7 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
     # 2. 対象ラベルを検索
     # -----------------------------------------------------------------------
     target_sales_label = None    # 売上収益・営業収益・収益・売上高
-    target_profit_label = None   # 最初の「利益」ヒット
+    profit_label_candidates = [] # 全「利益」ヒット（複数年度でラベル変更に対応）
     refs_labels = []             # 償却費・償却額・減損損失（戻入除く）
     refs_minus_labels = []       # 減損の戻入・負ののれん
 
@@ -1875,9 +1911,9 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
                     and "セグメント間" not in label):
                 target_sales_label = label
 
-        # セグメント利益: 最初の「利益」ヒット
-        if target_profit_label is None and "利益" in label:
-            target_profit_label = label
+        # セグメント利益: 「利益」を含む全候補を収集
+        if "利益" in label:
+            profit_label_candidates.append(label)
 
         # 減損の戻入（「戻入」or「戻し入」を含む）・負ののれん → refs_minus
         if (("減損" in label and ("戻入" in label or "戻し入" in label))
@@ -1891,7 +1927,7 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
                 refs_labels.append(label)
 
     debug_log(f"[EBITDA IFRS] max_year={max_year}, Sales='{target_sales_label}', "
-              f"Profit='{target_profit_label}', refs={refs_labels}, refs_minus={refs_minus_labels}")
+              f"Profit candidates={profit_label_candidates}, refs={refs_labels}, refs_minus={refs_minus_labels}")
 
     # -----------------------------------------------------------------------
     # 3. 11年分の年度リスト（昇順）
@@ -1918,17 +1954,33 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
                 return r
         return None
 
-    def _write_data_block_ifrs(label, src_rows_list):
-        """セル参照ラベルでデータブロックを書き込み、ブロック開始行を返す"""
+    def _row_has_data(row):
+        """analysis_ws の指定行（列3以降）に数値データが1つ以上あるか確認する。"""
+        if row is None:
+            return False
+        for c in range(3, max_col + 1):
+            v = analysis_ws.cell(row, c).value
+            if isinstance(v, (int, float)):
+                return True
+        return False
+
+    def _write_data_block_ifrs(label, src_rows_list, year_fallbacks=None):
+        """セル参照ラベルでデータブロックを書き込み、ブロック開始行を返す。
+        year_fallbacks: src_rowがNoneのとき年度列に表示するリテラル値のリスト（Noneなら空欄）"""
         block_start = ebitda_ws.max_row + 1
         label_row = _first_valid_row(label)
-        for src_row in src_rows_list:
+        for idx, src_row in enumerate(src_rows_list):
             label_formula = f"='{escaped}'!A{label_row}" if label_row is not None else label
             row_data = [label_formula]
             for col_idx in range(2, max_col + 1):
                 cl = get_column_letter(col_idx)
                 if col_idx == 2:
-                    formula = f"='{escaped}'!B{src_row}" if src_row else ""
+                    if src_row:
+                        formula = f"='{escaped}'!B{src_row}"
+                    elif year_fallbacks is not None:
+                        formula = year_fallbacks[idx]
+                    else:
+                        formula = ""
                 else:
                     formula = (
                         f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
@@ -1944,64 +1996,104 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
         for y in target_years
     ]
     sales_block_start = _write_data_block_ifrs(
-        target_sales_label or "売上高", sales_src_rows
+        target_sales_label or "売上高", sales_src_rows, year_fallbacks=target_years
     )
 
-    # セグメント利益ブロック
-    profit_src_rows = [
-        lookup.get((target_profit_label, y)) if target_profit_label else None
-        for y in target_years
-    ]
-    profit_block_start = _write_data_block_ifrs(
-        target_profit_label or "セグメント利益", profit_src_rows
-    )
+    # -----------------------------------------------------------------------
+    # セグメント利益ブロック（複数ラベル対応）
+    # 年度ごとに最初にデータがある候補が担当する。
+    # 各候補を別ブロックとして出力し、担当外の年はデータ空（年度は表示）。
+    # -----------------------------------------------------------------------
+    # 年度ごとの担当ラベルと行番号を決定
+    profit_assignment = {}  # year -> (label, row)
+    for y in target_years:
+        for candidate in profit_label_candidates:
+            row = lookup.get((candidate, y))
+            if row is not None and _row_has_data(row):
+                profit_assignment[y] = (candidate, row)
+                break
+
+    # 利益候補ごとにブロックを作成（担当年のみ実データ行を渡す）
+    profit_block_starts = []
+    for candidate in profit_label_candidates:
+        candidate_src_rows = []
+        has_any = False
+        for y in target_years:
+            assignment = profit_assignment.get(y)
+            if assignment is not None and assignment[0] == candidate:
+                candidate_src_rows.append(assignment[1])
+                has_any = True
+            else:
+                candidate_src_rows.append(None)
+        if has_any:
+            profit_block_starts.append(
+                _write_data_block_ifrs(candidate, candidate_src_rows, year_fallbacks=target_years)
+            )
+
+    if not profit_block_starts:
+        # 利益ラベルが全くない場合はダミー行を1ブロック追加
+        dummy_rows = [None] * NUM_YEARS
+        profit_block_starts.append(
+            _write_data_block_ifrs("セグメント利益", dummy_rows, year_fallbacks=target_years)
+        )
 
     # refsブロック
     refs_block_starts = []
     for lbl in refs_labels:
         src_rows = [lookup.get((lbl, y)) for y in target_years]
-        refs_block_starts.append(_write_data_block_ifrs(lbl, src_rows))
+        refs_block_starts.append(_write_data_block_ifrs(lbl, src_rows, year_fallbacks=target_years))
 
     # refs_minusブロック
     refs_minus_block_starts = []
     for lbl in refs_minus_labels:
         src_rows = [lookup.get((lbl, y)) for y in target_years]
-        refs_minus_block_starts.append(_write_data_block_ifrs(lbl, src_rows))
+        refs_minus_block_starts.append(_write_data_block_ifrs(lbl, src_rows, year_fallbacks=target_years))
 
     # --- 空行 ---
     ebitda_ws.append([""] * max_col)
 
     # --- EBITDAブロック ---
+    # 複数利益ブロックは年度ごとに排他的（担当年のみデータ）なので合算してよい。
+    # profit_sum = IF(p1="",0,p1)+IF(p2="",0,p2)+...
+    # any_profit_cond = OR(p1<>"", p2<>"", ...)
     ebitda_block_start = ebitda_ws.max_row + 1
     for idx in range(NUM_YEARS):
         row_data = ["EBITDA"]
         row_data.append(f"=B{sales_block_start + idx}")
         for col_idx in range(3, max_col + 1):
             cl = get_column_letter(col_idx)
-            profit_cell = f"{cl}{profit_block_start + idx}"
+            profit_cells = [f"{cl}{bs + idx}" for bs in profit_block_starts]
             refs_cells = [f"{cl}{bs + idx}" for bs in refs_block_starts]
             refs_minus_cells = [f"{cl}{bs + idx}" for bs in refs_minus_block_starts]
 
+            # 利益の合計式（空白を0として加算）
+            if len(profit_cells) == 1:
+                profit_sum = profit_cells[0]
+                any_profit_cond = f"{profit_cells[0]}<>\"\""
+            else:
+                profit_sum = "+".join(f"IF({p}=\"\",0,{p})" for p in profit_cells)
+                any_profit_cond = "OR(" + ",".join(f"{p}<>\"\"" for p in profit_cells) + ")"
+
             if not refs_cells and not refs_minus_cells:
-                formula = f"=IF({profit_cell}=\"\",\"\",{profit_cell})"
+                formula = f"=IF(NOT({any_profit_cond}),\"\",{profit_sum})"
             elif not refs_minus_cells:
                 refs_str = ",".join(refs_cells)
                 formula = (
-                    f"=IF(OR({profit_cell}=\"\",COUNT({refs_str})=0),"
-                    f"\"\",{profit_cell}+SUM({refs_str}))"
+                    f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_str})=0),"
+                    f"\"\",{profit_sum}+SUM({refs_str}))"
                 )
             elif not refs_cells:
                 refs_minus_str = ",".join(refs_minus_cells)
                 formula = (
-                    f"=IF(OR({profit_cell}=\"\",COUNT({refs_minus_str})=0),"
-                    f"\"\",{profit_cell}-SUM({refs_minus_str}))"
+                    f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_minus_str})=0),"
+                    f"\"\",{profit_sum}-SUM({refs_minus_str}))"
                 )
             else:
                 refs_str = ",".join(refs_cells)
                 refs_minus_str = ",".join(refs_minus_cells)
                 formula = (
-                    f"=IF(OR({profit_cell}=\"\",COUNT({refs_str})=0),"
-                    f"\"\",{profit_cell}+SUM({refs_str})-SUM({refs_minus_str}))"
+                    f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_str})=0),"
+                    f"\"\",{profit_sum}+SUM({refs_str})-SUM({refs_minus_str}))"
                 )
             row_data.append(formula)
         ebitda_ws.append(row_data)
