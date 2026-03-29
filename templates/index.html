@@ -725,8 +725,11 @@ XBRL to Excel Converter - Main UI Template
                     return;
                 }
 
-                // 証券コード順（なければよみがな順）にソート
+                // 最新決算期末（降順）→ 証券コード（昇順）→ よみがな順
                 const sortedResults = [...data.results].sort((a, b) => {
+                    const aPeriod = a.latest_period_end || '';
+                    const bPeriod = b.latest_period_end || '';
+                    if (aPeriod !== bPeriod) return bPeriod.localeCompare(aPeriod);
                     const aCode = a.secCode ? a.secCode.trim() : '';
                     const bCode = b.secCode ? b.secCode.trim() : '';
                     if (aCode && bCode) return aCode.localeCompare(bCode);
@@ -741,17 +744,28 @@ XBRL to Excel Converter - Main UI Template
                 window.companiesData = sortedResults;
 
                 // 検索結果を表示
-                companyList.innerHTML = sortedResults.map((company, index) => `
+                const fmtPeriod = (dt) => {
+                    if (!dt) return null;
+                    const m = dt.match(/^(\d{4})-(\d{2})/);
+                    if (!m) return null;
+                    return `${m[1]}/${parseInt(m[2])}`;
+                };
+
+                companyList.innerHTML = sortedResults.map((company, index) => {
+                    const from = fmtPeriod(company.earliest_period_end);
+                    const to   = fmtPeriod(company.latest_period_end);
+                    const period = (from && to) ? ` | データ期間: ${from}〜${to}` : '';
+                    return `
                     <div style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--container-bg); border-radius: 8px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s;"
                          onmouseover="this.style.borderColor='var(--primary-color)'"
                          onmouseout="this.style.borderColor='var(--border-color)'"
                          onclick="selectCompany(${index})">
                         <div style="font-weight: 600; margin-bottom: 0.25rem;">${company.filerName}</div>
                         <div style="font-size: 0.85rem; color: var(--text-muted);">
-                            EDINETコード: ${company.edinetCode} | 証券コード: ${company.secCode || 'N/A'}
+                            EDINETコード: ${company.edinetCode} | 証券コード: ${company.secCode || 'N/A'}${period}
                         </div>
-                    </div>
-                `).join('');
+                    </div>`;
+                }).join('');
 
                 searchResults.style.display = 'block';
                 document.getElementById('conversionModeSection').style.display = 'block';

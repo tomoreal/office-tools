@@ -243,7 +243,8 @@ class EdinetCache:
         # また、書類種別を「有価証券報告書」のみに限定し、投資法人も除外する
         cursor.execute(f"""
             SELECT DISTINCT r.edinet_code, COALESCE(c.japanese_name, r.filer_name) as display_name, r.sec_code,
-                   MAX(r.submit_datetime) as latest_submit
+                   MIN(r.period_end) as earliest_period_end,
+                   MAX(r.period_end) as latest_period_end
             FROM securities_reports r
             LEFT JOIN company_master c ON r.edinet_code = c.edinet_code
             WHERE (
@@ -257,10 +258,10 @@ class EdinetCache:
                r.sec_code LIKE ?
             )
             AND display_name NOT LIKE '%投資法人%'
-            AND r.doc_description LIKE '有価証券報告書%' 
+            AND r.doc_description LIKE '有価証券報告書%'
             AND r.doc_description NOT LIKE '有価証券報告書（%'
             GROUP BY r.edinet_code
-            ORDER BY latest_submit DESC
+            ORDER BY latest_period_end DESC
         """, (search_raw, search_kana, search_raw, search_norm, search_raw, search_norm, search_raw, search_raw))
 
         results = []
@@ -269,7 +270,8 @@ class EdinetCache:
                 'edinetCode': row['edinet_code'],
                 'filerName': row['display_name'],
                 'secCode': row['sec_code'] or '',
-                'latest_submit': row['latest_submit']
+                'earliest_period_end': row['earliest_period_end'],
+                'latest_period_end': row['latest_period_end'],
             })
 
         conn.close()
