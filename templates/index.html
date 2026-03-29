@@ -725,8 +725,23 @@ XBRL to Excel Converter - Main UI Template
                     return;
                 }
 
+                // 証券コード順（なければよみがな順）にソート
+                const sortedResults = [...data.results].sort((a, b) => {
+                    const aCode = a.secCode ? a.secCode.trim() : '';
+                    const bCode = b.secCode ? b.secCode.trim() : '';
+                    if (aCode && bCode) return aCode.localeCompare(bCode);
+                    if (aCode) return -1;
+                    if (bCode) return 1;
+                    const aKana = (a.filerNameKana || a.filerName || '').trim();
+                    const bKana = (b.filerNameKana || b.filerName || '').trim();
+                    return aKana.localeCompare(bKana, 'ja');
+                });
+
+                // グローバル変数に保存
+                window.companiesData = sortedResults;
+
                 // 検索結果を表示
-                companyList.innerHTML = data.results.map((company, index) => `
+                companyList.innerHTML = sortedResults.map((company, index) => `
                     <div style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--container-bg); border-radius: 8px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s;"
                          onmouseover="this.style.borderColor='var(--primary-color)'"
                          onmouseout="this.style.borderColor='var(--border-color)'"
@@ -742,9 +757,6 @@ XBRL to Excel Converter - Main UI Template
                 document.getElementById('conversionModeSection').style.display = 'block';
                 reportsSection.style.display = 'none';
                 convertBtn.style.display = 'none';
-
-                // グローバル変数に保存
-                window.companiesData = data.results;
 
             } catch (error) {
                 alert('エラーが発生しました: ' + error.message);
