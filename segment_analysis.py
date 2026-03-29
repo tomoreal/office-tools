@@ -53,6 +53,15 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             debug_log=debug_log
         )
 
+        # 元の注記シートの末尾にセグメント別研究開発費を追加
+        _append_rd_to_notes_sheet(
+            workbook=workbook,
+            sheet_name=info['sheet_name'],
+            sorted_role_cols=info['sorted_role_cols'],
+            global_element_period_values=info.get('global_element_period_values', {}),
+            debug_log=debug_log
+        )
+
         # Create PPM analysis sheet for Japanese GAAP only
         if '日本基準' in info['sheet_name']:
             # Use the same sheet name transformation as _create_segment_analysis_sheet
@@ -366,7 +375,11 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
 
                 row_data_analysis.append(val)
 
-            # 有効年度内であれば、データが空でも行を出力（ただし項目自体が全期間空の場合はスルー済み）
+            # 数値データが1つもない行（テキストのみ）はスキップ
+            has_numeric = any(isinstance(v, (int, float)) for v in row_data_analysis[2:])
+            if not has_numeric:
+                continue
+
             # 重複チェックはラベルと年度の組み合わせで行う
             row_key = (d_label, period)
             if row_key in seen_rows_analysis:
@@ -429,57 +442,90 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
                 if is_at_end:
                     break
 
-    # セグメント別研究開発費を末尾に追加
-    # jpcrp_cor_ResearchAndDevelopmentExpensesResearchAndDevelopmentActivities が
-    # プレゼンテーションツリーに含まれない場合でも、ここで追加する
-    rd_el = 'jpcrp_cor_ResearchAndDevelopmentExpensesResearchAndDevelopmentActivities'
-    rd_vals = global_element_period_values.get(rd_el, {})
-    if rd_vals:
-        # 使用する fact_std（JP or IFRS）
-        fact_std = current_standard if current_standard not in ('JP_ALL',) else 'JP'
+    # プレゼンテーションツリーに含まれない追加項目をシート末尾に追加
+    # (研究開発費、設備投資額など)
+    _EXTRA_SEGMENT_ELEMENTS = [
+        ('jpcrp_cor_ResearchAndDevelopmentExpensesResearchAndDevelopmentActivities', '研究開発費'),
+        ('jpcrp_cor_CapitalExpendituresOverviewOfCapitalExpendituresEtc', '設備投資額'),
+    ]
+    fact_std = current_standard if current_standard not in ('JP_ALL',) else 'JP'
 
-        # 有効期間・セグメントにデータがあるか確認
-        has_segment_rd = False
+    # 「報告セグメント及びその他の合計」列の位置を特定（構成比の分母として使う）
+    _TOTAL_SUFFIXES = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+    _reporting_total_dim = next(
+        (d for d in unique_dims if '報告セグメント' in str(d) and '以外' not in str(d) and '合計' in str(d)),
+        None
+    )
+    # 合計列を構成する個別セグメント次元（合計・全体・全社・消去・調整を除く）
+    _summable_dims = [
+        d for d in unique_dims
+        if d != synthetic_total_dim and not any(s in str(d) for s in _TOTAL_SUFFIXES)
+    ]
+
+    for extra_el, extra_label in _EXTRA_SEGMENT_ELEMENTS:
+        extra_vals = global_element_period_values.get(extra_el, {})
+        if not extra_vals:
+            continue
+
+        # セグメント次元にデータがあるか確認
+        has_segment_data = False
         for period in sorted_valid_periods:
             for dim in unique_dims:
                 if dim == synthetic_total_dim:
                     continue
-                if rd_vals.get((fact_std, dim, period)) is not None:
-                    has_segment_rd = True
+                if extra_vals.get((fact_std, dim, period)) is not None:
+                    has_segment_data = True
                     break
-            if has_segment_rd:
+            if has_segment_data:
                 break
+        if not has_segment_data:
+            continue
 
-        if has_segment_rd:
-            debug_log(f"[Segment Analysis] Appending segment R&D expense rows")
-            for period in sorted_valid_periods:
-                row_data = ["研究開発費", period]
-                for dim in unique_dims:
-                    if dim == synthetic_total_dim:
-                        # 報告セグメント合計: 各セグメントの合計
-                        total = 0.0
-                        has_any = False
-                        for rd in reporting_dims_for_total:
-                            v = rd_vals.get((fact_std, rd, period))
-                            if v is not None:
-                                vc = unicodedata.normalize('NFKC', str(v)).replace(',', '').strip()
-                                try:
-                                    total += float(vc)
-                                    has_any = True
-                                except ValueError:
-                                    pass
-                        row_data.append(total if has_any else "")
-                    else:
-                        v = rd_vals.get((fact_std, dim, period))
+        debug_log(f"[Segment Analysis] Appending '{extra_label}' rows")
+        for period in sorted_valid_periods:
+            row_data = [extra_label, period]
+            # 各dim列の値を収集（後で合計列の補完に使う）
+            dim_values = {}
+            for dim in unique_dims:
+                if dim == synthetic_total_dim:
+                    total = 0.0
+                    has_any = False
+                    for rd in reporting_dims_for_total:
+                        v = extra_vals.get((fact_std, rd, period))
                         if v is not None:
                             vc = unicodedata.normalize('NFKC', str(v)).replace(',', '').strip()
                             try:
-                                row_data.append(float(vc))
+                                total += float(vc)
+                                has_any = True
                             except ValueError:
-                                row_data.append(v)
-                        else:
-                            row_data.append("")
-                aws.append(row_data)
+                                pass
+                    dim_values[dim] = total if has_any else ""
+                else:
+                    v = extra_vals.get((fact_std, dim, period))
+                    if v is not None:
+                        vc = unicodedata.normalize('NFKC', str(v)).replace(',', '').strip()
+                        try:
+                            dim_values[dim] = float(vc)
+                        except ValueError:
+                            dim_values[dim] = v
+                    else:
+                        dim_values[dim] = ""
+
+            # 「報告セグメント及びその他の合計」列が空の場合、個別セグメントの合計で補完
+            if _reporting_total_dim and dim_values.get(_reporting_total_dim) == "":
+                seg_sum = 0.0
+                has_any_seg = False
+                for sd in _summable_dims:
+                    sv = dim_values.get(sd, "")
+                    if isinstance(sv, (int, float)):
+                        seg_sum += sv
+                        has_any_seg = True
+                if has_any_seg:
+                    dim_values[_reporting_total_dim] = seg_sum
+
+            for dim in unique_dims:
+                row_data.append(dim_values[dim])
+            aws.append(row_data)
 
     # セル書式を適用
     for row in aws.iter_rows(min_row=2, max_row=aws.max_row, min_col=3, max_col=aws.max_column):
@@ -499,6 +545,70 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
         aws.column_dimensions[get_column_letter(col_idx)].width = 12
 
     debug_log(f"[Segment Analysis] Completed analysis sheet: {analysis_sheet_name} with {aws.max_row - 1} data rows")
+
+
+def _append_rd_to_notes_sheet(workbook, sheet_name, sorted_role_cols,
+                              global_element_period_values, debug_log):
+    """元の注記シートの末尾にセグメント別研究開発費行を追加する"""
+    if sheet_name not in workbook.sheetnames:
+        return
+
+    _EXTRA_SEGMENT_ELEMENTS = [
+        ('jpcrp_cor_ResearchAndDevelopmentExpensesResearchAndDevelopmentActivities', '研究開発費'),
+        ('jpcrp_cor_CapitalExpendituresOverviewOfCapitalExpendituresEtc', '設備投資額'),
+    ]
+
+    non_segment_dims = ('全体', '単体', '連結', '全社', '連結財務諸表計上額')
+    ws = workbook[sheet_name]
+    appended = False
+
+    for extra_el, extra_label in _EXTRA_SEGMENT_ELEMENTS:
+        extra_vals = global_element_period_values.get(extra_el, {})
+        if not extra_vals:
+            continue
+
+        has_segment_data = any(
+            extra_vals.get(col_key) is not None
+            for col_key in sorted_role_cols
+            if len(col_key) == 3 and col_key[1] not in non_segment_dims
+        )
+        if not has_segment_data:
+            continue
+
+        debug_log(f"[Segment Analysis] Appending '{extra_label}' row to notes sheet: {sheet_name}")
+
+        row_data = [extra_label, extra_el]
+        for col_key in sorted_role_cols:
+            v = extra_vals.get(col_key)
+            if v is not None:
+                vc = unicodedata.normalize('NFKC', str(v)).replace(',', '').strip()
+                try:
+                    row_data.append(float(vc))
+                except ValueError:
+                    row_data.append(v)
+            else:
+                row_data.append("")
+
+        ws.append(row_data)
+        appended = True
+
+    if not appended:
+        return
+
+    # 追加した行に書式を適用
+    last_row = ws.max_row
+    start_row = last_row - sum(
+        1 for el, _ in _EXTRA_SEGMENT_ELEMENTS
+        if global_element_period_values.get(el) and any(
+            global_element_period_values[el].get(c) is not None
+            for c in sorted_role_cols
+            if len(c) == 3 and c[1] not in non_segment_dims
+        )
+    ) + 1
+    for r in range(start_row, last_row + 1):
+        for cell in ws[r][2:]:
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
 
 
 def _convert_camel_case_to_title(name):
@@ -803,8 +913,6 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     ppm_ws.append([""] * max_col)
     ppm_ws.append([""] * max_col)
-    data_start_row = ppm_ws.max_row + 1
-
     LATEST_IDX     = NUM_YEARS - 1   # 最新年（インデックス10）
     FIVE_AGO_IDX   = NUM_YEARS - 6   # 5年前（インデックス5）
     FIVE_AGO_OFFSET = 5
@@ -834,7 +942,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                 return s[:7].replace('-', '/')
         return s[:4]
 
-    def _valid_cols(arr, year_idx):
+    def _valid_cols(year_idx):
         """3指標すべてが揃っている列のリストを返す"""
         result = []
         for ci in range(3, chart_end_col + 1):
@@ -844,10 +952,10 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                 result.append(ci)
         return result
 
-    def _append_data_section(year_idx, sales_row, profit_row, growth_row, margin_row):
+    def _append_data_section(year_idx, sales_row, _profit_row, growth_row, margin_row):
         """集約データ4行（ヘッダ・利益率・成長率・売上）を追加して開始行を返す"""
         sec_start = ppm_ws.max_row + 1
-        vcols = _valid_cols(profit_margins if year_idx == LATEST_IDX else profit_margins, year_idx)
+        vcols = _valid_cols(year_idx)
 
         # ヘッダ行
         hrow = [f"=B{sales_row}", "セグメント名"]
