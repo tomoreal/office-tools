@@ -3952,7 +3952,20 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
     # 最新の期末を取得してファイル名に追加
     latest_period = ''
-    if periods_seen:
+    try:
+        from edinet_cache import EdinetCache
+        cache = EdinetCache()
+        results = cache.search_by_company_name(company_name)
+        if results and results[0].get('latest_period_end'):
+            latest_period_end = results[0]['latest_period_end']
+            # YYYY-MM-DD -> YYYYMM 形式に変換
+            if isinstance(latest_period_end, str) and '-' in latest_period_end:
+                latest_period = f"_{latest_period_end.replace('-', '')[:6]}"
+    except Exception as e:
+        debug_log(f"Failed to fetch latest_period_end from edinet_cache: {e}")
+
+    # 万が一edinet_cacheから取得できなかった場合のフォールバック（従来の方法）
+    if not latest_period and periods_seen:
         # periods_seenは (fact_std, dim_label, period) のタプルのセット
         # 期間部分（3番目の要素）だけを取り出してソート
         period_dates = [p[2] if isinstance(p, tuple) else p for p in periods_seen]
