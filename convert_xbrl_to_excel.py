@@ -1942,17 +1942,42 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             master_member_seq = merge_sequences(master_member_seq, res['member_seq'])
 
         report_stds = set()
+        # セグメント事業区分ディメンションについて、新しいXBRLが既にカバーした
+        # セグメントメンバーを古いXBRLで上書き/追加しないための辞書。
+        # resultsは新しい年度順にソート済みなので、順番にカバー済み情報を蓄積する。
+        #
+        # セグメント軸の識別方法:
+        #   parse_instance_contexts_and_units でセグメント軸（OperatingSegmentsAxis等）は
+        #   skip_axes に含まれるため dim_str に「：」が入らない（例: "ゲーム事業"）。
+        #   一方、株主資本変動・役員等の軸は「axis：member」形式（例: "Components Of Equity：..."）。
+        #   よって dim_label に「：」が含まれるものはセグメント事業区分ではない。
+        #
+        # ブロック戦略: (fact_std, period) に対して新しいXBRLがカバーしたdim_labelの集合を記録。
+        # 古いXBRLのdim_labelがその集合に含まれない場合のみブロックする。
+        # これにより、セグメント区分が変わった年度の前期データ混入を防ぎつつ、
+        # 新しいXBRLが持たない要素（例: 売上収益）を古いXBRLから補完できる。
+        _NON_SEGMENT_DIMS = frozenset({'全体', '連結', '単体', '個別', ''})
+        def _is_segment_dim(dim_label):
+            """セグメント事業区分ディメンションか判定する。"""
+            if dim_label in _NON_SEGMENT_DIMS:
+                return False
+            if '：' in dim_label:  # 「axis：member」形式 → セグメント事業区分ではない
+                return False
+            return True
+        # (fact_std, period) -> set of dim_labels covered by newer XBRLs
+        segment_covered_dims = {}  # type: dict
+
         for res in results:
             if res.get('report_std'):
                 report_stds.add(res['report_std'])
-            
+
             # Merge labels with priorities
             for k, v in res['labels'].items():
                 p = res['priorities'].get(k, 100)
                 if k not in labels_map or p < labels_map_priorities.get(k, 101):
                     labels_map[k] = v
                     labels_map_priorities[k] = p
-            
+
             # Merge facts, periods, and values
             all_facts.extend(res['facts'])
             periods_seen.update(res['periods'])
@@ -1960,6 +1985,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 if el not in global_element_period_values:
                     global_element_period_values[el] = {}
                 for col_key, new_val in vals.items():
+                    fact_std, dim_label, period = col_key
+                    # セグメント事業区分ディメンションの場合、新しいXBRLが既にカバーした
+                    # periodのデータは古いXBRLからスキップする。
+                    # これにより、セグメント区分変更時に前期データが二重登録されるのを防ぐ。
+                    if (el != '_metadata'
+                            and _is_segment_dim(dim_label)
+                            and (fact_std, period) in segment_covered_dims
+                            and dim_label not in segment_covered_dims[(fact_std, period)]):
+                        continue
                     old_val = global_element_period_values[el].get(col_key)
                     if old_val is None:
                         global_element_period_values[el][col_key] = new_val
@@ -1972,6 +2006,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             return len(s.split('.')[-1])
                         if get_precision(new_val) > get_precision(old_val):
                             global_element_period_values[el][col_key] = new_val
+
+            # このXBRLがカバーしたセグメント事業区分のdim_labelを記録（次のXBRL処理時の判定に使用）
+            for col_key in res['periods']:
+                _fs, _dim, _per = col_key
+                if _is_segment_dim(_dim):
+                    key = (_fs, _per)
+                    if key not in segment_covered_dims:
+                        segment_covered_dims[key] = set()
+                    segment_covered_dims[key].add(_dim)
             
             # Merge presentation trees
             for role, tree_arcs in res['trees'].items():

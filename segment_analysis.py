@@ -172,6 +172,15 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
         if d not in unique_dims:
             unique_dims.append(d)
 
+    # 「報告セグメント及びその他の合計」がある場合は「報告セグメント」（単独列）を除去する。
+    # 単独の「報告セグメント」列はデータが空になることが多く冗長なため。
+    # PPM分析用の chart_end_col も自動的に「報告セグメント及びその他の合計」を参照するようになる。
+    _HAS_TOTAL_WITH_OTHER = any(
+        d == "報告セグメント及びその他の合計" for d in unique_dims
+    )
+    if _HAS_TOTAL_WITH_OTHER:
+        unique_dims = [d for d in unique_dims if d != "報告セグメント"]
+
     # IFRS: 報告セグメント合計列が存在しない場合は合成列を追加
     synthetic_total_dim = None
     reporting_dims_for_total = []
