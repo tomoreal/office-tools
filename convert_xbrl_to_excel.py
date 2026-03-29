@@ -3812,7 +3812,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'segment_dict': segment_dict,
                 'common_dict': common_dict,
                 'labels_map': labels_map,
-                'used_sheet_names': used_sheet_names
+                'used_sheet_names': used_sheet_names,
+                'global_element_period_values': global_element_period_values
             })
 
     debug_log(f"Sheet generation completed in {time.time() - t_sheet_generation_start:.2f}s")

@@ -49,6 +49,7 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             common_dict=info['common_dict'],
             labels_map=info['labels_map'],
             used_sheet_names=info['used_sheet_names'],
+            global_element_period_values=info.get('global_element_period_values', {}),
             debug_log=debug_log
         )
 
@@ -127,7 +128,7 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
 def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years_data,
                                    role, sorted_role_cols, role_columns, current_standard,
                                    segment_dict, common_dict, labels_map, used_sheet_names,
-                                   debug_log):
+                                   global_element_period_values, debug_log):
     """
     セグメント分析シートを作成（内部関数）
 
@@ -427,6 +428,58 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
                     break
                 if is_at_end:
                     break
+
+    # セグメント別研究開発費を末尾に追加
+    # jpcrp_cor_ResearchAndDevelopmentExpensesResearchAndDevelopmentActivities が
+    # プレゼンテーションツリーに含まれない場合でも、ここで追加する
+    rd_el = 'jpcrp_cor_ResearchAndDevelopmentExpensesResearchAndDevelopmentActivities'
+    rd_vals = global_element_period_values.get(rd_el, {})
+    if rd_vals:
+        # 使用する fact_std（JP or IFRS）
+        fact_std = current_standard if current_standard not in ('JP_ALL',) else 'JP'
+
+        # 有効期間・セグメントにデータがあるか確認
+        has_segment_rd = False
+        for period in sorted_valid_periods:
+            for dim in unique_dims:
+                if dim == synthetic_total_dim:
+                    continue
+                if rd_vals.get((fact_std, dim, period)) is not None:
+                    has_segment_rd = True
+                    break
+            if has_segment_rd:
+                break
+
+        if has_segment_rd:
+            debug_log(f"[Segment Analysis] Appending segment R&D expense rows")
+            for period in sorted_valid_periods:
+                row_data = ["研究開発費", period]
+                for dim in unique_dims:
+                    if dim == synthetic_total_dim:
+                        # 報告セグメント合計: 各セグメントの合計
+                        total = 0.0
+                        has_any = False
+                        for rd in reporting_dims_for_total:
+                            v = rd_vals.get((fact_std, rd, period))
+                            if v is not None:
+                                vc = unicodedata.normalize('NFKC', str(v)).replace(',', '').strip()
+                                try:
+                                    total += float(vc)
+                                    has_any = True
+                                except ValueError:
+                                    pass
+                        row_data.append(total if has_any else "")
+                    else:
+                        v = rd_vals.get((fact_std, dim, period))
+                        if v is not None:
+                            vc = unicodedata.normalize('NFKC', str(v)).replace(',', '').strip()
+                            try:
+                                row_data.append(float(vc))
+                            except ValueError:
+                                row_data.append(v)
+                        else:
+                            row_data.append("")
+                aws.append(row_data)
 
     # セル書式を適用
     for row in aws.iter_rows(min_row=2, max_row=aws.max_row, min_col=3, max_col=aws.max_column):
