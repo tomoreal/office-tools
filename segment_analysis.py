@@ -797,8 +797,26 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         elif hokoku_col is None:
             hokoku_col = _ci
     if hokoku_col is None:
-        # 「報告セグメント」単独列がない場合: 「以外」列の手前を末端とする
-        hokoku_col = (igai_col - 1) if igai_col else max_col
+        if igai_col and igai_col > 3:
+            # 「報告セグメント」単独列がない場合: 個別セグメントの合計列を igai_col の手前に挿入
+            _sum_start_letter = get_column_letter(3)
+            _sum_end_letter   = get_column_letter(igai_col - 1)
+            analysis_ws.insert_cols(igai_col)
+            analysis_ws.cell(1, igai_col).value = "報告セグメント合計"
+            for _ri in range(2, analysis_ws.max_row + 1):
+                if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
+                       for c in range(3, igai_col)):
+                    analysis_ws.cell(_ri, igai_col).value = (
+                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
+                    )
+            hokoku_col = igai_col
+            igai_col  += 1
+            if goukei_col is not None:
+                goukei_col += 1
+            max_col += 1
+            debug_log(f"[PPM Analysis] Inserted '報告セグメント合計' column at col {hokoku_col}")
+        else:
+            hokoku_col = max_col
 
     # 「報告セグメント及びその他の合計」列がなければ analysis_ws に追加
     if igai_col and goukei_col is None:
@@ -1314,8 +1332,26 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         elif hokoku_col is None:
             hokoku_col = _ci
     if hokoku_col is None:
-        # 「報告セグメント」単独列がない場合: 「以外」列の手前を末端とする
-        hokoku_col = (igai_col - 1) if igai_col else max_col
+        if igai_col and igai_col > 3:
+            # 「報告セグメント」単独列がない場合: 個別セグメントの合計列を igai_col の手前に挿入
+            _sum_start_letter = get_column_letter(3)
+            _sum_end_letter   = get_column_letter(igai_col - 1)
+            analysis_ws.insert_cols(igai_col)
+            analysis_ws.cell(1, igai_col).value = "報告セグメント合計"
+            for _ri in range(2, analysis_ws.max_row + 1):
+                if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
+                       for c in range(3, igai_col)):
+                    analysis_ws.cell(_ri, igai_col).value = (
+                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
+                    )
+            hokoku_col = igai_col
+            igai_col  += 1
+            if goukei_col is not None:
+                goukei_col += 1
+            max_col += 1
+            debug_log(f"[PPM IFRS] Inserted '報告セグメント合計' column at col {hokoku_col}")
+        else:
+            hokoku_col = max_col
 
     # 「報告セグメント及びその他の合計」列がなければ analysis_ws に追加
     if igai_col and goukei_col is None:
