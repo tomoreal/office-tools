@@ -797,7 +797,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         elif hokoku_col is None:
             hokoku_col = _ci
     if hokoku_col is None:
-        hokoku_col = max_col
+        # 「報告セグメント」単独列がない場合: 「以外」列の手前を末端とする
+        hokoku_col = (igai_col - 1) if igai_col else max_col
 
     # 「報告セグメント及びその他の合計」列がなければ analysis_ws に追加
     if igai_col and goukei_col is None:
@@ -1313,7 +1314,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         elif hokoku_col is None:
             hokoku_col = _ci
     if hokoku_col is None:
-        hokoku_col = max_col
+        # 「報告セグメント」単独列がない場合: 「以外」列の手前を末端とする
+        hokoku_col = (igai_col - 1) if igai_col else max_col
 
     # 「報告セグメント及びその他の合計」列がなければ analysis_ws に追加
     if igai_col and goukei_col is None:
