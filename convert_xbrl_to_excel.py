@@ -1964,6 +1964,23 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             if '：' in dim_label:  # 「axis：member」形式 → セグメント事業区分ではない
                 return False
             return True
+        # --- 各ZIPの当期/前期ペアを構築（古→新の昇順）---
+        # results は新しい年度順ソート済みなので reversed で古→新の順に走査する
+        filing_pairs = []
+        for res in reversed(results):
+            seg_periods = set()
+            for el, el_vals in res.get('values', {}).items():
+                if el == '_metadata':
+                    continue
+                for (std, dim, period) in el_vals.keys():
+                    if _is_segment_dim(dim):
+                        seg_periods.add(period)
+            sorted_p = sorted(seg_periods)
+            if len(sorted_p) >= 2:
+                filing_pairs.append({'current': sorted_p[-1], 'prior': sorted_p[-2]})
+            elif len(sorted_p) == 1:
+                filing_pairs.append({'current': sorted_p[0], 'prior': None})
+
         # (fact_std, period) -> set of dim_labels covered by newer XBRLs
         segment_covered_dims = {}  # type: dict
 
@@ -3813,7 +3830,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'common_dict': common_dict,
                 'labels_map': labels_map,
                 'used_sheet_names': used_sheet_names,
-                'global_element_period_values': global_element_period_values
+                'global_element_period_values': global_element_period_values,
+                'filing_pairs': filing_pairs,
             })
 
     debug_log(f"Sheet generation completed in {time.time() - t_sheet_generation_start:.2f}s")
