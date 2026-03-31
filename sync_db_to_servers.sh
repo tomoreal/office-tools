@@ -46,6 +46,19 @@ if [ ! -f "$DB_FILE" ]; then
     exit 1
 fi
 
+# 更新チェック: 前回転送時のタイムスタンプと比較
+LAST_SYNC_FILE=".last_db_sync"
+DB_MTIME=$(stat -c '%Y' "$DB_FILE")
+
+if [ -f "$LAST_SYNC_FILE" ]; then
+    LAST_SYNC_MTIME=$(cat "$LAST_SYNC_FILE")
+    if [ "$DB_MTIME" = "$LAST_SYNC_MTIME" ]; then
+        log "DBファイルに変更なし（前回転送時刻と同じ）。転送をスキップします。"
+        log "========================================"
+        exit 0
+    fi
+fi
+
 DB_SIZE=$(ls -lh "$DB_FILE" | awk '{print $5}')
 log "転送ファイル: $DB_FILE ($DB_SIZE)"
 
@@ -154,5 +167,7 @@ if [ $FAIL_COUNT -gt 0 ]; then
     exit 1
 else
     log "全サーバーへの転送成功"
+    # 転送成功時にDBのmtimeを記録（次回の更新チェック用）
+    echo "$DB_MTIME" > "$LAST_SYNC_FILE"
     exit 0
 fi
