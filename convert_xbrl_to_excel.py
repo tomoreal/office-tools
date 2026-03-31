@@ -1966,20 +1966,39 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             return True
         # --- 各ZIPの当期/前期ペアを構築（古→新の昇順）---
         # results は新しい年度順ソート済みなので reversed で古→新の順に走査する
+        # current_dims / prior_dims: そのZIPの当期・前期に実在したセグメントdim名の集合
+        # これをPPMシートでのフィルタリングに使い、他のZIPからのデータ混入を防ぐ
         filing_pairs = []
         for res in reversed(results):
             seg_periods = set()
+            seg_dim_by_period = {}   # period_str -> set of dim_labels
             for el, el_vals in res.get('values', {}).items():
                 if el == '_metadata':
                     continue
                 for (std, dim, period) in el_vals.keys():
                     if _is_segment_dim(dim):
                         seg_periods.add(period)
+                        if period not in seg_dim_by_period:
+                            seg_dim_by_period[period] = set()
+                        seg_dim_by_period[period].add(dim)
             sorted_p = sorted(seg_periods)
             if len(sorted_p) >= 2:
-                filing_pairs.append({'current': sorted_p[-1], 'prior': sorted_p[-2]})
+                cur_p = sorted_p[-1]
+                pri_p = sorted_p[-2]
+                filing_pairs.append({
+                    'current': cur_p,
+                    'prior': pri_p,
+                    'current_dims': seg_dim_by_period.get(cur_p, set()),
+                    'prior_dims':   seg_dim_by_period.get(pri_p, set()),
+                })
             elif len(sorted_p) == 1:
-                filing_pairs.append({'current': sorted_p[0], 'prior': None})
+                cur_p = sorted_p[0]
+                filing_pairs.append({
+                    'current': cur_p,
+                    'prior': None,
+                    'current_dims': seg_dim_by_period.get(cur_p, set()),
+                    'prior_dims':   set(),
+                })
 
         # (fact_std, period) -> set of dim_labels covered by newer XBRLs
         segment_covered_dims = {}  # type: dict
@@ -2008,8 +2027,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     # これにより、セグメント区分変更時に前期データが二重登録されるのを防ぐ。
                     if (el != '_metadata'
                             and _is_segment_dim(dim_label)
-                            and (fact_std, period) in segment_covered_dims
-                            and dim_label not in segment_covered_dims[(fact_std, period)]):
+                            and dim_label in segment_covered_dims.get((fact_std, period), set())):
                         continue
                     old_val = global_element_period_values[el].get(col_key)
                     if old_val is None:

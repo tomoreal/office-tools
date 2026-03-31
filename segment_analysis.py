@@ -822,7 +822,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         cur_s = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
         cur_p_src = _get_profit_src(cur_p)
         if _has_data_row(cur_s) or _has_data_row(cur_p_src):
-            valid_pairs.append({'current': cur_p, 'prior': pri_p})
+            valid_pairs.append({
+                'current': cur_p,
+                'prior': pri_p,
+                'current_dims': fp.get('current_dims', set()),
+                'prior_dims':   fp.get('prior_dims',   set()),
+            })
 
     MAX_FILINGS = 11
     if len(valid_pairs) > MAX_FILINGS:
@@ -843,6 +848,60 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     SEG_OFFSET = 2
     ppm_max_col = max_col + SEG_OFFSET   # ppm_ws の最大列
+
+    # -----------------------------------------------------------------------
+    # col_to_dim: analysis_ws 列インデックス → ヘッダー名（dim ラベル）
+    # _get_val_for_filing: そのZIPに存在したセグメントのみ返すフィルタ付き読み取り
+    # -----------------------------------------------------------------------
+    col_to_dim = {}
+    for _c in range(3, max_col + 1):
+        _hv = analysis_ws.cell(1, _c).value
+        if _hv is not None:
+            col_to_dim[_c] = str(_hv)
+
+    # 合成列（プログラムで挿入した列）か判定
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
+    goukei_is_synthesized = (goukei_col is not None and
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
+
+    def _get_val_for_filing(src_row, c, fp, is_current):
+        """analysis_ws 列 c の値を当該有報の dims でフィルタして返す。"""
+        if src_row is None:
+            return None
+        allowed = fp.get('current_dims', set()) if is_current else fp.get('prior_dims', set())
+
+        if c == hokoku_col and hokoku_is_synthesized:
+            # 個別セグメント列を allowed でフィルタして合計
+            total = 0.0
+            has_val = False
+            for cc in range(3, hokoku_col):
+                if cc in (igai_col, goukei_col):
+                    continue
+                dim = col_to_dim.get(cc, '')
+                if allowed and dim not in allowed:
+                    continue
+                v = _read_numeric(analysis_ws, src_row, cc)
+                if v is not None:
+                    total += v
+                    has_val = True
+            return total if has_val else None
+
+        if c == goukei_col and goukei_is_synthesized:
+            v_h = _get_val_for_filing(src_row, hokoku_col, fp, is_current) if hokoku_col else None
+            v_i = None
+            if igai_col:
+                igai_dim = col_to_dim.get(igai_col, '')
+                if not allowed or igai_dim in allowed:
+                    v_i = _read_numeric(analysis_ws, src_row, igai_col)
+            if v_h is None and v_i is None:
+                return None
+            return (v_h or 0.0) + (v_i or 0.0)
+
+        # 通常列: dims でフィルタ
+        dim = col_to_dim.get(c, '')
+        if allowed and dim not in allowed:
+            return None
+        return _read_numeric(analysis_ws, src_row, c)
 
     # -----------------------------------------------------------------------
     # 5. ヘッダー行（1行）
@@ -868,14 +927,14 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         # 前期 row
         pri_row = ["　売上", cur_p, "前期", pri_p if pri_p else ""]
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, pri_src, c)
+            v = _get_val_for_filing(pri_src, c, fp, False)
             pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
         # 当期 row
         cur_row = ["　売上", cur_p, "当期", cur_p]
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, cur_src, c)
+            v = _get_val_for_filing(cur_src, c, fp, True)
             cur_row.append(v if v is not None else "")
         ppm_ws.append(cur_row)
 
@@ -896,14 +955,14 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         # 前期 row
         pri_row = ["　セグメント利益", cur_p, "前期", pri_p if pri_p else ""]
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, pri_src, c)
+            v = _get_val_for_filing(pri_src, c, fp, False)
             pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
         # 当期 row
         cur_row = ["　セグメント利益", cur_p, "当期", cur_p]
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, cur_src, c)
+            v = _get_val_for_filing(cur_src, c, fp, True)
             cur_row.append(v if v is not None else "")
         ppm_ws.append(cur_row)
 
@@ -948,8 +1007,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             # 実値（軸計算用）
             pri_src = period_lookup.get((target_sales_label, fp['prior'])) if (target_sales_label and fp['prior']) else None
             cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
-            pri_val = _read_numeric(analysis_ws, pri_src, c)
-            cur_val = _read_numeric(analysis_ws, cur_src, c)
+            pri_val = _get_val_for_filing(pri_src, c, fp, False)
+            cur_val = _get_val_for_filing(cur_src, c, fp, True)
             if pri_val is not None and cur_val is not None and pri_val != 0:
                 year_growth[c] = cur_val / pri_val - 1
 
@@ -975,17 +1034,18 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     base_profit_ppm_row  = profit_start_row          # 最古の前期 利益行
     base_margin_row_data = ["売上高利益率", base_prior if base_prior else "", "", base_prior if base_prior else ""]
     base_margin = {}
+    _fp0 = valid_pairs[0]
     for c in range(3, max_col + 1):
         ppm_col = get_column_letter(c + SEG_OFFSET)
         formula = (f"=IF(OR({ppm_col}{base_profit_ppm_row}=\"\","
                    f"{ppm_col}{base_sales_ppm_row}=\"\"),"
                    f"\"\",{ppm_col}{base_profit_ppm_row}/{ppm_col}{base_sales_ppm_row})")
         base_margin_row_data.append(formula)
-        # 実値
+        # 実値（最古のfiling pairの前期データでフィルタ）
         pri_s_src = period_lookup.get((target_sales_label, base_prior)) if (target_sales_label and base_prior) else None
         pri_p_src = _get_profit_src(base_prior) if base_prior else None
-        s_val = _read_numeric(analysis_ws, pri_s_src, c)
-        p_val = _read_numeric(analysis_ws, pri_p_src, c)
+        s_val = _get_val_for_filing(pri_s_src, c, _fp0, False)
+        p_val = _get_val_for_filing(pri_p_src, c, _fp0, False)
         if s_val is not None and p_val is not None and s_val != 0:
             base_margin[c] = p_val / s_val
     ppm_ws.append(base_margin_row_data)
@@ -1004,11 +1064,11 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                        f"{ppm_col}{cur_sales_ppm_row}=\"\"),"
                        f"\"\",{ppm_col}{cur_profit_ppm_row}/{ppm_col}{cur_sales_ppm_row})")
             m_row.append(formula)
-            # 実値
+            # 実値（当期データでフィルタ）
             cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
             cur_p_src = _get_profit_src(cur_p)
-            s_val = _read_numeric(analysis_ws, cur_s_src, c)
-            p_val = _read_numeric(analysis_ws, cur_p_src, c)
+            s_val = _get_val_for_filing(cur_s_src, c, fp, True)
+            p_val = _get_val_for_filing(cur_p_src, c, fp, True)
             if s_val is not None and p_val is not None and s_val != 0:
                 year_margin[c] = p_val / s_val
         profit_margins.append(year_margin)
@@ -1023,7 +1083,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
         sv = {}
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, cur_s_src, c)
+            v = _get_val_for_filing(cur_s_src, c, fp, True)
             if v is not None:
                 sv[c] = v
         sales_values.append(sv)
@@ -1031,12 +1091,9 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     # 10. 書式設定
     # -----------------------------------------------------------------------
-    ppm_ws.freeze_panes = 'E2'
-    ppm_ws.column_dimensions['A'].width = 16
-    ppm_ws.column_dimensions['B'].width = 14
-    ppm_ws.column_dimensions['C'].width = 8
-    ppm_ws.column_dimensions['D'].width = 12
-    for col_idx in range(5, ppm_max_col + 1):
+    ppm_ws.freeze_panes = 'B2'
+    ppm_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, ppm_max_col + 1):
         ppm_ws.column_dimensions[get_column_letter(col_idx)].width = 12
 
     # 売上・利益セクションは数値書式
@@ -1052,12 +1109,13 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     # 11. チャート用集約データエリア
     # -----------------------------------------------------------------------
-    ppm_ws.append([])
-    ppm_ws.append([])
-
+    # ppm_ws.append([]) は max_row を更新しないため、sec_start を外部から渡す方式に変更。
+    # C列（col=3）: 年度・ラベル、D列以降（col=4+）: セグメントデータ
     LATEST_IDX    = N - 1          # valid_pairs の最新インデックス
     FIVE_AGO_IDX  = N - 6          # 5期前インデックス（N>=6 のとき有効）
     FIVE_AGO_OFFSET = 5
+    COL_YEAR = 3   # C列: 年度・ラベル
+    COL_DATA = 4   # D列: セグメントデータ開始
 
     def _fmt_year_str(yv):
         if yv is None:
@@ -1085,51 +1143,53 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                 result.append(c)
         return result
 
-    def _append_data_section(filing_idx):
-        """集約データ4行（ヘッダ・利益率・成長率・売上）を追加して sec_start 等を返す"""
-        sec_start = ppm_ws.max_row + 1
+    def _append_data_section(filing_idx, sec_start):
+        """集約データ4行を指定行・C列起点で ppm_ws.cell() 書き込み"""
         vcols = _valid_cols(filing_idx)
         vcols_chart = [ci for ci in vcols if ci <= hokoku_col]
 
         cur_p = valid_pairs[filing_idx]['current']
-        # ppm_ws 内の当期データ行番号
         cur_sales_ppm  = sales_start_row  + 2 * filing_idx + 1
-        growth_ppm_row = growth_start_row + filing_idx + 1   # ベース=growth_start_row, +1 から
-        margin_ppm_row = margin_start_row + filing_idx + 1
+        # growth_start_row / margin_start_row は直前の append([]) により max_row が更新されないため
+        # 実際のデータ行は start_row + 1 にある。filing_idx 分のオフセット (+1) を加えて +2 とする。
+        growth_ppm_row = growth_start_row + filing_idx + 2
+        margin_ppm_row = margin_start_row + filing_idx + 2
 
-        # ヘッダ行: セグメント名を ppm_ws row1 から参照
-        hrow = [cur_p, "セグメント名"]
-        for ci in vcols:
-            hrow.append(f"={get_column_letter(ci + SEG_OFFSET)}1")
+        # ヘッダ行 (sec_start): C=年度, D+=セグメント名
+        ppm_ws.cell(sec_start, COL_YEAR).value = cur_p
+        for k, ci in enumerate(vcols):
+            ppm_ws.cell(sec_start, COL_DATA + k).value = f"={get_column_letter(ci + SEG_OFFSET)}1"
         if vcols_chart and vcols_chart[-1] == hokoku_col:
-            hrow[2 + vcols.index(hokoku_col)] = "計"
-        ppm_ws.append(hrow)
+            hok_k = vcols.index(hokoku_col)
+            ppm_ws.cell(sec_start, COL_DATA + hok_k).value = "計"
 
-        # 利益率行
-        mrow = [cur_p, f"=A{margin_ppm_row}"]
-        for ci in vcols:
-            mrow.append(f"={get_column_letter(ci + SEG_OFFSET)}{margin_ppm_row}")
-        ppm_ws.append(mrow)
+        # 利益率行 (sec_start+1): C=ラベル参照, D+=値参照
+        ppm_ws.cell(sec_start + 1, COL_YEAR).value = f"=A{margin_ppm_row}"
+        for k, ci in enumerate(vcols):
+            ppm_ws.cell(sec_start + 1, COL_DATA + k).value = (
+                f"={get_column_letter(ci + SEG_OFFSET)}{margin_ppm_row}")
 
-        # 成長率行
-        grow = [cur_p, f"=A{growth_ppm_row}"]
-        for ci in vcols:
-            grow.append(f"={get_column_letter(ci + SEG_OFFSET)}{growth_ppm_row}")
-        ppm_ws.append(grow)
+        # 成長率行 (sec_start+2): C=ラベル参照, D+=値参照
+        ppm_ws.cell(sec_start + 2, COL_YEAR).value = f"=A{growth_ppm_row}"
+        for k, ci in enumerate(vcols):
+            ppm_ws.cell(sec_start + 2, COL_DATA + k).value = (
+                f"={get_column_letter(ci + SEG_OFFSET)}{growth_ppm_row}")
 
-        # 売上行（hokoku_col のみバブルサイズ調整用に *1%）
-        srow = [cur_p, "売上"]
-        for ci in vcols:
+        # 売上行 (sec_start+3): C="売上", D+=値参照（hokoku_col は *1% でバブルサイズ調整）
+        ppm_ws.cell(sec_start + 3, COL_YEAR).value = "売上"
+        for k, ci in enumerate(vcols):
             cl = get_column_letter(ci + SEG_OFFSET)
-            srow.append(f"={cl}{cur_sales_ppm}*1%" if ci == hokoku_col else f"={cl}{cur_sales_ppm}")
-        ppm_ws.append(srow)
+            ppm_ws.cell(sec_start + 3, COL_DATA + k).value = (
+                f"={cl}{cur_sales_ppm}*1%" if ci == hokoku_col else f"={cl}{cur_sales_ppm}")
 
-        sec_end = ppm_ws.max_row
-        sec_max_col = max(3, 2 + len(vcols))
-        chart_sec_max_col = max(3, 2 + len(vcols_chart))
+        sec_end = sec_start + 3
+        n_vcols  = len(vcols)
+        n_vchart = len(vcols_chart)
+        sec_max_col       = (COL_DATA + n_vcols  - 1) if n_vcols  else COL_YEAR
+        chart_sec_max_col = (COL_DATA + n_vchart - 1) if n_vchart else COL_YEAR
 
-        for ci in range(3, sec_max_col + 1):
-            cl = get_column_letter(ci)
+        for k in range(n_vcols):
+            cl = get_column_letter(COL_DATA + k)
             ppm_ws[f'{cl}{sec_start + 1}'].number_format = '0%'
             ppm_ws[f'{cl}{sec_start + 2}'].number_format = '0%'
             ppm_ws[f'{cl}{sec_start + 3}'].number_format = r'#,##0_);[Red](#,##0)'
@@ -1185,22 +1245,25 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         return chart
 
     def _add_series(chart, ws, sec_start, sec_max_col):
-        xv = Reference(ws, min_col=3, min_row=sec_start + 1, max_col=sec_max_col, max_row=sec_start + 1)
-        yv = Reference(ws, min_col=3, min_row=sec_start + 2, max_col=sec_max_col, max_row=sec_start + 2)
-        sz = Reference(ws, min_col=3, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
+        xv = Reference(ws, min_col=COL_DATA, min_row=sec_start + 1, max_col=sec_max_col, max_row=sec_start + 1)
+        yv = Reference(ws, min_col=COL_DATA, min_row=sec_start + 2, max_col=sec_max_col, max_row=sec_start + 2)
+        sz = Reference(ws, min_col=COL_DATA, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
         chart.series.append(Series(values=yv, xvalues=xv, zvalues=sz, title=""))
 
-    lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX)
+    # 最新期セクション: margin_end_row の直下（ヘッダ行）からデータ行へ
+    lat_sec_start = margin_end_row + 1
+    lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
     chart_latest = _make_chart(_fmt_year_str(valid_pairs[LATEST_IDX]['current']))
     _add_series(chart_latest, ppm_ws, lat_start, lat_chart_max_col)
 
     # -----------------------------------------------------------------------
     # 14. 5年前データセクション（N >= 6 の場合）
     # -----------------------------------------------------------------------
-    ppm_ws.append([])
     chart_5y = None
     if N > FIVE_AGO_OFFSET:
-        five_start, five_end, five_max_col, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX)
+        # 最新期セクション末尾から5行空けて5年前セクション開始
+        five_sec_start = lat_end + 6
+        five_start, five_end, five_max_col, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
         chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']))
         _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
         debug_log("[PPM Analysis] Added 5-year comparison section")
@@ -1398,7 +1461,12 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         cur_s = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
         cur_p_src = _get_profit_src(cur_p)
         if _has_data_row(cur_s) or _has_data_row(cur_p_src):
-            valid_pairs.append({'current': cur_p, 'prior': pri_p})
+            valid_pairs.append({
+                'current': cur_p,
+                'prior': pri_p,
+                'current_dims': fp.get('current_dims', set()),
+                'prior_dims':   fp.get('prior_dims',   set()),
+            })
 
     MAX_FILINGS = 11
     if len(valid_pairs) > MAX_FILINGS:
@@ -1415,6 +1483,55 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
     SEG_OFFSET = 2
     ppm_max_col = max_col + SEG_OFFSET
+
+    # -----------------------------------------------------------------------
+    # col_to_dim / _get_val_for_filing（dims フィルタ付き読み取り）
+    # -----------------------------------------------------------------------
+    col_to_dim = {}
+    for _c in range(3, max_col + 1):
+        _hv = analysis_ws.cell(1, _c).value
+        if _hv is not None:
+            col_to_dim[_c] = str(_hv)
+
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
+    goukei_is_synthesized = (goukei_col is not None and
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
+
+    def _get_val_for_filing(src_row, c, fp, is_current):
+        if src_row is None:
+            return None
+        allowed = fp.get('current_dims', set()) if is_current else fp.get('prior_dims', set())
+
+        if c == hokoku_col and hokoku_is_synthesized:
+            total = 0.0
+            has_val = False
+            for cc in range(3, hokoku_col):
+                if cc in (igai_col, goukei_col):
+                    continue
+                dim = col_to_dim.get(cc, '')
+                if allowed and dim not in allowed:
+                    continue
+                v = _read_numeric(analysis_ws, src_row, cc)
+                if v is not None:
+                    total += v
+                    has_val = True
+            return total if has_val else None
+
+        if c == goukei_col and goukei_is_synthesized:
+            v_h = _get_val_for_filing(src_row, hokoku_col, fp, is_current) if hokoku_col else None
+            v_i = None
+            if igai_col:
+                igai_dim = col_to_dim.get(igai_col, '')
+                if not allowed or igai_dim in allowed:
+                    v_i = _read_numeric(analysis_ws, src_row, igai_col)
+            if v_h is None and v_i is None:
+                return None
+            return (v_h or 0.0) + (v_i or 0.0)
+
+        dim = col_to_dim.get(c, '')
+        if allowed and dim not in allowed:
+            return None
+        return _read_numeric(analysis_ws, src_row, c)
 
     # -----------------------------------------------------------------------
     # 5. ヘッダー行
@@ -1438,13 +1555,13 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
         pri_row = ["　売上収益", cur_p, "前期", pri_p if pri_p else ""]
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, pri_src, c)
+            v = _get_val_for_filing(pri_src, c, fp, False)
             pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
         cur_row = ["　売上収益", cur_p, "当期", cur_p]
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, cur_src, c)
+            v = _get_val_for_filing(cur_src, c, fp, True)
             cur_row.append(v if v is not None else "")
         ppm_ws.append(cur_row)
 
@@ -1464,13 +1581,13 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
         pri_row = ["　セグメント利益", cur_p, "前期", pri_p if pri_p else ""]
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, pri_src, c)
+            v = _get_val_for_filing(pri_src, c, fp, False)
             pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
         cur_row = ["　セグメント利益", cur_p, "当期", cur_p]
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, cur_src, c)
+            v = _get_val_for_filing(cur_src, c, fp, True)
             cur_row.append(v if v is not None else "")
         ppm_ws.append(cur_row)
 
@@ -1509,8 +1626,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 g_row.append(formula)
             pri_src = period_lookup.get((target_sales_label, fp['prior'])) if (target_sales_label and fp['prior']) else None
             cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
-            pri_val = _read_numeric(analysis_ws, pri_src, c)
-            cur_val = _read_numeric(analysis_ws, cur_src, c)
+            pri_val = _get_val_for_filing(pri_src, c, fp, False)
+            cur_val = _get_val_for_filing(cur_src, c, fp, True)
             if pri_val is not None and cur_val is not None and pri_val != 0:
                 year_growth[c] = cur_val / pri_val - 1
 
@@ -1532,6 +1649,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     base_profit_ppm_row = profit_start_row
     base_margin_row_data = ["売上高利益率", base_prior if base_prior else "", "", base_prior if base_prior else ""]
     base_margin = {}
+    _fp0 = valid_pairs[0]
     for c in range(3, max_col + 1):
         ppm_col = get_column_letter(c + SEG_OFFSET)
         formula = (f"=IF(OR({ppm_col}{base_profit_ppm_row}=\"\","
@@ -1540,8 +1658,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         base_margin_row_data.append(formula)
         pri_s_src = period_lookup.get((target_sales_label, base_prior)) if (target_sales_label and base_prior) else None
         pri_p_src = _get_profit_src(base_prior) if base_prior else None
-        s_val = _read_numeric(analysis_ws, pri_s_src, c)
-        p_val = _read_numeric(analysis_ws, pri_p_src, c)
+        s_val = _get_val_for_filing(pri_s_src, c, _fp0, False)
+        p_val = _get_val_for_filing(pri_p_src, c, _fp0, False)
         if s_val is not None and p_val is not None and s_val != 0:
             base_margin[c] = p_val / s_val
     ppm_ws.append(base_margin_row_data)
@@ -1562,8 +1680,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             m_row.append(formula)
             cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
             cur_p_src = _get_profit_src(cur_p)
-            s_val = _read_numeric(analysis_ws, cur_s_src, c)
-            p_val = _read_numeric(analysis_ws, cur_p_src, c)
+            s_val = _get_val_for_filing(cur_s_src, c, fp, True)
+            p_val = _get_val_for_filing(cur_p_src, c, fp, True)
             if s_val is not None and p_val is not None and s_val != 0:
                 year_margin[c] = p_val / s_val
         profit_margins.append(year_margin)
@@ -1577,7 +1695,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
         sv = {}
         for c in range(3, max_col + 1):
-            v = _read_numeric(analysis_ws, cur_s_src, c)
+            v = _get_val_for_filing(cur_s_src, c, fp, True)
             if v is not None:
                 sv[c] = v
         sales_values.append(sv)
@@ -1585,12 +1703,9 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # 10. 書式設定
     # -----------------------------------------------------------------------
-    ppm_ws.freeze_panes = 'E2'
-    ppm_ws.column_dimensions['A'].width = 16
-    ppm_ws.column_dimensions['B'].width = 14
-    ppm_ws.column_dimensions['C'].width = 8
-    ppm_ws.column_dimensions['D'].width = 12
-    for col_idx in range(5, ppm_max_col + 1):
+    ppm_ws.freeze_panes = 'B2'
+    ppm_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, ppm_max_col + 1):
         ppm_ws.column_dimensions[get_column_letter(col_idx)].width = 12
 
     for row_idx in range(sales_start_row, profit_end_row + 1):
@@ -1604,12 +1719,11 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # 11. チャート用集約データエリア
     # -----------------------------------------------------------------------
-    ppm_ws.append([])
-    ppm_ws.append([])
-
     LATEST_IDX    = N - 1
     FIVE_AGO_IDX  = N - 6
     FIVE_AGO_OFFSET = 5
+    COL_YEAR = 3   # C列: 年度・ラベル
+    COL_DATA = 4   # D列: セグメントデータ開始
 
     def _fmt_year_str(yv):
         if yv is None:
@@ -1634,45 +1748,53 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 result.append(c)
         return result
 
-    def _append_data_section(filing_idx):
-        sec_start = ppm_ws.max_row + 1
+    def _append_data_section(filing_idx, sec_start):
+        """集約データ4行を指定行・C列起点で ppm_ws.cell() 書き込み"""
         vcols = _valid_cols(filing_idx)
         vcols_chart = [ci for ci in vcols if ci <= hokoku_col]
 
         cur_p = valid_pairs[filing_idx]['current']
         cur_sales_ppm  = sales_start_row  + 2 * filing_idx + 1
-        growth_ppm_row = growth_start_row + filing_idx + 1
-        margin_ppm_row = margin_start_row + filing_idx + 1
+        # growth_start_row / margin_start_row は直前の append([]) により max_row が更新されないため
+        # 実際のデータ行は start_row + 1 にある。filing_idx 分のオフセット (+1) を加えて +2 とする。
+        growth_ppm_row = growth_start_row + filing_idx + 2
+        margin_ppm_row = margin_start_row + filing_idx + 2
 
-        hrow = [cur_p, "セグメント名"]
-        for ci in vcols:
-            hrow.append(f"={get_column_letter(ci + SEG_OFFSET)}1")
+        # ヘッダ行 (sec_start): C=年度, D+=セグメント名
+        ppm_ws.cell(sec_start, COL_YEAR).value = cur_p
+        for k, ci in enumerate(vcols):
+            ppm_ws.cell(sec_start, COL_DATA + k).value = f"={get_column_letter(ci + SEG_OFFSET)}1"
         if vcols_chart and vcols_chart[-1] == hokoku_col:
-            hrow[2 + vcols.index(hokoku_col)] = "計"
-        ppm_ws.append(hrow)
+            hok_k = vcols.index(hokoku_col)
+            ppm_ws.cell(sec_start, COL_DATA + hok_k).value = "計"
 
-        mrow = [cur_p, f"=A{margin_ppm_row}"]
-        for ci in vcols:
-            mrow.append(f"={get_column_letter(ci + SEG_OFFSET)}{margin_ppm_row}")
-        ppm_ws.append(mrow)
+        # 利益率行 (sec_start+1)
+        ppm_ws.cell(sec_start + 1, COL_YEAR).value = f"=A{margin_ppm_row}"
+        for k, ci in enumerate(vcols):
+            ppm_ws.cell(sec_start + 1, COL_DATA + k).value = (
+                f"={get_column_letter(ci + SEG_OFFSET)}{margin_ppm_row}")
 
-        grow = [cur_p, f"=A{growth_ppm_row}"]
-        for ci in vcols:
-            grow.append(f"={get_column_letter(ci + SEG_OFFSET)}{growth_ppm_row}")
-        ppm_ws.append(grow)
+        # 成長率行 (sec_start+2)
+        ppm_ws.cell(sec_start + 2, COL_YEAR).value = f"=A{growth_ppm_row}"
+        for k, ci in enumerate(vcols):
+            ppm_ws.cell(sec_start + 2, COL_DATA + k).value = (
+                f"={get_column_letter(ci + SEG_OFFSET)}{growth_ppm_row}")
 
-        srow = [cur_p, "売上収益"]
-        for ci in vcols:
+        # 売上行 (sec_start+3)
+        ppm_ws.cell(sec_start + 3, COL_YEAR).value = "売上収益"
+        for k, ci in enumerate(vcols):
             cl = get_column_letter(ci + SEG_OFFSET)
-            srow.append(f"={cl}{cur_sales_ppm}*1%" if ci == hokoku_col else f"={cl}{cur_sales_ppm}")
-        ppm_ws.append(srow)
+            ppm_ws.cell(sec_start + 3, COL_DATA + k).value = (
+                f"={cl}{cur_sales_ppm}*1%" if ci == hokoku_col else f"={cl}{cur_sales_ppm}")
 
-        sec_end = ppm_ws.max_row
-        sec_max_col = max(3, 2 + len(vcols))
-        chart_sec_max_col = max(3, 2 + len(vcols_chart))
+        sec_end = sec_start + 3
+        n_vcols  = len(vcols)
+        n_vchart = len(vcols_chart)
+        sec_max_col       = (COL_DATA + n_vcols  - 1) if n_vcols  else COL_YEAR
+        chart_sec_max_col = (COL_DATA + n_vchart - 1) if n_vchart else COL_YEAR
 
-        for ci in range(3, sec_max_col + 1):
-            cl = get_column_letter(ci)
+        for k in range(n_vcols):
+            cl = get_column_letter(COL_DATA + k)
             ppm_ws[f'{cl}{sec_start + 1}'].number_format = '0%'
             ppm_ws[f'{cl}{sec_start + 2}'].number_format = '0%'
             ppm_ws[f'{cl}{sec_start + 3}'].number_format = r'#,##0_);[Red](#,##0)'
@@ -1727,22 +1849,24 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         return chart
 
     def _add_series(chart, ws, sec_start, sec_max_col):
-        xv = Reference(ws, min_col=3, min_row=sec_start + 1, max_col=sec_max_col, max_row=sec_start + 1)
-        yv = Reference(ws, min_col=3, min_row=sec_start + 2, max_col=sec_max_col, max_row=sec_start + 2)
-        sz = Reference(ws, min_col=3, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
+        xv = Reference(ws, min_col=COL_DATA, min_row=sec_start + 1, max_col=sec_max_col, max_row=sec_start + 1)
+        yv = Reference(ws, min_col=COL_DATA, min_row=sec_start + 2, max_col=sec_max_col, max_row=sec_start + 2)
+        sz = Reference(ws, min_col=COL_DATA, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
         chart.series.append(Series(values=yv, xvalues=xv, zvalues=sz, title=""))
 
-    lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX)
+    # 最新期セクション: margin_end_row の直下からデータ行へ
+    lat_sec_start = margin_end_row + 1
+    lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
     chart_latest = _make_chart(_fmt_year_str(valid_pairs[LATEST_IDX]['current']))
     _add_series(chart_latest, ppm_ws, lat_start, lat_chart_max_col)
 
     # -----------------------------------------------------------------------
     # 14. 5年前データセクション（N >= 6 の場合）
     # -----------------------------------------------------------------------
-    ppm_ws.append([])
     chart_5y = None
     if N > FIVE_AGO_OFFSET:
-        five_start, five_end, five_max_col, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX)
+        five_sec_start = lat_end + 6
+        five_start, five_end, five_max_col, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
         chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']))
         _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
         debug_log("[PPM IFRS] Added 5-year comparison section")
@@ -1750,7 +1874,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # 15. チャートをシートに配置
     # -----------------------------------------------------------------------
-    chart_row = ppm_ws.max_row + 2
+    last_data_row = five_end if chart_5y else lat_end
+    chart_row = last_data_row + 2
     ppm_ws.add_chart(chart_latest, f'B{chart_row}')
     if chart_5y:
         ppm_ws.add_chart(chart_5y, f'I{chart_row}')
