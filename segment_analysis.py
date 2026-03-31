@@ -71,6 +71,14 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
+            _create_data_acquisition_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log
+            )
+
             _create_ppm_analysis_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
@@ -105,6 +113,14 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             analysis_sheet_name = base_name + "_分析"
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
+
+            _create_data_acquisition_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log
+            )
 
             _create_ppm_analysis_sheet_ifrs(
                 workbook=workbook,
@@ -632,6 +648,160 @@ def _convert_camel_case_to_title(name):
     s1 = re.sub('(.)([A-Z][a-z]+)', r'\1 \2', name)
     # Insert space before uppercase letters that follow lowercase letters or numbers
     return re.sub('([a-z0-9])([A-Z])', r'\1 \2', s1)
+
+
+def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_names,
+                                   filing_pairs, debug_log):
+    """
+    「データ取得」シートを作成（内部関数）
+
+    分析シートに含まれる全勘定科目を filing_pairs ベースで縦持ちに展開する。
+    勘定科目の並び順は分析シートと同じ順序を保持する。
+
+    列構造: 勘定科目 | 報告年度 | 前期・当期 | 会計年度 | セグメント列...
+    各報告年度につき前期・当期の2行を出力する。
+
+    Args:
+        workbook: openpyxlワークブック
+        analysis_sheet_name: 参照元の分析シート名
+        used_sheet_names: 使用済みシート名のセット
+        filing_pairs: [{current: 'YYYY-MM-DD', prior: 'YYYY-MM-DD'|None,
+                        current_dims: set, prior_dims: set}, ...] 昇順
+        debug_log: デバッグログ関数
+    """
+    from openpyxl.utils import get_column_letter
+
+    # --- シート名を生成 ---
+    acq_sheet_name = analysis_sheet_name.replace("_分析", "_データ取得")
+    if len(acq_sheet_name) > 31:
+        acq_sheet_name = analysis_sheet_name[:22] + "_データ取得"
+
+    if acq_sheet_name in workbook.sheetnames:
+        debug_log(f"[Data Acquisition] Sheet '{acq_sheet_name}' already exists, skipping")
+        return
+
+    if analysis_sheet_name not in workbook.sheetnames:
+        debug_log(f"[Data Acquisition] Analysis sheet '{analysis_sheet_name}' not found, skipping")
+        return
+
+    if not filing_pairs:
+        debug_log("[Data Acquisition] No filing_pairs provided, skipping")
+        return
+
+    analysis_ws = workbook[analysis_sheet_name]
+    max_col = analysis_ws.max_column
+
+    # --- helper: period_str 正規化 ---
+    def _to_period_str(pv):
+        if pv is None:
+            return None
+        if hasattr(pv, 'strftime'):
+            return pv.strftime('%Y-%m-%d')
+        return str(pv).strip()
+
+    # --- helper: セルの実数値を返す（SUM式セルは個別列を合計して代替） ---
+    def _read_numeric(row, col):
+        val = analysis_ws.cell(row, col).value
+        if isinstance(val, (int, float)):
+            return val
+        if isinstance(val, str) and val.startswith('=SUM('):
+            total = 0.0
+            has_val = False
+            for c in range(3, col):
+                v = analysis_ws.cell(row, c).value
+                if isinstance(v, (int, float)):
+                    total += v
+                    has_val = True
+            return total if has_val else None
+        return None
+
+    # -----------------------------------------------------------------------
+    # 1. 分析シートのヘッダー行からセグメント列名を取得
+    # -----------------------------------------------------------------------
+    seg_headers = []
+    for c in range(3, max_col + 1):
+        hv = analysis_ws.cell(1, c).value
+        seg_headers.append(hv if hv is not None else "")
+
+    # -----------------------------------------------------------------------
+    # 2. period_lookup: (label, period_str) -> row_index in analysis_ws
+    #    unique_labels_ordered: 分析シートの登場順で重複除去したラベルリスト
+    # -----------------------------------------------------------------------
+    unique_labels_ordered = []
+    period_lookup = {}  # (label, period_str) -> row index
+
+    for r in range(2, analysis_ws.max_row + 1):
+        label_val = analysis_ws.cell(r, 1).value
+        period_val = analysis_ws.cell(r, 2).value
+        if not label_val:
+            continue
+        norm_label = str(label_val).strip()
+        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
+            unique_labels_ordered.append(norm_label)
+        ps = _to_period_str(period_val)
+        if ps and (norm_label, ps) not in period_lookup:
+            period_lookup[(norm_label, ps)] = r
+
+    if not unique_labels_ordered:
+        debug_log("[Data Acquisition] Analysis sheet has no data rows, skipping")
+        return
+
+    # -----------------------------------------------------------------------
+    # 3. シートを作成してヘッダー行を出力
+    # -----------------------------------------------------------------------
+    acq_ws = workbook.create_sheet(title=acq_sheet_name)
+    used_sheet_names.add(acq_sheet_name)
+    debug_log(f"[Data Acquisition] Creating sheet: {acq_sheet_name}")
+
+    acq_ws.append(["勘定科目", "報告年度", "前期・当期", "会計年度"] + seg_headers)
+
+    # -----------------------------------------------------------------------
+    # 4. 各勘定科目 × 各 filing_pair につき前期・当期の2行を出力
+    # -----------------------------------------------------------------------
+    row_count = 0
+    for label in unique_labels_ordered:
+        for fp in filing_pairs:
+            cur_p = _to_period_str(fp.get('current'))
+            pri_p = _to_period_str(fp.get('prior'))
+            if not cur_p:
+                continue
+
+            for flag_label, period_str in [("前期", pri_p), ("当期", cur_p)]:
+                row_data = [label, cur_p, flag_label, period_str if period_str else ""]
+
+                src_row = period_lookup.get((label, period_str)) if period_str else None
+                for c in range(3, max_col + 1):
+                    if src_row is None:
+                        row_data.append("")
+                    else:
+                        v = _read_numeric(src_row, c)
+                        row_data.append(v if v is not None else "")
+
+                acq_ws.append(row_data)
+                row_count += 1
+
+        # 勘定科目間に空行を挟む
+        acq_ws.append([])
+
+    # -----------------------------------------------------------------------
+    # 5. 書式・列幅・ウィンドウ枠
+    # -----------------------------------------------------------------------
+    for row in acq_ws.iter_rows(min_row=2, max_row=acq_ws.max_row, min_col=5,
+                                 max_col=acq_ws.max_column):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+
+    acq_ws.freeze_panes = 'E2'
+
+    acq_ws.column_dimensions['A'].width = 31
+    acq_ws.column_dimensions['B'].width = 12
+    acq_ws.column_dimensions['C'].width = 8
+    acq_ws.column_dimensions['D'].width = 12
+    for col_idx in range(5, acq_ws.max_column + 1):
+        acq_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    debug_log(f"[Data Acquisition] Completed sheet: {acq_sheet_name} with {row_count} data rows")
 
 
 def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log):
