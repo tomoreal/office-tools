@@ -2027,7 +2027,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     # これにより、セグメント区分変更時に前期データが二重登録されるのを防ぐ。
                     if (el != '_metadata'
                             and _is_segment_dim(dim_label)
-                            and dim_label in segment_covered_dims.get((fact_std, period), set())):
+                            and (fact_std, period) in segment_covered_dims
+                            and dim_label not in segment_covered_dims[(fact_std, period)]):
                         continue
                     old_val = global_element_period_values[el].get(col_key)
                     if old_val is None:
