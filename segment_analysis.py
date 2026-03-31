@@ -1114,8 +1114,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     LATEST_IDX    = N - 1          # valid_pairs の最新インデックス
     FIVE_AGO_IDX  = N - 6          # 5期前インデックス（N>=6 のとき有効）
     FIVE_AGO_OFFSET = 5
-    COL_YEAR = 3   # C列: 年度・ラベル
-    COL_DATA = 4   # D列: セグメントデータ開始
+    COL_YEAR = 4   # D列: 年度・ラベル
+    COL_DATA = 5   # E列: セグメントデータ開始
 
     def _fmt_year_str(yv):
         if yv is None:
@@ -1250,8 +1250,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         sz = Reference(ws, min_col=COL_DATA, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
         chart.series.append(Series(values=yv, xvalues=xv, zvalues=sz, title=""))
 
-    # 最新期セクション: margin_end_row の直下（ヘッダ行）からデータ行へ
-    lat_sec_start = margin_end_row + 1
+    # 最新期セクション: margin_end_row の直下に1行空けてから開始
+    lat_sec_start = margin_end_row + 2
     lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
     chart_latest = _make_chart(_fmt_year_str(valid_pairs[LATEST_IDX]['current']))
     _add_series(chart_latest, ppm_ws, lat_start, lat_chart_max_col)
@@ -1722,8 +1722,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     LATEST_IDX    = N - 1
     FIVE_AGO_IDX  = N - 6
     FIVE_AGO_OFFSET = 5
-    COL_YEAR = 3   # C列: 年度・ラベル
-    COL_DATA = 4   # D列: セグメントデータ開始
+    COL_YEAR = 4   # D列: 年度・ラベル
+    COL_DATA = 5   # E列: セグメントデータ開始
 
     def _fmt_year_str(yv):
         if yv is None:
@@ -1854,8 +1854,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         sz = Reference(ws, min_col=COL_DATA, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
         chart.series.append(Series(values=yv, xvalues=xv, zvalues=sz, title=""))
 
-    # 最新期セクション: margin_end_row の直下からデータ行へ
-    lat_sec_start = margin_end_row + 1
+    # 最新期セクション: margin_end_row の直下に1行空けてから開始
+    lat_sec_start = margin_end_row + 2
     lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
     chart_latest = _make_chart(_fmt_year_str(valid_pairs[LATEST_IDX]['current']))
     _add_series(chart_latest, ppm_ws, lat_start, lat_chart_max_col)
