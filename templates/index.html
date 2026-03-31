@@ -324,7 +324,7 @@ XBRL to Excel Converter - Main UI Template
             <div style="display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 1.5rem;">
                 <a href="./bookmarklets"
                     style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
-                    <i class="fas fa-bookmark" style="margin-right: 8px;"></i>EDINET用ブックマークレットの追加
+                    <i class="fas fa-bookmark" style="margin-right: 8px;"></i>ブックマークレット・VBAマクロ
                 </a>
                 <a href="./csv_converter.html"
                     style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
@@ -510,6 +510,28 @@ XBRL to Excel Converter - Main UI Template
 
                     <div class="file-list" id="fileList"></div>
                 </form>
+
+                <div id="uploadConversionProgress"
+                    style="display: none; margin-top: 0.75rem; padding: 0.75rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                        <span style="font-size: 0.9rem;">
+                            <i class="fas fa-file-excel" style="margin-right: 5px; color: var(--primary-color);"></i>
+                            Excel変換進捗
+                        </span>
+                        <span id="uploadConversionStatusText"
+                            style="font-size: 0.9rem; color: var(--primary-color);">変換中...</span>
+                    </div>
+                    <div id="uploadConversionCompleteInfo"
+                        style="display: none; margin-top: 0.5rem; padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
+                        <div style="display: flex; align-items: center; color: #10b981;">
+                            <i class="fas fa-check-circle" style="margin-right: 8px; font-size: 1.1rem;"></i>
+                            <div>
+                                <div style="font-weight: 500; margin-bottom: 0.1rem;">Excelダウンロード完了</div>
+                                <div id="uploadConversionCompleteTime" style="font-size: 0.75rem; opacity: 0.9;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- ==================================================================
@@ -524,13 +546,9 @@ XBRL to Excel Converter - Main UI Template
             </form>
 
             <!-- ==================================================================
-                 PROGRESS & FOOTER
+                 FOOTER
                  【将来の分割先】templates/components/footer.html
                  ================================================================== -->
-            <div class="progress-container" id="progressContainer">
-                <div class="progress-bar" id="progressBar"></div>
-            </div>
-
             <div class="footer">
                 (c) Makoto Tomo, 2026
             </div>
@@ -593,13 +611,6 @@ XBRL to Excel Converter - Main UI Template
             btnText.style.display = 'block';
             loader.style.display = 'none';
             btn.disabled = false;
-            const progressContainer = document.getElementById('progressContainer');
-            const progressBar = document.getElementById('progressBar');
-            if (progressContainer && progressBar) {
-                progressBar.style.transition = 'none';
-                progressBar.style.width = '0%';
-                progressContainer.style.display = 'none';
-            }
         }
 
         async function submitForm(form) {
@@ -610,20 +621,21 @@ XBRL to Excel Converter - Main UI Template
             loader.style.display = 'block';
             btn.disabled = true;
 
-            const progressContainer = document.getElementById('progressContainer');
-            const progressBar = document.getElementById('progressBar');
-            if (progressContainer && progressBar) {
-                progressContainer.style.display = 'block';
-                progressBar.style.transition = 'none';
-                progressBar.style.width = '0%';
-                void progressBar.offsetWidth;
-                progressBar.style.transition = 'width 20s linear';
-                progressBar.style.width = '100%';
+            const uploadProgressDiv = document.getElementById('uploadConversionProgress');
+            const uploadStatusText = document.getElementById('uploadConversionStatusText');
+            const uploadCompleteInfo = document.getElementById('uploadConversionCompleteInfo');
+            const uploadCompleteTime = document.getElementById('uploadConversionCompleteTime');
+
+            if (uploadProgressDiv) {
+                uploadProgressDiv.style.display = 'block';
+                uploadStatusText.textContent = '変換中...';
+                uploadCompleteInfo.style.display = 'none';
             }
 
+            const startTime = Date.now();
             const formData = new FormData(form);
             try {
-                // ① 変換処理（ファイルは受け取らない）
+                // ① 変換処理
                 const response = await fetch(form.action, {
                     method: 'POST',
                     body: formData
@@ -635,10 +647,15 @@ XBRL to Excel Converter - Main UI Template
                     throw new Error(data.error || '変換失敗');
                 }
 
-                // Jump to 100% instantly
-                if (progressBar) {
-                    progressBar.style.transition = 'width 0.2s ease-out';
-                    progressBar.style.width = '100%';
+                // 変換完了時刻を表示
+                const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+                const now = new Date();
+                const timeString = now.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                if (uploadProgressDiv) {
+                    uploadStatusText.textContent = `完了 (${elapsedSeconds}秒)`;
+                    uploadCompleteInfo.style.display = 'block';
+                    uploadCompleteTime.textContent = `完了時刻: ${timeString} (変換時間: ${elapsedSeconds}秒)`;
                 }
 
                 // ② ダウンロード（ブラウザに任せる）
@@ -651,6 +668,9 @@ XBRL to Excel Converter - Main UI Template
             } catch (error) {
                 console.error(error);
                 alert("エラーが発生しました: " + error.message);
+                if (uploadProgressDiv) {
+                    uploadProgressDiv.style.display = 'none';
+                }
                 resetUI();
             }
         }
@@ -1147,72 +1167,7 @@ XBRL to Excel Converter - Main UI Template
          【将来の分割先】static/js/ad_handler.js
          ====================================================================== -->
     <!-- XREA Ad Alignment Enforcement -->
-    <script>
-        (function () {
-
-            let scrolled = false;
-
-            function forceLeftAlign() {
-                const bodyChildren = document.body.children;
-
-                for (let i = 0; i < Math.min(bodyChildren.length, 5); i++) {
-                    const el = bodyChildren[i];
-
-                    if (el.classList.contains('page-wrapper')) continue;
-
-                    if (el.tagName === 'CENTER' || el.tagName === 'DIV' || el.getAttribute('align') === 'center') {
-
-                        // 左寄せ処理
-                        el.style.textAlign = 'left';
-                        el.style.marginLeft = '0';
-                        el.style.marginRight = 'auto';
-                        el.style.paddingLeft = '40px';
-                        el.style.display = 'block';
-
-                        const sub = el.querySelectorAll('img, iframe, div');
-                        sub.forEach(s => {
-                            s.style.marginLeft = '0';
-                            s.style.marginRight = 'auto';
-                            s.style.display = 'inline-block';
-                        });
-
-                        observeAndScroll(el);
-                    }
-                }
-            }
-
-            function observeAndScroll(el) {
-                if (scrolled) return;
-
-                const ro = new ResizeObserver(entries => {
-                    for (const entry of entries) {
-                        const rect = entry.target.getBoundingClientRect();
-
-                        // 高さが一定以上＝広告描画完了とみなす
-                        if (rect.height > 50) {
-                            const scrollTarget = window.pageYOffset + (rect.bottom * 2) + 10;
-
-                            window.scrollTo({
-                                top: scrollTarget,
-                                behavior: 'smooth'
-                            });
-
-                            scrolled = true;
-                            ro.disconnect();
-                        }
-                    }
-                });
-
-                ro.observe(el);
-            }
-
-            forceLeftAlign();
-
-            const observer = new MutationObserver(forceLeftAlign);
-            observer.observe(document.body, { childList: true });
-
-        })();
-    </script>
+    <script src="{{ url_for('static', filename='js/xrea_ad_handler.js') }}"></script>
 </body>
 
 </html>

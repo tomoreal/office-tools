@@ -268,7 +268,7 @@ eol_check:
                  【将来の分割先】templates/components/footer.html
                  ================================================================== -->
             <div style="text-align: left;">
-                <a href="./index.html" class="back-link">
+                <a href="./csv_converter.html" class="back-link">
                     <i class="fas fa-arrow-left"></i> 変換ツールに戻る
                 </a>
             </div>
@@ -284,35 +284,7 @@ eol_check:
          【将来の分割先】static/js/ad_handler.js
          ====================================================================== -->
     <!-- XREA Ad Alignment Enforcement -->
-    <script>
-        (function () {
-            function forceLeftAlign() {
-                const bodyChildren = document.body.children;
-                for (let i = 0; i < Math.min(bodyChildren.length, 5); i++) {
-                    const el = bodyChildren[i];
-                    if (el.classList.contains('page-wrapper')) continue;
-                    if (el.tagName === 'CENTER' || el.tagName === 'DIV' || el.getAttribute('align') === 'center') {
-                        el.style.textAlign = 'left';
-                        el.style.marginLeft = '0';
-                        el.style.marginRight = 'auto';
-                        el.style.paddingLeft = '40px';
-                        el.style.display = 'block';
-                        const sub = el.querySelectorAll('img, iframe, div');
-                        sub.forEach(s => {
-                            s.style.marginLeft = '0';
-                            s.style.marginRight = 'auto';
-                            s.style.display = 'inline-block';
-                        });
-                    }
-                }
-            }
-            forceLeftAlign();
-            setTimeout(forceLeftAlign, 1000);
-            setTimeout(forceLeftAlign, 3000);
-            const observer = new MutationObserver(forceLeftAlign);
-            observer.observe(document.body, { childList: true });
-        })();
-    </script>
+    <script src="{{ url_for('static', filename='js/xrea_ad_handler.js') }}"></script>
 </body>
 
 </html>

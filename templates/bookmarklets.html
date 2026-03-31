@@ -61,7 +61,7 @@ EDINET Bookmarklets - Collection Page
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EDINET用ブックマークレットの追加 | XBRL・Excel 変換ツール</title>
+    <title>Bookmarklets | Excel VBAマクロ</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 
@@ -136,12 +136,11 @@ EDINET Bookmarklets - Collection Page
             background: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
+            padding: 0.8rem 1.2rem;
+            margin-bottom: 0.75rem;
             display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            /* Changed from center to left */
+            flex-direction: row;
+            align-items: center;
             gap: 1rem;
             transition: transform 0.2s, border-color 0.2s;
         }
@@ -151,17 +150,25 @@ EDINET Bookmarklets - Collection Page
             border-color: var(--primary-color);
         }
 
+        .bookmarklet-item .btn-bookmarklet {
+            flex-shrink: 0;
+        }
+
+        .bookmarklet-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+        }
+
         .bookmarklet-name {
             font-weight: 600;
-            font-size: 1.1rem;
+            font-size: 1rem;
             color: var(--text-main);
         }
 
         .bookmarklet-desc {
             font-size: 0.85rem;
             color: var(--text-muted);
-            text-align: left;
-            /* Changed from center to left */
         }
 
         .btn-bookmarklet {
@@ -249,12 +256,12 @@ EDINET Bookmarklets - Collection Page
                  【将来の分割先】templates/bookmarklets/header.html
                  ================================================================== -->
             <div class="header">
-                <h1>EDINET用ブックマークレットの追加</h1>
+                <h1>EDINET用ブックマークレット/Excel用PPMラベル追加VBAマクロ</h1>
             </div>
 
             <div class="instruction">
-                下のボタンを、ブラウザの<strong>「ブックマークバー」にドラッグ＆ドロップ</strong>することで追加できます。<br>
-                EDINETの検索結果画面で使用することで、データの取得がスムーズになります。
+                下のボタンを、ブラウザの<strong>「ブックマークバー」にドラッグ＆ドロップ</strong>することで追加できます。
+                EDINETの検索結果画面で使用すれば、ファイルの取得がより便利になります。
             </div>
 
             <!-- ==================================================================
@@ -262,24 +269,84 @@ EDINET Bookmarklets - Collection Page
                  【将来の分割先】templates/bookmarklets/items.html
                  ================================================================== -->
             <div class="bookmarklet-item">
-                <div class="bookmarklet-name">EDINETへ移動</div>
-                <div class="bookmarklet-desc">EDINETの書類検索画面を別タブで開きます。</div>
                 <a class="btn-bookmarklet" href="https://disclosure2.edinet-fsa.go.jp/weee0050.aspx"
                     target="_blank">EDINET</a>
+                <div class="bookmarklet-info">
+                    <div class="bookmarklet-name">EDINETへ移動</div>
+                    <div class="bookmarklet-desc">EDINETの書類検索画面を別タブで開きます。</div>
+                </div>
             </div>
 
             <div class="bookmarklet-item">
-                <div class="bookmarklet-name">有報全期間</div>
-                <div class="bookmarklet-desc">書類種別を「有価証券報告書」、期間を「全期間」に自動設定します。</div>
                 <a class="btn-bookmarklet"
                     href='javascript:(function(){var w=setInterval(function(){var b=document.getElementById("BTNCLOSE_SYORUI");if(b){b.click();clearInterval(w);}},200);setTimeout(function(){var r=document.getElementById("vD_SYORUI2");if(r)r.click();},400);setTimeout(function(){var cb=document.getElementById("W0277vCHKSYORUI1");if(cb)cb.click();},800);setTimeout(function(){var k=document.getElementById("BTNCLOSE_KESSAN");if(k)k.click();},1200);setTimeout(function(){var s=document.querySelector("select");if(s)s.value="7";},1600);setTimeout(function(){var t=document.getElementById("vD_TEISYUTUSYA_MEISYOU");if(t)t.focus();},2000);})();'>有報全期間</a>
+                <div class="bookmarklet-info">
+                    <div class="bookmarklet-name">有報全期間</div>
+                    <div class="bookmarklet-desc">書類種別を「有価証券報告書」、期間を「全期間」に自動設定します。</div>
+                </div>
             </div>
 
             <div class="bookmarklet-item">
-                <div class="bookmarklet-name">有報xbrlDL</div>
-                <div class="bookmarklet-desc">リストにある有価証券報告書のXBRLファイルを一括で順次ダウンロードします。</div>
                 <a class="btn-bookmarklet"
                     href='javascript:(function(){var rows=[...document.querySelectorAll("table tr")];var targets=[];rows.forEach(r=>{var t=r.innerText;if(t.includes("有価証券報告書")&&!t.includes("訂正")){var a=[...r.querySelectorAll("a")].find(x=>x.innerText.trim()=="XBRL");if(a)targets.push(a);}});if(!targets.length){alert("有価証券報告書のXBRLが見つかりません");return;}let i=0;function next(){if(i>=targets.length)return;targets[i].click();i++;setTimeout(next,1500);}next();})();'>有報xbrlDL</a>
+                <div class="bookmarklet-info">
+                    <div class="bookmarklet-name">有報xbrlDL</div>
+                    <div class="bookmarklet-desc">リストにある有価証券報告書のXBRLファイルを一括で順次ダウンロードします。</div>
+                </div>
+            </div>
+
+            <!-- ==================================================================
+                 VBA MACRO SECTION - PPMグラフ用ラベル追加マクロ
+                 ================================================================== -->
+            <div style="margin-top: 2rem;">
+                <h2 style="font-size: 1.1rem; font-weight: 600; color: var(--text-main); margin-bottom: 1rem;">
+                    <i class="fas fa-file-code" style="margin-right: 8px; color: var(--primary-color);"></i>ExcelマクロVBA
+                </h2>
+
+                <div class="bookmarklet-item">
+                    <a class="btn-bookmarklet" href="/download/ppm_add_label" download>
+                        <i class="fas fa-download" style="margin-right: 6px;"></i>ダウンロード
+                    </a>
+                    <div class="bookmarklet-info">
+                        <div class="bookmarklet-name">PPMグラフ ラベル追加</div>
+                        <div class="bookmarklet-desc">PPMグラフの散布図に、選択したセル範囲のデータラベルを追加するExcel VBAマクロ（PPM_add_label.bas）です。
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 8px; padding: 1.2rem; margin-top: 1rem; font-size: 0.88rem; color: var(--text-muted); line-height: 1.8;">
+                    <div style="font-weight: 600; color: var(--text-main); margin-bottom: 0.8rem;">
+                        <i class="fas fa-circle-info"
+                            style="margin-right: 6px; color: var(--primary-color);"></i>インポート手順
+                    </div>
+                    <ol style="margin: 0; padding-left: 1.4rem;">
+                        <li>Excelを開き、<kbd>Alt + F11</kbd> でVBAエディターを起動</li>
+                        <li>メニューの <strong>「ファイル」→「ファイルのインポート」</strong> を選択</li>
+                        <li>ダウンロードした <code>PPM_add_label.bas</code> を選択して開く</li>
+                        <li>VBAエディターを閉じる（<kbd>Alt + F4</kbd>）</li>
+                    </ol>
+
+                    <div style="font-weight: 600; color: var(--text-main); margin: 1rem 0 0.8rem;">
+                        <i class="fas fa-toolbox"
+                            style="margin-right: 6px; color: var(--primary-color);"></i>クイックアクセスツールバーへの追加
+                    </div>
+                    <ol style="margin: 0; padding-left: 1.4rem;">
+                        <li>Excelの <strong>「ファイル」→「オプション」→「クイックアクセスツールバー」</strong> を開く</li>
+                        <li>「コマンドの選択」で <strong>「マクロ」</strong> を選ぶ</li>
+                        <li>一覧から <strong>「PPMグラフにデータラベル範囲選択し設定」</strong> を選び、<strong>「追加」</strong> をクリック</li>
+                        <li><strong>「OK」</strong> で保存</li>
+                    </ol>
+
+                    <div style="font-weight: 600; color: var(--text-main); margin: 1rem 0 0.8rem;">
+                        <i class="fas fa-play-circle" style="margin-right: 6px; color: var(--primary-color);"></i>使い方
+                    </div>
+                    <ol style="margin: 0; padding-left: 1.4rem;">
+                        <li>PPMグラフ（散布図）をクリックして選択状態にする</li>
+                        <li>ツールバーのボタン（またはマクロ実行）でマクロを起動</li>
+                        <li>ダイアログが表示されたら、ラベルにしたいセル範囲を選択して <strong>「OK」</strong></li>
+                    </ol>
+                </div>
             </div>
 
             <!-- ==================================================================
@@ -303,35 +370,7 @@ EDINET Bookmarklets - Collection Page
          【将来の分割先】static/js/ad_handler.js
          ====================================================================== -->
     <!-- XREA Ad Alignment Enforcement -->
-    <script>
-        (function () {
-            function forceLeftAlign() {
-                const bodyChildren = document.body.children;
-                for (let i = 0; i < Math.min(bodyChildren.length, 5); i++) {
-                    const el = bodyChildren[i];
-                    if (el.classList.contains('page-wrapper')) continue;
-                    if (el.tagName === 'CENTER' || el.tagName === 'DIV' || el.getAttribute('align') === 'center') {
-                        el.style.textAlign = 'left';
-                        el.style.marginLeft = '0';
-                        el.style.marginRight = 'auto';
-                        el.style.paddingLeft = '40px';
-                        el.style.display = 'block';
-                        const sub = el.querySelectorAll('img, iframe, div');
-                        sub.forEach(s => {
-                            s.style.marginLeft = '0';
-                            s.style.marginRight = 'auto';
-                            s.style.display = 'inline-block';
-                        });
-                    }
-                }
-            }
-            forceLeftAlign();
-            setTimeout(forceLeftAlign, 1000);
-            setTimeout(forceLeftAlign, 3000);
-            const observer = new MutationObserver(forceLeftAlign);
-            observer.observe(document.body, { childList: true });
-        })();
-    </script>
+    <script src="{{ url_for('static', filename='js/xrea_ad_handler.js') }}"></script>
 </body>
 
 </html>

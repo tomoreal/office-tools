@@ -547,6 +547,11 @@ def download_excel():
 def bookmarklets():
     return render_template('bookmarklets.html')
 
+@app.route('/download/ppm_add_label')
+def download_ppm_add_label():
+    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'PPM_add_label.bas')
+    return send_file(file_path, as_attachment=True, download_name='PPM_add_label.bas')
+
 @app.route('/csv_bookmarklets')
 def csv_bookmarklets():
     return render_template('csv_bookmarklets.html')
