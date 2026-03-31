@@ -78,6 +78,9 @@ from financial_analysis import add_financial_analysis_sheets
 # Import segment analysis module
 from segment_analysis import add_segment_analysis_sheets
 
+# Import diversity analysis module
+from diversity_analysis import add_diversity_sheet, add_human_capital_sheet
+
 # Import EDINET Taxonomy Dictionary
 from edinet_taxonomy_dict import common_dict as EDINET_COMMON_DICT
 
@@ -3986,6 +3989,12 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     # ============================================================================
     # セグメント分析シートを追加（segment_analysis.pyモジュールを使用）
     add_segment_analysis_sheets(wb, segment_sheets_info, debug_log)
+
+    # ============================================================================
+    # DIVERSITY SHEET (ダイバーシティ)
+    # ============================================================================
+    add_diversity_sheet(wb, global_element_period_values, debug_log)
+    add_human_capital_sheet(wb, global_element_period_values, debug_log)
 
     # 最新の期末を取得してファイル名に追加
     latest_period = ''
