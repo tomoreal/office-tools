@@ -347,16 +347,19 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
 
     debug_log(f"[Segment Analysis] Aligned to {len(sorted_valid_periods)} valid periods by merging duplicate labels")
 
+    # セグメント情報等シートのみインデントなし（他のシートはdepthベースのインデントを保持）
+    _no_indent = 'セグメント情報等' in sheet_name
+
     # 3. データ行を作成
     seen_rows_analysis = set()
     for d_label in final_label_order:
         info = label_info[d_label]
         it_depth = info['depth']
-        indent_prefix = "　" * it_depth
         it_el = info['el']
         it_pref_label = info['pref_label']
         it_full_path = info['full_path'] # CF判定用
         it_fp_data = (it_full_path, it_pref_label)
+        indent_prefix = "" if _no_indent else "　" * it_depth
 
         for period in sorted_valid_periods:
             row_data_analysis = [indent_prefix + d_label, period]
@@ -1431,8 +1434,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     chart_5y = None
     if N > FIVE_AGO_OFFSET:
-        # 最新期セクション末尾から5行空けて5年前セクション開始
-        five_sec_start = lat_end + 6
+        # 最新期セクション末尾から1行空けて5年前セクション開始
+        five_sec_start = lat_end + 2
         five_start, five_end, five_max_col, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
         chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']))
         _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
@@ -2035,7 +2038,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     chart_5y = None
     if N > FIVE_AGO_OFFSET:
-        five_sec_start = lat_end + 6
+        # 最新期セクション末尾から1行空けて5年前セクション開始
+        five_sec_start = lat_end + 2
         five_start, five_end, five_max_col, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
         chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']))
         _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
