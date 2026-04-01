@@ -683,6 +683,134 @@ def _convert_camel_case_to_title(name):
     return re.sub('([a-z0-9])([A-Z])', r'\1 \2', s1)
 
 
+# ============================================================================
+# 共有ヘルパー関数
+# （_create_data_acquisition_sheet / _create_ppm_analysis_sheet /
+#   _create_ppm_analysis_sheet_ifrs で共通利用）
+# ============================================================================
+
+def _to_period_str(pv):
+    """period セルの値を 'YYYY-MM-DD' 文字列に正規化する。"""
+    if pv is None:
+        return None
+    if hasattr(pv, 'strftime'):
+        return pv.strftime('%Y-%m-%d')
+    return str(pv).strip()
+
+
+def _read_numeric(ws, row, col):
+    """セルの実数値を返す。SUM式セルは個別列を合計して代替する。"""
+    if row is None:
+        return None
+    val = ws.cell(row, col).value
+    if isinstance(val, (int, float)):
+        return val
+    if isinstance(val, str) and val.startswith('=SUM('):
+        total = 0.0
+        has_val = False
+        for c in range(3, col):
+            v = ws.cell(row, c).value
+            if isinstance(v, (int, float)):
+                total += v
+                has_val = True
+        return total if has_val else None
+    return None
+
+
+def _build_period_lookup(analysis_ws):
+    """analysis_ws から (label, period_str) -> 行番号 の辞書と
+    登場順ラベルリストを構築して返す。
+
+    Returns:
+        (period_lookup, unique_labels_ordered)
+    """
+    unique_labels_ordered = []
+    period_lookup = {}
+    for r in range(2, analysis_ws.max_row + 1):
+        label_val = analysis_ws.cell(r, 1).value
+        period_val = analysis_ws.cell(r, 2).value
+        if not label_val:
+            continue
+        norm_label = str(label_val).strip()
+        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
+            unique_labels_ordered.append(norm_label)
+        ps = _to_period_str(period_val)
+        if ps:
+            period_lookup[(norm_label, ps)] = r
+    return period_lookup, unique_labels_ordered
+
+
+def _build_col_info(analysis_ws, max_col):
+    """analysis_ws のヘッダー行からセグメント列情報を構築して返す。
+
+    Returns:
+        (col_to_dim, hokoku_col, igai_col, goukei_col,
+         hokoku_is_synthesized, goukei_is_synthesized)
+    """
+    col_to_dim = {}
+    for c in range(3, max_col + 1):
+        hv = analysis_ws.cell(1, c).value
+        if hv is not None:
+            col_to_dim[c] = str(hv)
+
+    hokoku_col = next((c for c, d in col_to_dim.items() if d == '報告セグメント合計'), None)
+    igai_col   = next((c for c, d in col_to_dim.items()
+                       if '以外' in d and '報告セグメント' in d), None)
+    goukei_col = next((c for c, d in col_to_dim.items()
+                       if '報告セグメント及びその他の合計' in d), None)
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
+    goukei_is_synthesized = (goukei_col is not None and
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
+    return col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized
+
+
+def _make_get_val_for_filing(analysis_ws, col_to_dim,
+                              hokoku_col, igai_col, goukei_col,
+                              hokoku_is_synthesized, goukei_is_synthesized):
+    """_get_val_for_filing クロージャを生成して返す。
+
+    戻り値の関数シグネチャ: (src_row, c, fp, is_current) -> float | None
+    analysis_ws 列 c の値を filing_pair の dims でフィルタして返す。
+    """
+    def _get_val_for_filing(src_row, c, fp, is_current):
+        if src_row is None:
+            return None
+        allowed = fp.get('current_dims', set()) if is_current else fp.get('prior_dims', set())
+
+        if c == hokoku_col and hokoku_is_synthesized:
+            total = 0.0
+            has_val = False
+            for cc in range(3, hokoku_col):
+                if cc in (igai_col, goukei_col):
+                    continue
+                dim = col_to_dim.get(cc, '')
+                if allowed and dim not in allowed:
+                    continue
+                v = _read_numeric(analysis_ws, src_row, cc)
+                if v is not None:
+                    total += v
+                    has_val = True
+            return total if has_val else None
+
+        if c == goukei_col and goukei_is_synthesized:
+            v_h = _get_val_for_filing(src_row, hokoku_col, fp, is_current) if hokoku_col else None
+            v_i = None
+            if igai_col:
+                igai_dim = col_to_dim.get(igai_col, '')
+                if not allowed or igai_dim in allowed:
+                    v_i = _read_numeric(analysis_ws, src_row, igai_col)
+            if v_h is None and v_i is None:
+                return None
+            return (v_h or 0.0) + (v_i or 0.0)
+
+        dim = col_to_dim.get(c, '')
+        if allowed and dim not in allowed:
+            return None
+        return _read_numeric(analysis_ws, src_row, c)
+
+    return _get_val_for_filing
+
+
 def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_names,
                                    filing_pairs, debug_log):
     """
@@ -724,110 +852,20 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     analysis_ws = workbook[analysis_sheet_name]
     max_col = analysis_ws.max_column
 
-    # --- helper: period_str 正規化 ---
-    def _to_period_str(pv):
-        if pv is None:
-            return None
-        if hasattr(pv, 'strftime'):
-            return pv.strftime('%Y-%m-%d')
-        return str(pv).strip()
-
-    # --- helper: セルの実数値を返す（SUM式セルは個別列を合計して代替） ---
-    def _read_numeric(row, col):
-        val = analysis_ws.cell(row, col).value
-        if isinstance(val, (int, float)):
-            return val
-        if isinstance(val, str) and val.startswith('=SUM('):
-            total = 0.0
-            has_val = False
-            for c in range(3, col):
-                v = analysis_ws.cell(row, c).value
-                if isinstance(v, (int, float)):
-                    total += v
-                    has_val = True
-            return total if has_val else None
-        return None
+    # -----------------------------------------------------------------------
+    # 1. セグメント列情報・dims フィルタ付き読み取り関数を構築
+    # -----------------------------------------------------------------------
+    seg_headers = [analysis_ws.cell(1, c).value or "" for c in range(3, max_col + 1)]
+    col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
+        _build_col_info(analysis_ws, max_col)
+    _get_val_for_filing = _make_get_val_for_filing(
+        analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
+        hokoku_is_synthesized, goukei_is_synthesized)
 
     # -----------------------------------------------------------------------
-    # 1. 分析シートのヘッダー行からセグメント列名を取得
+    # 2. period_lookup と unique_labels_ordered を構築
     # -----------------------------------------------------------------------
-    seg_headers = []
-    for c in range(3, max_col + 1):
-        hv = analysis_ws.cell(1, c).value
-        seg_headers.append(hv if hv is not None else "")
-
-    # --- col_to_dim: 列番号 → セグメントラベル（dimsフィルタ用） ---
-    col_to_dim = {}
-    for _c in range(3, max_col + 1):
-        _hv = analysis_ws.cell(1, _c).value
-        if _hv is not None:
-            col_to_dim[_c] = str(_hv)
-
-    # 合成列（PPMシートが挿入した列）を検出
-    hokoku_col = next((c for c, d in col_to_dim.items() if d == '報告セグメント合計'), None)
-    igai_col   = next((c for c, d in col_to_dim.items()
-                       if '以外' in d and '報告セグメント' in d), None)
-    goukei_col = next((c for c, d in col_to_dim.items()
-                       if '報告セグメント及びその他の合計' in d), None)
-    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
-    goukei_is_synthesized = (goukei_col is not None and
-                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
-
-    def _get_val_for_filing(src_row, c, fp, is_current):
-        """analysis_ws 列 c の値を当該有報の dims でフィルタして返す。"""
-        if src_row is None:
-            return None
-        allowed = fp.get('current_dims', set()) if is_current else fp.get('prior_dims', set())
-
-        if c == hokoku_col and hokoku_is_synthesized:
-            total = 0.0
-            has_val = False
-            for cc in range(3, hokoku_col):
-                if cc in (igai_col, goukei_col):
-                    continue
-                dim = col_to_dim.get(cc, '')
-                if allowed and dim not in allowed:
-                    continue
-                v = _read_numeric(src_row, cc)
-                if v is not None:
-                    total += v
-                    has_val = True
-            return total if has_val else None
-
-        if c == goukei_col and goukei_is_synthesized:
-            v_h = _get_val_for_filing(src_row, hokoku_col, fp, is_current) if hokoku_col else None
-            v_i = None
-            if igai_col:
-                igai_dim = col_to_dim.get(igai_col, '')
-                if not allowed or igai_dim in allowed:
-                    v_i = _read_numeric(src_row, igai_col)
-            if v_h is None and v_i is None:
-                return None
-            return (v_h or 0.0) + (v_i or 0.0)
-
-        dim = col_to_dim.get(c, '')
-        if allowed and dim not in allowed:
-            return None
-        return _read_numeric(src_row, c)
-
-    # -----------------------------------------------------------------------
-    # 2. period_lookup: (label, period_str) -> row_index in analysis_ws
-    #    unique_labels_ordered: 分析シートの登場順で重複除去したラベルリスト
-    # -----------------------------------------------------------------------
-    unique_labels_ordered = []
-    period_lookup = {}  # (label, period_str) -> row index
-
-    for r in range(2, analysis_ws.max_row + 1):
-        label_val = analysis_ws.cell(r, 1).value
-        period_val = analysis_ws.cell(r, 2).value
-        if not label_val:
-            continue
-        norm_label = str(label_val).strip()
-        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
-            unique_labels_ordered.append(norm_label)
-        ps = _to_period_str(period_val)
-        if ps and (norm_label, ps) not in period_lookup:
-            period_lookup[(norm_label, ps)] = r
+    period_lookup, unique_labels_ordered = _build_period_lookup(analysis_ws)
 
     if not unique_labels_ordered:
         debug_log("[Data Acquisition] Analysis sheet has no data rows, skipping")
@@ -981,27 +1019,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     # 1. analysis_ws を走査して (ラベル, period_str) -> 行番号 のルックアップを構築
     # -----------------------------------------------------------------------
-    unique_labels_ordered = []
-    period_lookup = {}   # (label_str, period_str) -> row_index
-
-    def _to_period_str(pv):
-        if pv is None:
-            return None
-        if hasattr(pv, 'strftime'):
-            return pv.strftime('%Y-%m-%d')
-        return str(pv).strip()
-
-    for r in range(2, analysis_ws.max_row + 1):
-        label_val = analysis_ws.cell(r, 1).value
-        period_val = analysis_ws.cell(r, 2).value
-        if not label_val:
-            continue
-        norm_label = str(label_val).strip()
-        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
-            unique_labels_ordered.append(norm_label)
-        ps = _to_period_str(period_val)
-        if ps:
-            period_lookup[(norm_label, ps)] = r
+    period_lookup, unique_labels_ordered = _build_period_lookup(analysis_ws)
 
     # -----------------------------------------------------------------------
     # 2. 売上・利益ラベルを検出
@@ -1079,24 +1097,6 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     # 3b. 列位置の検出（報告セグメント / 以外 / 及びその他の合計）
     # -----------------------------------------------------------------------
-    def _read_numeric(ws, row, col):
-        """セルの実数値を返す。SUM式セルは個別列を合計して代替する。"""
-        if row is None:
-            return None
-        val = ws.cell(row, col).value
-        if isinstance(val, (int, float)):
-            return val
-        if isinstance(val, str) and val.startswith('=SUM('):
-            total = 0.0
-            has_val = False
-            for c in range(3, col):
-                v = ws.cell(row, c).value
-                if isinstance(v, (int, float)):
-                    total += v
-                    has_val = True
-            return total if has_val else None
-        return None
-
     hokoku_col = None
     igai_col   = None
     goukei_col = None
@@ -1212,58 +1212,13 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     ppm_max_col = max_col + SEG_OFFSET   # ppm_ws の最大列
 
     # -----------------------------------------------------------------------
-    # col_to_dim: analysis_ws 列インデックス → ヘッダー名（dim ラベル）
-    # _get_val_for_filing: そのZIPに存在したセグメントのみ返すフィルタ付き読み取り
+    # col_to_dim / _get_val_for_filing（dims フィルタ付き読み取り）
     # -----------------------------------------------------------------------
-    col_to_dim = {}
-    for _c in range(3, max_col + 1):
-        _hv = analysis_ws.cell(1, _c).value
-        if _hv is not None:
-            col_to_dim[_c] = str(_hv)
-
-    # 合成列（プログラムで挿入した列）か判定
-    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
-    goukei_is_synthesized = (goukei_col is not None and
-                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
-
-    def _get_val_for_filing(src_row, c, fp, is_current):
-        """analysis_ws 列 c の値を当該有報の dims でフィルタして返す。"""
-        if src_row is None:
-            return None
-        allowed = fp.get('current_dims', set()) if is_current else fp.get('prior_dims', set())
-
-        if c == hokoku_col and hokoku_is_synthesized:
-            # 個別セグメント列を allowed でフィルタして合計
-            total = 0.0
-            has_val = False
-            for cc in range(3, hokoku_col):
-                if cc in (igai_col, goukei_col):
-                    continue
-                dim = col_to_dim.get(cc, '')
-                if allowed and dim not in allowed:
-                    continue
-                v = _read_numeric(analysis_ws, src_row, cc)
-                if v is not None:
-                    total += v
-                    has_val = True
-            return total if has_val else None
-
-        if c == goukei_col and goukei_is_synthesized:
-            v_h = _get_val_for_filing(src_row, hokoku_col, fp, is_current) if hokoku_col else None
-            v_i = None
-            if igai_col:
-                igai_dim = col_to_dim.get(igai_col, '')
-                if not allowed or igai_dim in allowed:
-                    v_i = _read_numeric(analysis_ws, src_row, igai_col)
-            if v_h is None and v_i is None:
-                return None
-            return (v_h or 0.0) + (v_i or 0.0)
-
-        # 通常列: dims でフィルタ
-        dim = col_to_dim.get(c, '')
-        if allowed and dim not in allowed:
-            return None
-        return _read_numeric(analysis_ws, src_row, c)
+    col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
+        _build_col_info(analysis_ws, max_col)
+    _get_val_for_filing = _make_get_val_for_filing(
+        analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
+        hokoku_is_synthesized, goukei_is_synthesized)
 
     # -----------------------------------------------------------------------
     # 5. ヘッダー行（1行）
@@ -1699,27 +1654,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # 1. analysis_ws を走査して (ラベル, period_str) -> 行番号 のルックアップを構築
     # -----------------------------------------------------------------------
-    unique_labels_ordered = []
-    period_lookup = {}   # (label_str, period_str) -> row_index
-
-    def _to_period_str(pv):
-        if pv is None:
-            return None
-        if hasattr(pv, 'strftime'):
-            return pv.strftime('%Y-%m-%d')
-        return str(pv).strip()
-
-    for r in range(2, analysis_ws.max_row + 1):
-        label_val = analysis_ws.cell(r, 1).value
-        period_val = analysis_ws.cell(r, 2).value
-        if not label_val:
-            continue
-        norm_label = str(label_val).strip()
-        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
-            unique_labels_ordered.append(norm_label)
-        ps = _to_period_str(period_val)
-        if ps:
-            period_lookup[(norm_label, ps)] = r
+    period_lookup, unique_labels_ordered = _build_period_lookup(analysis_ws)
 
     # -----------------------------------------------------------------------
     # 2. IFRSラベル検出
@@ -1761,24 +1696,6 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # 3b. 列位置の検出（報告セグメント / 以外 / 及びその他の合計）
     # -----------------------------------------------------------------------
-    def _read_numeric(ws, row, col):
-        """セルの実数値を返す。SUM式セルは個別列を合計して代替する。"""
-        if row is None:
-            return None
-        val = ws.cell(row, col).value
-        if isinstance(val, (int, float)):
-            return val
-        if isinstance(val, str) and val.startswith('=SUM('):
-            total = 0.0
-            has_val = False
-            for c in range(3, col):
-                v = ws.cell(row, c).value
-                if isinstance(v, (int, float)):
-                    total += v
-                    has_val = True
-            return total if has_val else None
-        return None
-
     hokoku_col = None
     igai_col   = None
     goukei_col = None
@@ -1891,51 +1808,11 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # col_to_dim / _get_val_for_filing（dims フィルタ付き読み取り）
     # -----------------------------------------------------------------------
-    col_to_dim = {}
-    for _c in range(3, max_col + 1):
-        _hv = analysis_ws.cell(1, _c).value
-        if _hv is not None:
-            col_to_dim[_c] = str(_hv)
-
-    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
-    goukei_is_synthesized = (goukei_col is not None and
-                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
-
-    def _get_val_for_filing(src_row, c, fp, is_current):
-        if src_row is None:
-            return None
-        allowed = fp.get('current_dims', set()) if is_current else fp.get('prior_dims', set())
-
-        if c == hokoku_col and hokoku_is_synthesized:
-            total = 0.0
-            has_val = False
-            for cc in range(3, hokoku_col):
-                if cc in (igai_col, goukei_col):
-                    continue
-                dim = col_to_dim.get(cc, '')
-                if allowed and dim not in allowed:
-                    continue
-                v = _read_numeric(analysis_ws, src_row, cc)
-                if v is not None:
-                    total += v
-                    has_val = True
-            return total if has_val else None
-
-        if c == goukei_col and goukei_is_synthesized:
-            v_h = _get_val_for_filing(src_row, hokoku_col, fp, is_current) if hokoku_col else None
-            v_i = None
-            if igai_col:
-                igai_dim = col_to_dim.get(igai_col, '')
-                if not allowed or igai_dim in allowed:
-                    v_i = _read_numeric(analysis_ws, src_row, igai_col)
-            if v_h is None and v_i is None:
-                return None
-            return (v_h or 0.0) + (v_i or 0.0)
-
-        dim = col_to_dim.get(c, '')
-        if allowed and dim not in allowed:
-            return None
-        return _read_numeric(analysis_ws, src_row, c)
+    col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
+        _build_col_info(analysis_ws, max_col)
+    _get_val_for_filing = _make_get_val_for_filing(
+        analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
+        hokoku_is_synthesized, goukei_is_synthesized)
 
     # -----------------------------------------------------------------------
     # 5. ヘッダー行
