@@ -2007,6 +2007,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     'prior_dims':   set(),
                 })
 
+        # taxonomy_year が同一のZIPが複数ある場合、reversed(results) では時系列順が保証されないため
+        # current 日付の昇順にソートして確定的な年度順にする
+        filing_pairs.sort(key=lambda fp: fp.get('current') or '')
+
         # (fact_std, period) -> set of dim_labels covered by newer XBRLs
         segment_covered_dims = {}  # type: dict
 
