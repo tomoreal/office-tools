@@ -1393,7 +1393,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     # growth_rates[0]=ベース, growth_rates[i+1]=valid_pairs[i]
     # profit_margins[0]=ベース, profit_margins[i+1]=valid_pairs[i]
-    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他')
 
     def _valid_cols(filing_idx):
         """3指標すべてが揃っている analysis_ws 列インデックスのリストを返す"""
@@ -2033,7 +2033,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 return s[:7].replace('-', '/')
         return s[:4]
 
-    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他')
 
     def _valid_cols(filing_idx):
         mi = filing_idx + 1
