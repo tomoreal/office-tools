@@ -782,7 +782,7 @@ XBRL to Excel Converter - Main UI Template
 
                 companyList.innerHTML = sortedResults.map((company, index) => {
                     const from = fmtPeriod(company.earliest_period_end);
-                    const to   = fmtPeriod(company.latest_period_end);
+                    const to = fmtPeriod(company.latest_period_end);
                     const period = (from && to) ? ` | データ期間: ${from}〜${to}` : '';
                     return `
                     <div style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--container-bg); border-radius: 8px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s;"
@@ -1230,7 +1230,7 @@ XBRL to Excel Converter - Main UI Template
                 window.location.href = `/api/edinet/download?file=${encodeURIComponent(data.file)}`;
 
                 // ボタンテキストを更新
-                xbrlDownloadBtnText.textContent = `XBRLダウンロード完了 (${data.xbrl_count}件)`;
+                xbrlDownloadBtnText.textContent = `XBRL zipファイルをダウンロード (${data.xbrl_count}件)`;
 
             } catch (error) {
                 alert('エラーが発生しました: ' + error.message);
