@@ -2014,6 +2014,21 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         # (fact_std, period) -> set of dim_labels covered by newer XBRLs
         segment_covered_dims = {}  # type: dict
 
+        # 各XBRLの「当期会計年度」を事前計算する。
+        # 当期データはセグメント構造変更時でもブロックしない（前期データのみブロック対象）。
+        # これにより、セグメント変更過渡年度において、新旧両方のセグメント構造データが
+        # 分析シートに保持され、PPMシートがdimsフィルタで正しい列を選択できるようになる。
+        for res in results:
+            seg_periods_r = set()
+            for el_r, el_vals_r in res.get('values', {}).items():
+                if el_r == '_metadata':
+                    continue
+                for (std_r, dim_r, period_r) in el_vals_r.keys():
+                    if _is_segment_dim(dim_r):
+                        seg_periods_r.add(period_r)
+            sorted_p_r = sorted(seg_periods_r)
+            res['_ppm_cur_period'] = sorted_p_r[-1] if sorted_p_r else None
+
         for res in results:
             if res.get('report_std'):
                 report_stds.add(res['report_std'])
@@ -2028,16 +2043,20 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             # Merge facts, periods, and values
             all_facts.extend(res['facts'])
             periods_seen.update(res['periods'])
+            res_cur_period = res.get('_ppm_cur_period')
             for el, vals in res['values'].items():
                 if el not in global_element_period_values:
                     global_element_period_values[el] = {}
                 for col_key, new_val in vals.items():
                     fact_std, dim_label, period = col_key
                     # セグメント事業区分ディメンションの場合、新しいXBRLが既にカバーした
-                    # periodのデータは古いXBRLからスキップする。
-                    # これにより、セグメント区分変更時に前期データが二重登録されるのを防ぐ。
+                    # periodのデータは古いXBRLからスキップする（前期データの二重登録防止）。
+                    # ただし「当期」データ（period == res_cur_period）はブロックしない。
+                    # 理由: 新しいXBRLが同期間を前期として新セグメントで再集計した場合でも、
+                    # 古いXBRLの当期の旧セグメントデータを保持しPPMで正しく参照するため。
                     if (el != '_metadata'
                             and _is_segment_dim(dim_label)
+                            and period != res_cur_period
                             and (fact_std, period) in segment_covered_dims
                             and dim_label not in segment_covered_dims[(fact_std, period)]):
                         continue
