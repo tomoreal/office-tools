@@ -1311,6 +1311,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     for i, fp in enumerate(valid_pairs):
         cur_p = fp['current']
+        pri_p = fp.get('prior')
         pri_profit_lbl, pri_src_default = _get_profit_src(pri_p) if pri_p else (None, None)
         cur_profit_lbl, cur_src = _get_profit_src(cur_p)
 
