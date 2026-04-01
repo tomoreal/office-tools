@@ -834,6 +834,41 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
         return
 
     # -----------------------------------------------------------------------
+    # 2b. ラベルグループ化
+    #     片方が他方のプレフィックスである場合を同一概念の変形とみなす。
+    #     例: 「事業利益」と「事業利益（△は損失）」→ canonical =「事業利益」
+    # -----------------------------------------------------------------------
+    canonical_to_aliases = {}  # canonical_label -> [alias, ...]  (canonical含む)
+    label_to_canonical = {}    # 全ラベル -> canonical
+
+    for lbl in unique_labels_ordered:
+        if lbl in label_to_canonical:
+            continue
+        matched_canonical = None
+        for canon in list(canonical_to_aliases.keys()):
+            if lbl.startswith(canon) or canon.startswith(lbl):
+                matched_canonical = canon
+                break
+        if matched_canonical:
+            canonical_to_aliases[matched_canonical].append(lbl)
+            label_to_canonical[lbl] = matched_canonical
+        else:
+            canonical_to_aliases[lbl] = [lbl]
+            label_to_canonical[lbl] = lbl
+
+    unique_canonicals_ordered = []
+    _seen_canon = set()
+    for lbl in unique_labels_ordered:
+        canon = label_to_canonical[lbl]
+        if canon not in _seen_canon:
+            unique_canonicals_ordered.append(canon)
+            _seen_canon.add(canon)
+
+    merged = {c: aliases for c, aliases in canonical_to_aliases.items() if len(aliases) > 1}
+    if merged:
+        debug_log(f"[Data Acquisition] Merged label groups: {merged}")
+
+    # -----------------------------------------------------------------------
     # 3. シートを作成してヘッダー行を出力
     # -----------------------------------------------------------------------
     acq_ws = workbook.create_sheet(title=acq_sheet_name)
@@ -846,7 +881,8 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     # 4. 各勘定科目 × 各 filing_pair につき前期・当期の2行を出力
     # -----------------------------------------------------------------------
     row_count = 0
-    for label in unique_labels_ordered:
+    for label in unique_canonicals_ordered:
+        aliases = canonical_to_aliases.get(label, [label])
         for fp in filing_pairs:
             cur_p = _to_period_str(fp.get('current'))
             pri_p = _to_period_str(fp.get('prior'))
@@ -857,7 +893,15 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
                 row_data = [label, cur_p, flag_label, period_str if period_str else ""]
                 is_current = (flag_label == "当期")
 
-                src_row = period_lookup.get((label, period_str)) if period_str else None
+                # エイリアス全候補からデータがある行を探す
+                src_row = None
+                if period_str:
+                    for alias in aliases:
+                        r = period_lookup.get((alias, period_str))
+                        if r is not None:
+                            src_row = r
+                            break
+
                 for c in range(3, max_col + 1):
                     if src_row is None:
                         row_data.append("")

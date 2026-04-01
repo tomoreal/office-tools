@@ -1939,10 +1939,16 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
         debug_log(f"Parallel ZIP processing completed in {time.time() - t_parallel_start:.2f}s")
 
-        # Sort results by taxonomy year DESCENDING to ensure latest structure is prioritized
+        # Sort results by taxonomy year DESCENDING to ensure latest structure is prioritized.
+        # 同一taxonomy_yearのZIPが複数ある場合、実際の決算期（最大period）を2次キーにして
+        # 新しい年度のZIPが先に処理されるようにする。これにより、新しいZIPの前期データが
+        # segment_covered_dimsによって誤ってブロックされるのを防ぐ。
         t_merge_start = time.time()
         results = [r for r in results if r]
-        results.sort(key=lambda x: str(x.get('year') or '0000'), reverse=True)
+        for _res in results:
+            _periods_in_res = [p for (_, _, p) in _res.get('periods', set()) if p]
+            _res['_max_period'] = max(_periods_in_res, default='') if _periods_in_res else ''
+        results.sort(key=lambda x: (str(x.get('year') or '0000'), x.get('_max_period', '')), reverse=True)
 
         for res in results:
             # Merge member sequences
