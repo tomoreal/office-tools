@@ -1393,11 +1393,18 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     # growth_rates[0]=ベース, growth_rates[i+1]=valid_pairs[i]
     # profit_margins[0]=ベース, profit_margins[i+1]=valid_pairs[i]
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+
     def _valid_cols(filing_idx):
         """3指標すべてが揃っている analysis_ws 列インデックスのリストを返す"""
         mi = filing_idx + 1   # profit_margins / growth_rates のインデックス（0 はベース年）
         result = []
         for c in range(3, chart_end_col + 1):
+            # 調整項目等の非セグメント列は hokoku_col 以外では除外
+            if c != hokoku_col:
+                dim_name = col_to_dim.get(c, '')
+                if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+                    continue
             if (growth_rates[mi].get(c)  is not None and
                 profit_margins[mi].get(c) is not None and
                 sales_values[filing_idx].get(c) is not None):
@@ -1468,6 +1475,10 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             if 0 <= mi < len(metric_list):
                 for c, v in metric_list[mi].items():
                     if 3 <= c <= hokoku_col and v is not None:
+                        if c != hokoku_col:
+                            dim_name = col_to_dim.get(c, '')
+                            if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+                                continue
                         vals.append(v)
         return vals
 
@@ -2022,10 +2033,17 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 return s[:7].replace('-', '/')
         return s[:4]
 
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+
     def _valid_cols(filing_idx):
         mi = filing_idx + 1
         result = []
         for c in range(3, chart_end_col + 1):
+            # 調整項目等の非セグメント列は hokoku_col 以外では除外
+            if c != hokoku_col:
+                dim_name = col_to_dim.get(c, '')
+                if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+                    continue
             if (growth_rates[mi].get(c)  is not None and
                 profit_margins[mi].get(c) is not None and
                 sales_values[filing_idx].get(c) is not None):
@@ -2095,6 +2113,10 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             if 0 <= mi < len(metric_list):
                 for c, v in metric_list[mi].items():
                     if 3 <= c <= hokoku_col and v is not None:
+                        if c != hokoku_col:
+                            dim_name = col_to_dim.get(c, '')
+                            if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+                                continue
                         vals.append(v)
         return vals
 
