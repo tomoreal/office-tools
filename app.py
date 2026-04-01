@@ -499,6 +499,88 @@ def edinet_download_pdfs():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/edinet/download-xbrls', methods=['POST'])
+def edinet_download_xbrls():
+    """既にダウンロード済みのXBRL ZIPをまとめてZIPに固める（再ダウンロードなし）"""
+    from flask import jsonify
+    import zipfile
+    import re
+
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        doc_ids = data.get('doc_ids', [])
+        company_name = data.get('company_name', '')
+        reports_info = data.get('reports_info', [])
+
+        if not session_id or not doc_ids:
+            return jsonify({'error': 'セッションIDと書類IDを指定してください'}), 400
+
+        base_temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
+        temp_dir = os.path.join(base_temp_dir, session_id)
+
+        if not os.path.exists(temp_dir):
+            return jsonify({'error': 'セッションが見つかりません'}), 404
+
+        def sanitize_filename(name):
+            return re.sub(r'[\\/:*?"<>|]', '_', name)
+
+        def get_period_ym(period_end):
+            if period_end:
+                return period_end.replace('-', '')[:6]
+            return ''
+
+        reports_map = {report['docID']: report for report in reports_info}
+        safe_company_name = sanitize_filename(company_name)
+
+        # 既存のダウンロード済みZIPを収集
+        xbrl_files = []
+        for doc_id in doc_ids:
+            file_path = os.path.join(temp_dir, f"{doc_id}.zip")
+            if os.path.exists(file_path):
+                report = reports_map.get(doc_id, {})
+                period_end = report.get('periodEnd', '')
+                period_ym = get_period_ym(period_end)
+                if period_ym:
+                    arcname = f"有報XBRL_{safe_company_name}_{period_ym}.zip"
+                else:
+                    arcname = f"有報XBRL_{safe_company_name}_{doc_id}.zip"
+                xbrl_files.append({'file_path': file_path, 'arcname': arcname, 'period_end': period_end})
+
+        if not xbrl_files:
+            return jsonify({'error': 'ダウンロード済みのXBRLファイルが見つかりません'}), 404
+
+        # 期間範囲を計算
+        period_ends = sorted([f['period_end'] for f in xbrl_files if f.get('period_end')])
+        if period_ends:
+            start_ym = get_period_ym(period_ends[0])
+            end_ym = get_period_ym(period_ends[-1])
+            period_range = f"{start_ym}-{end_ym}" if start_ym != end_ym else start_ym
+        else:
+            import time
+            period_range = str(int(time.time()))
+
+        # ZIPファイル作成: 有報XBRL_企業名_期間.zip
+        zip_filename = f"有報XBRL_{safe_company_name}_{period_range}.zip"
+        zip_path = os.path.join(temp_dir, zip_filename)
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for xbrl in xbrl_files:
+                zipf.write(xbrl['file_path'], arcname=xbrl['arcname'])
+
+        relative_path = os.path.relpath(zip_path, BASE_TEMP_DIR)
+
+        return jsonify({
+            'success': True,
+            'file': relative_path,
+            'xbrl_count': len(xbrl_files)
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error in edinet_download_xbrls: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/edinet/download')
 def download_excel():
     """iPad等のファイル名化け対策: ブラウザのデフォルトダウンロード機能を利用"""

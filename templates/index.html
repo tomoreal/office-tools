@@ -461,6 +461,14 @@ XBRL to Excel Converter - Main UI Template
                     <div class="loader" id="pdfDownloadLoader" style="display: none;"></div>
                 </button>
 
+                <!-- XBRLダウンロードボタン -->
+                <button id="xbrlDownloadBtn" class="btn"
+                    style="display: none; background: #0ea5e9; margin-bottom: 0.5rem;">
+                    <i class="fas fa-file-archive" style="margin-right: 8px;"></i>
+                    <span id="xbrlDownloadBtnText">有価証券報告書のXBRLをダウンロード</span>
+                    <div class="loader" id="xbrlDownloadLoader" style="display: none;"></div>
+                </button>
+
                 <!-- ダウンロード＆変換ボタン -->
                 <button id="convertBtn" class="btn" style="display: none;">
                     <i class="fas fa-download" id="convertBtnIcon" style="margin-right: 8px;"></i>
@@ -719,6 +727,7 @@ XBRL to Excel Converter - Main UI Template
             document.getElementById('conversionProgress').style.display = 'none';
             document.getElementById('conversionCompleteInfo').style.display = 'none';
             document.getElementById('pdfDownloadBtn').style.display = 'none';
+            document.getElementById('xbrlDownloadBtn').style.display = 'none';
 
             searchBtnText.style.display = 'none';
             searchLoader.style.display = 'block';
@@ -1053,6 +1062,12 @@ XBRL to Excel Converter - Main UI Template
                     pdfDownloadBtn.style.display = 'flex';
                 }
 
+                // XBRLダウンロードボタンを表示
+                const xbrlDownloadBtn = document.getElementById('xbrlDownloadBtn');
+                if (xbrlDownloadBtn) {
+                    xbrlDownloadBtn.style.display = 'flex';
+                }
+
                 // ダウンロード（ブラウザに任せる）
                 window.location.href = `/api/edinet/download?file=${encodeURIComponent(data.file)}`;
 
@@ -1158,6 +1173,71 @@ XBRL to Excel Converter - Main UI Template
                 pdfDownloadBtnText.style.display = 'block';
                 pdfDownloadLoader.style.display = 'none';
                 pdfDownloadBtn.disabled = false;
+            }
+        });
+
+        // XBRLダウンロード機能
+        const xbrlDownloadBtn = document.getElementById('xbrlDownloadBtn');
+        const xbrlDownloadBtnText = document.getElementById('xbrlDownloadBtnText');
+        const xbrlDownloadLoader = document.getElementById('xbrlDownloadLoader');
+
+        xbrlDownloadBtn.addEventListener('click', async () => {
+            if (!sessionId || selectedReports.length === 0) {
+                alert('セッション情報が見つかりません');
+                return;
+            }
+
+            if (!selectedCompany) {
+                alert('企業情報が見つかりません');
+                return;
+            }
+
+            xbrlDownloadBtnText.style.display = 'none';
+            xbrlDownloadLoader.style.display = 'block';
+            xbrlDownloadBtn.disabled = true;
+
+            const reportsInfo = window.reportsData.filter(r => selectedReports.includes(r.docID));
+
+            try {
+                const response = await fetch('/api/edinet/download-xbrls', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        doc_ids: selectedReports,
+                        company_name: selectedCompany.filerName,
+                        reports_info: reportsInfo
+                    })
+                });
+
+                const responseText = await response.text();
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (e) {
+                    throw new Error(`サーバーエラー (${response.status}): ${responseText.substring(0, 200)}`);
+                }
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'XBRLダウンロードに失敗しました');
+                }
+
+                if (!data.success) {
+                    throw new Error(data.error || 'XBRLダウンロード失敗');
+                }
+
+                // ZIPファイルをダウンロード
+                window.location.href = `/api/edinet/download?file=${encodeURIComponent(data.file)}`;
+
+                // ボタンテキストを更新
+                xbrlDownloadBtnText.textContent = `XBRLダウンロード完了 (${data.xbrl_count}件)`;
+
+            } catch (error) {
+                alert('エラーが発生しました: ' + error.message);
+            } finally {
+                xbrlDownloadBtnText.style.display = 'block';
+                xbrlDownloadLoader.style.display = 'none';
+                xbrlDownloadBtn.disabled = false;
             }
         });
     </script>
