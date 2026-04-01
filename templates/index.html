@@ -397,7 +397,8 @@ XBRL to Excel Converter - Main UI Template
 
                 <!-- 有価証券報告書一覧 -->
                 <div id="reportsSection" style="display: none; margin-bottom: 0.5rem;">
-                    <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">有価証券報告書:期間を選択してください
+                    <h3 id="reportsHeader" style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-muted);">
+                        有価証券報告書:期間を選択してください
                     </h3>
                     <div id="reportsList" style="max-height: 300px; overflow-y: auto;"></div>
                 </div>
@@ -813,6 +814,8 @@ XBRL to Excel Converter - Main UI Template
         // 企業選択
         window.selectCompany = async function (index) {
             selectedCompany = window.companiesData[index];
+            document.getElementById('reportsHeader').textContent =
+                `${selectedCompany.filerName}　：期間を選択してください`;
 
             // 有価証券報告書を取得
             convertBtnText.style.display = 'none';
@@ -844,20 +847,33 @@ XBRL to Excel Converter - Main UI Template
                 selectedReports = data.results.map(r => r.docID);
 
                 // 報告書一覧を表示（デフォルトで全てチェック）
-                reportsList.innerHTML = data.results.map((report, index) => `
+                reportsList.innerHTML = data.results.map((report, index) => {
+                    // 期番号を docDescription から抽出し、会計期間は西暦で表示
+                    const termMatch = report.docDescription.match(/第(\d+)期/);
+                    const termLabel = termMatch ? `第${termMatch[1]}期` : report.docDescription.replace(/^有価証券報告書－/, '');
+                    const fmtDate = (dt) => {
+                        if (!dt) return null;
+                        const m = dt.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                        return m ? `${parseInt(m[1])}年${parseInt(m[2])}月${parseInt(m[3])}日` : null;
+                    };
+                    const ps = fmtDate(report.periodStart);
+                    const pe = fmtDate(report.periodEnd);
+                    const periodLabel = (ps && pe) ? `${termLabel}（${ps}－${pe}）` : termLabel;
+                    return `
                     <div style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color);">
                         <label style="display: flex; align-items: start; cursor: pointer;">
                             <input type="checkbox" value="${report.docID}" style="margin-right: 10px; margin-top: 4px;"
                                    onchange="toggleReport('${report.docID}')" checked>
                             <div style="flex: 1; display: flex; align-items: center; gap: 1rem;">
-                                <div style="font-weight: 500;">${report.docDescription.replace(/^有価証券報告書－/, '')}</div>
+                                <div style="font-weight: 500;">${periodLabel}</div>
                                 <div id="download-status-${report.docID}" style="font-size: 0.75rem; color: var(--text-muted); white-space: nowrap;">
                                     <i class="fas fa-clock"></i> ダウンロード待機中...
                                 </div>
                             </div>
                         </label>
                     </div>
-                `).join('');
+                `;
+                }).join('');
 
                 reportsSection.style.display = 'block';
                 convertBtn.style.display = 'block';
