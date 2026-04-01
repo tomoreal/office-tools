@@ -1068,8 +1068,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         for candidate in profit_label_candidates:
             row = period_lookup.get((candidate, period_str))
             if row is not None and _has_data_row(row):
-                return row
-        return None
+                return candidate, row
+        return None, None
 
     valid_pairs = []
     for fp in filing_pairs:
@@ -1078,7 +1078,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         if not cur_p:
             continue
         cur_s = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
-        cur_p_src = _get_profit_src(cur_p)
+        _, cur_p_src = _get_profit_src(cur_p)
         if _has_data_row(cur_s) or _has_data_row(cur_p_src):
             valid_pairs.append({
                 'current': cur_p,
@@ -1185,15 +1185,16 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         pri_src = period_lookup.get((target_sales_label, pri_p)) if (target_sales_label and pri_p) else None
         cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
 
+        sales_lbl = "　" + (target_sales_label or "売上")
         # 前期 row
-        pri_row = ["　売上", cur_p, "前期", pri_p if pri_p else ""]
+        pri_row = [sales_lbl, cur_p, "前期", pri_p if pri_p else ""]
         for c in range(3, max_col + 1):
             v = _get_val_for_filing(pri_src, c, fp, False)
             pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
         # 当期 row
-        cur_row = ["　売上", cur_p, "当期", cur_p]
+        cur_row = [sales_lbl, cur_p, "当期", cur_p]
         for c in range(3, max_col + 1):
             v = _get_val_for_filing(cur_src, c, fp, True)
             cur_row.append(v if v is not None else "")
@@ -1209,19 +1210,18 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     for i, fp in enumerate(valid_pairs):
         cur_p = fp['current']
-        pri_p = fp['prior']
-        pri_src = _get_profit_src(pri_p) if pri_p else None
-        cur_src = _get_profit_src(cur_p)
+        pri_profit_lbl, pri_src = _get_profit_src(pri_p) if pri_p else (None, None)
+        cur_profit_lbl, cur_src = _get_profit_src(cur_p)
 
         # 前期 row
-        pri_row = ["　セグメント利益", cur_p, "前期", pri_p if pri_p else ""]
+        pri_row = ["　" + (pri_profit_lbl or "セグメント利益"), cur_p, "前期", pri_p if pri_p else ""]
         for c in range(3, max_col + 1):
             v = _get_val_for_filing(pri_src, c, fp, False)
             pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
         # 当期 row
-        cur_row = ["　セグメント利益", cur_p, "当期", cur_p]
+        cur_row = ["　" + (cur_profit_lbl or "セグメント利益"), cur_p, "当期", cur_p]
         for c in range(3, max_col + 1):
             v = _get_val_for_filing(cur_src, c, fp, True)
             cur_row.append(v if v is not None else "")
@@ -1304,7 +1304,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         base_margin_row_data.append(formula)
         # 実値（最古のfiling pairの前期データでフィルタ）
         pri_s_src = period_lookup.get((target_sales_label, base_prior)) if (target_sales_label and base_prior) else None
-        pri_p_src = _get_profit_src(base_prior) if base_prior else None
+        _, pri_p_src = _get_profit_src(base_prior) if base_prior else (None, None)
         s_val = _get_val_for_filing(pri_s_src, c, _fp0, False)
         p_val = _get_val_for_filing(pri_p_src, c, _fp0, False)
         if s_val is not None and p_val is not None and s_val != 0:
@@ -1327,7 +1327,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             m_row.append(formula)
             # 実値（当期データでフィルタ）
             cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
-            cur_p_src = _get_profit_src(cur_p)
+            _, cur_p_src = _get_profit_src(cur_p)
             s_val = _get_val_for_filing(cur_s_src, c, fp, True)
             p_val = _get_val_for_filing(cur_p_src, c, fp, True)
             if s_val is not None and p_val is not None and s_val != 0:
@@ -1437,7 +1437,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                 f"={get_column_letter(ci + SEG_OFFSET)}{growth_ppm_row}")
 
         # 売上行 (sec_start+3): C="売上", D+=値参照（hokoku_col は *1% でバブルサイズ調整）
-        ppm_ws.cell(sec_start + 3, COL_YEAR).value = "売上"
+        ppm_ws.cell(sec_start + 3, COL_YEAR).value = target_sales_label or "売上"
         for k, ci in enumerate(vcols):
             cl = get_column_letter(ci + SEG_OFFSET)
             ppm_ws.cell(sec_start + 3, COL_DATA + k).value = (
@@ -1729,8 +1729,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         for candidate in profit_label_candidates:
             row = period_lookup.get((candidate, period_str))
             if row is not None and _has_data_row(row):
-                return row
-        return None
+                return candidate, row
+        return None, None
 
     valid_pairs = []
     for fp in filing_pairs:
@@ -1739,7 +1739,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         if not cur_p:
             continue
         cur_s = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
-        cur_p_src = _get_profit_src(cur_p)
+        _, cur_p_src = _get_profit_src(cur_p)
         if _has_data_row(cur_s) or _has_data_row(cur_p_src):
             valid_pairs.append({
                 'current': cur_p,
@@ -1836,13 +1836,14 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         pri_src = period_lookup.get((target_sales_label, pri_p)) if (target_sales_label and pri_p) else None
         cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
 
-        pri_row = ["　売上収益", cur_p, "前期", pri_p if pri_p else ""]
+        sales_lbl = "　" + (target_sales_label or "売上収益")
+        pri_row = [sales_lbl, cur_p, "前期", pri_p if pri_p else ""]
         for c in range(3, max_col + 1):
             v = _get_val_for_filing(pri_src, c, fp, False)
             pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
-        cur_row = ["　売上収益", cur_p, "当期", cur_p]
+        cur_row = [sales_lbl, cur_p, "当期", cur_p]
         for c in range(3, max_col + 1):
             v = _get_val_for_filing(cur_src, c, fp, True)
             cur_row.append(v if v is not None else "")
@@ -1859,16 +1860,16 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     for i, fp in enumerate(valid_pairs):
         cur_p = fp['current']
         pri_p = fp['prior']
-        pri_src = _get_profit_src(pri_p) if pri_p else None
-        cur_src = _get_profit_src(cur_p)
+        pri_profit_lbl, pri_src = _get_profit_src(pri_p) if pri_p else (None, None)
+        cur_profit_lbl, cur_src = _get_profit_src(cur_p)
 
-        pri_row = ["　セグメント利益", cur_p, "前期", pri_p if pri_p else ""]
+        pri_row = ["　" + (pri_profit_lbl or "セグメント利益"), cur_p, "前期", pri_p if pri_p else ""]
         for c in range(3, max_col + 1):
             v = _get_val_for_filing(pri_src, c, fp, False)
             pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
-        cur_row = ["　セグメント利益", cur_p, "当期", cur_p]
+        cur_row = ["　" + (cur_profit_lbl or "セグメント利益"), cur_p, "当期", cur_p]
         for c in range(3, max_col + 1):
             v = _get_val_for_filing(cur_src, c, fp, True)
             cur_row.append(v if v is not None else "")
@@ -1940,7 +1941,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                    f"\"\",{ppm_col}{base_profit_ppm_row}/{ppm_col}{base_sales_ppm_row})")
         base_margin_row_data.append(formula)
         pri_s_src = period_lookup.get((target_sales_label, base_prior)) if (target_sales_label and base_prior) else None
-        pri_p_src = _get_profit_src(base_prior) if base_prior else None
+        _, pri_p_src = _get_profit_src(base_prior) if base_prior else (None, None)
         s_val = _get_val_for_filing(pri_s_src, c, _fp0, False)
         p_val = _get_val_for_filing(pri_p_src, c, _fp0, False)
         if s_val is not None and p_val is not None and s_val != 0:
@@ -1962,7 +1963,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                        f"\"\",{ppm_col}{cur_profit_ppm_row}/{ppm_col}{cur_sales_ppm_row})")
             m_row.append(formula)
             cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
-            cur_p_src = _get_profit_src(cur_p)
+            _, cur_p_src = _get_profit_src(cur_p)
             s_val = _get_val_for_filing(cur_s_src, c, fp, True)
             p_val = _get_val_for_filing(cur_p_src, c, fp, True)
             if s_val is not None and p_val is not None and s_val != 0:
@@ -2064,7 +2065,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 f"={get_column_letter(ci + SEG_OFFSET)}{growth_ppm_row}")
 
         # 売上行 (sec_start+3)
-        ppm_ws.cell(sec_start + 3, COL_YEAR).value = "売上収益"
+        ppm_ws.cell(sec_start + 3, COL_YEAR).value = target_sales_label or "売上収益"
         for k, ci in enumerate(vcols):
             cl = get_column_letter(ci + SEG_OFFSET)
             ppm_ws.cell(sec_start + 3, COL_DATA + k).value = (
