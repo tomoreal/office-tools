@@ -756,6 +756,60 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
         hv = analysis_ws.cell(1, c).value
         seg_headers.append(hv if hv is not None else "")
 
+    # --- col_to_dim: 列番号 → セグメントラベル（dimsフィルタ用） ---
+    col_to_dim = {}
+    for _c in range(3, max_col + 1):
+        _hv = analysis_ws.cell(1, _c).value
+        if _hv is not None:
+            col_to_dim[_c] = str(_hv)
+
+    # 合成列（PPMシートが挿入した列）を検出
+    hokoku_col = next((c for c, d in col_to_dim.items() if d == '報告セグメント合計'), None)
+    igai_col   = next((c for c, d in col_to_dim.items()
+                       if '以外' in d and '報告セグメント' in d), None)
+    goukei_col = next((c for c, d in col_to_dim.items()
+                       if '報告セグメント及びその他の合計' in d), None)
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
+    goukei_is_synthesized = (goukei_col is not None and
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
+
+    def _get_val_for_filing(src_row, c, fp, is_current):
+        """analysis_ws 列 c の値を当該有報の dims でフィルタして返す。"""
+        if src_row is None:
+            return None
+        allowed = fp.get('current_dims', set()) if is_current else fp.get('prior_dims', set())
+
+        if c == hokoku_col and hokoku_is_synthesized:
+            total = 0.0
+            has_val = False
+            for cc in range(3, hokoku_col):
+                if cc in (igai_col, goukei_col):
+                    continue
+                dim = col_to_dim.get(cc, '')
+                if allowed and dim not in allowed:
+                    continue
+                v = _read_numeric(src_row, cc)
+                if v is not None:
+                    total += v
+                    has_val = True
+            return total if has_val else None
+
+        if c == goukei_col and goukei_is_synthesized:
+            v_h = _get_val_for_filing(src_row, hokoku_col, fp, is_current) if hokoku_col else None
+            v_i = None
+            if igai_col:
+                igai_dim = col_to_dim.get(igai_col, '')
+                if not allowed or igai_dim in allowed:
+                    v_i = _read_numeric(src_row, igai_col)
+            if v_h is None and v_i is None:
+                return None
+            return (v_h or 0.0) + (v_i or 0.0)
+
+        dim = col_to_dim.get(c, '')
+        if allowed and dim not in allowed:
+            return None
+        return _read_numeric(src_row, c)
+
     # -----------------------------------------------------------------------
     # 2. period_lookup: (label, period_str) -> row_index in analysis_ws
     #    unique_labels_ordered: 分析シートの登場順で重複除去したラベルリスト
@@ -801,13 +855,14 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
 
             for flag_label, period_str in [("前期", pri_p), ("当期", cur_p)]:
                 row_data = [label, cur_p, flag_label, period_str if period_str else ""]
+                is_current = (flag_label == "当期")
 
                 src_row = period_lookup.get((label, period_str)) if period_str else None
                 for c in range(3, max_col + 1):
                     if src_row is None:
                         row_data.append("")
                     else:
-                        v = _read_numeric(src_row, c)
+                        v = _get_val_for_filing(src_row, c, fp, is_current)
                         row_data.append(v if v is not None else "")
 
                 acq_ws.append(row_data)
