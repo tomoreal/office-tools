@@ -915,6 +915,26 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         if "利益" in label or "損失" in label:
             profit_label_candidates.append(label)
 
+    # IFRS企業など「計」がない場合は「外部顧客への売上収益」等を売上ラベルとして使用
+    if target_sales_label is None:
+        _sales_fallback_keywords = ["外部顧客への売上収益", "売上収益", "営業収益", "売上高"]
+        for _kw in _sales_fallback_keywords:
+            for _lbl in unique_labels_ordered:
+                if _kw in _lbl:
+                    target_sales_label = _lbl
+                    debug_log(f"[PPM Analysis] Sales label fallback: '{target_sales_label}' (matched keyword '{_kw}')")
+                    break
+            if target_sales_label is not None:
+                break
+
+    # セグメント利益を営業利益より優先するよう並び替え
+    # 優先順: セグメント利益含むもの → その他利益/損失ラベル
+    def _profit_sort_key(lbl):
+        if "セグメント利益" in lbl:
+            return 0
+        return 1
+    profit_label_candidates.sort(key=_profit_sort_key)
+
     debug_log(f"[PPM Analysis] Sales label='{target_sales_label}', Profit candidates={profit_label_candidates}")
 
     # -----------------------------------------------------------------------
@@ -1029,6 +1049,9 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                 'current_dims': fp.get('current_dims', set()),
                 'prior_dims':   fp.get('prior_dims',   set()),
             })
+
+    # 報告年度（current）で昇順ソート
+    valid_pairs.sort(key=lambda fp: fp['current'] or '')
 
     MAX_FILINGS = 11
     if len(valid_pairs) > MAX_FILINGS:
@@ -1556,6 +1579,25 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         if "利益" in label:
             profit_label_candidates.append(label)
 
+    # Fallback: if no sales label found (e.g. no aggregate row), try "外部顧客への売上収益" etc.
+    if target_sales_label is None:
+        _sales_fallback_keywords = ["外部顧客への売上収益", "売上収益", "営業収益", "売上高"]
+        for _kw in _sales_fallback_keywords:
+            for _lbl in unique_labels_ordered:
+                if _kw in _lbl:
+                    target_sales_label = _lbl
+                    debug_log(f"[PPM IFRS] Sales label fallback: '{target_sales_label}' (matched keyword '{_kw}')")
+                    break
+            if target_sales_label is not None:
+                break
+
+    # Prioritize segment profit labels over operating profit labels
+    def _profit_sort_key(lbl):
+        if "セグメント利益" in lbl:
+            return 0
+        return 1
+    profit_label_candidates.sort(key=_profit_sort_key)
+
     debug_log(f"[PPM IFRS] Sales label='{target_sales_label}', Profit candidates={profit_label_candidates}")
 
     # -----------------------------------------------------------------------
@@ -1668,6 +1710,9 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 'current_dims': fp.get('current_dims', set()),
                 'prior_dims':   fp.get('prior_dims',   set()),
             })
+
+    # 報告年度（current）で昇順ソート
+    valid_pairs.sort(key=lambda fp: fp['current'] or '')
 
     MAX_FILINGS = 11
     if len(valid_pairs) > MAX_FILINGS:
