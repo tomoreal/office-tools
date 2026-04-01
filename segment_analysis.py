@@ -1315,7 +1315,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     for i, fp in enumerate(valid_pairs):
         cur_p = fp['current']
         cur_sales_ppm_row  = sales_start_row  + 2 * i + 1   # 当期 売上行
-        cur_profit_ppm_row = profit_start_row + 2 * i + 1   # 当期 利益行
+        cur_profit_ppm_row = profit_start_row + 2 * i + 2   # 当期 利益行
 
         m_row = ["売上高利益率", cur_p, "", cur_p]
         year_margin = {}
@@ -1952,7 +1952,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     for i, fp in enumerate(valid_pairs):
         cur_p = fp['current']
         cur_sales_ppm_row  = sales_start_row  + 2 * i + 1
-        cur_profit_ppm_row = profit_start_row + 2 * i + 1
+        cur_profit_ppm_row = profit_start_row + 2 * i + 2   # 当期 利益行
 
         m_row = ["売上高利益率", cur_p, "", cur_p]
         year_margin = {}
