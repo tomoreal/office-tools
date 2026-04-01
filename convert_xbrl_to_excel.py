@@ -1875,7 +1875,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     thread_values['_metadata'][col_key] = f['start_date']
                 
             trees = parse_presentation_linkbase(xbrl_files['pre'])
-            
+
+            from diversity_analysis import _extract_subsidiary_names_from_ixbrl
+            subsidiary_row_names = _extract_subsidiary_names_from_ixbrl(ix_files)
+
             return {
                 'labels': thread_labels,
                 'priorities': thread_priorities,
@@ -1885,7 +1888,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 'trees': trees,
                 'member_seq': [], # Will fill below
                 'year': taxonomy_year,
-                'report_std': report_std
+                'report_std': report_std,
+                'subsidiary_row_names': subsidiary_row_names,
             }
 
         # Multi-threading for performance (I/O and C-based lxml parsing)
@@ -3993,7 +3997,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     # ============================================================================
     # DIVERSITY SHEET (ダイバーシティ)
     # ============================================================================
-    add_diversity_sheet(wb, global_element_period_values, debug_log)
+    # 連結子会社名マップを集約（新しい年度のデータを優先）
+    merged_subsidiary_row_names = {}
+    for res in reversed(results):  # results は新しい順なので reversed で古→新の順に上書き
+        merged_subsidiary_row_names.update(res.get('subsidiary_row_names', {}))
+    add_diversity_sheet(wb, global_element_period_values, debug_log, subsidiary_row_names=merged_subsidiary_row_names)
     add_human_capital_sheet(wb, global_element_period_values, debug_log)
 
     # 最新の期末を取得してファイル名に追加

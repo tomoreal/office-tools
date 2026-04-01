@@ -10,6 +10,56 @@ import unicodedata
 from openpyxl.styles import Font, PatternFill, Alignment
 
 
+def _extract_subsidiary_names_from_ixbrl(ixbrl_files):
+    """iXBRL HTMLファイルを解析して連番RowNMember→会社名のマッピングを返す。
+
+    連結子会社ダイバーシティ要素（SUBSIDIARY_ELEMENTS）と同じ行に存在する
+    会社名テキストを各RowN別に抽出する。
+
+    Returns:
+        dict: {row_num (int): company_name (str)}
+    """
+    row_names = {}
+
+    # 対象要素のローカル名（namespace prefix 除去後）
+    target_local_names = {el.replace('jpcrp_cor_', 'jpcrp_cor:') for el, _ in SUBSIDIARY_ELEMENTS}
+
+    for filepath in (ixbrl_files or []):
+        try:
+            with open(filepath, encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        except OSError:
+            continue
+
+        # ダイバーシティ関連要素かつRowNMember contextのタグを探す
+        pattern = re.compile(
+            r'contextRef="[^"]*Row(\d+)Member[^"]*"[^>]*name="('
+            + '|'.join(re.escape(n) for n in target_local_names)
+            + r')"',
+        )
+        for m in pattern.finditer(content):
+            row_num = int(m.group(1))
+            if row_num in row_names:
+                continue
+            pos = m.start()
+            # Look back up to 4000 chars for the enclosing <tr>
+            chunk = content[max(0, pos - 4000):pos]
+            tr_pos = chunk.rfind('<tr ')
+            if tr_pos == -1:
+                tr_pos = 0
+            row_chunk = chunk[tr_pos:]
+            # Find first <td> whose text is a company-like name (not pure numbers/symbols)
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', row_chunk, re.DOTALL)
+            for td in tds:
+                text = re.sub('<[^>]+>', ' ', td)
+                text = re.sub(r'\s+', '', text).strip()
+                if text and not re.match(r'^[\d\.,\(\)\-\%]+$', text) and len(text) > 1:
+                    row_names[row_num] = text
+                    break
+
+    return row_names
+
+
 # 提出会社の指標（dim_label = "全体" or NonConsolidatedMember）
 REPORTING_COMPANY_ELEMENTS = [
     (
@@ -97,7 +147,7 @@ def _parse_value(val_str):
         return None
 
 
-def add_diversity_sheet(workbook, global_element_period_values, debug_log=None):
+def add_diversity_sheet(workbook, global_element_period_values, debug_log=None, ixbrl_files=None, subsidiary_row_names=None):
     """
     ダイバーシティシートを生成してワークブックに追加する。
 
@@ -153,6 +203,15 @@ def add_diversity_sheet(workbook, global_element_period_values, debug_log=None):
         company_name = str(raw_val).split('\n')[0].strip()
         if company_name:
             sub_name_map[(dim_label, period)] = company_name
+
+    # XBRL要素で会社名が取得できない場合のフォールバック用マップ {row_num (int): company_name (str)}
+    # subsidiary_row_names が渡された場合はそれを優先、次にiXBRL HTMLから抽出
+    if subsidiary_row_names:
+        ixbrl_row_names = subsidiary_row_names
+    elif ixbrl_files:
+        ixbrl_row_names = _extract_subsidiary_names_from_ixbrl(ixbrl_files)
+    else:
+        ixbrl_row_names = {}
 
     # 連結子会社項目: {el_name: {(dim_label, period): value}}
     # dim_label = "Sequential Numbers：RowN"
@@ -262,7 +321,9 @@ def add_diversity_sheet(workbook, global_element_period_values, debug_log=None):
                 if company_name:
                     break
             if not company_name:
-                company_name = dim_label  # フォールバック
+                # iXBRL HTMLから抽出した会社名でフォールバック
+                row_num = _row_sort_key(dim_label)
+                company_name = ixbrl_row_names.get(row_num) or dim_label
 
             for period in sorted_periods:
                 write_row(company_name, label, _format_period(period), period_val[period],
