@@ -108,6 +108,20 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 debug_log=debug_log
             )
 
+            _create_sales_ratio_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
+            _create_employee_ratio_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
         elif 'IFRS' in info['sheet_name']:
             base_name = info['sheet_name'].replace("注記", "連結")
             analysis_sheet_name = base_name + "_分析"
@@ -131,6 +145,20 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             )
 
             _create_ebitda_sheet_ifrs(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
+            _create_sales_ratio_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
+            _create_employee_ratio_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
@@ -2809,3 +2837,304 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
         ebitda_ws.column_dimensions[get_column_letter(col_idx)].width = 12
 
     debug_log(f"[EBITDA IFRS] Completed EBITDA sheet: {ebitda_sheet_name}")
+
+
+def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+    """
+    売上高比率シートを作成（内部関数）
+
+    分析シートの各セルを同一期間の売上高（「計」or「売上収益」、
+    見つからない場合は利益行の直前の勘定）で割った比率を表示するシートを生成する。
+    数式例: =IF(OR('分析'!C2="", '分析'!C$24=""), "", '分析'!C2/'分析'!C$24)
+
+    Args:
+        workbook: openpyxlワークブック
+        analysis_sheet_name: 参照元の分析シート名
+        used_sheet_names: 使用済みシート名のセット
+        debug_log: デバッグログ関数
+    """
+    from openpyxl.utils import get_column_letter
+
+    ratio_sheet_name = analysis_sheet_name + "_売上高比率"
+    if len(ratio_sheet_name) > 31:
+        ratio_sheet_name = analysis_sheet_name[:22] + "_売上高比率"
+
+    debug_log(f"[SalesRatio] Creating sales ratio sheet: {ratio_sheet_name}")
+
+    if analysis_sheet_name not in workbook.sheetnames:
+        debug_log(f"[SalesRatio] Analysis sheet '{analysis_sheet_name}' not found, skipping")
+        return
+
+    analysis_ws = workbook[analysis_sheet_name]
+    max_col = analysis_ws.max_column
+    max_row = analysis_ws.max_row
+
+    # -----------------------------------------------------------------------
+    # 1. 各行のラベルと期間を収集し、ラベル→行番号・期間→行番号リストを構築
+    # -----------------------------------------------------------------------
+    # label_rows: label -> [row_index, ...]  (出現順)
+    # period_label_row: (label, period_str) -> row_index
+    label_first_occurrence = {}   # label -> first row index
+    all_labels_ordered = []       # 重複なし・出現順
+    period_label_row = {}         # (period_str, label) -> row_index
+
+    def _to_period_str(v):
+        if v is None:
+            return None
+        if hasattr(v, 'strftime'):
+            return v.strftime('%Y-%m-%d')
+        return str(v).strip()
+
+    for r in range(2, max_row + 1):
+        lv = analysis_ws.cell(r, 1).value
+        pv = analysis_ws.cell(r, 2).value
+        if not lv:
+            continue
+        label = str(lv).strip()
+        ps = _to_period_str(pv)
+        if label not in label_first_occurrence:
+            label_first_occurrence[label] = r
+            all_labels_ordered.append(label)
+        if ps:
+            period_label_row[(ps, label)] = r
+
+    if not all_labels_ordered:
+        debug_log(f"[SalesRatio] No data rows in analysis sheet, skipping")
+        return
+
+    # -----------------------------------------------------------------------
+    # 2. 売上高ラベルを検出
+    #    優先順: "計" -> "売上収益" -> 最初の利益/損失ラベルの直前のラベル
+    # -----------------------------------------------------------------------
+    sales_label = None
+
+    # 優先1: "計"
+    if "計" in all_labels_ordered:
+        sales_label = "計"
+
+    # 優先2: "売上収益" (IFRSで多い)
+    if sales_label is None:
+        for lbl in all_labels_ordered:
+            if "売上収益" in lbl:
+                sales_label = lbl
+                break
+
+    # 優先3: 最初の利益/損失ラベルの直前のラベル
+    if sales_label is None:
+        for i, lbl in enumerate(all_labels_ordered):
+            if "利益" in lbl or "損失" in lbl:
+                if i > 0:
+                    sales_label = all_labels_ordered[i - 1]
+                break
+
+    if sales_label is None:
+        debug_log(f"[SalesRatio] Could not detect sales label, skipping")
+        return
+
+    debug_log(f"[SalesRatio] Sales label detected: '{sales_label}'")
+
+    # -----------------------------------------------------------------------
+    # 3. 期間ごとの売上高行番号を構築
+    #    period_str -> row_in_analysis_ws
+    # -----------------------------------------------------------------------
+    period_sales_row = {}  # period_str -> row index in analysis_ws
+    for (ps, lbl), row_idx in period_label_row.items():
+        if lbl == sales_label:
+            period_sales_row[ps] = row_idx
+
+    if not period_sales_row:
+        debug_log(f"[SalesRatio] No period data found for sales label '{sales_label}', skipping")
+        return
+
+    # -----------------------------------------------------------------------
+    # 4. シートを作成しヘッダー行を出力
+    # -----------------------------------------------------------------------
+    ratio_ws = workbook.create_sheet(title=ratio_sheet_name)
+    used_sheet_names.add(ratio_sheet_name)
+
+    escaped = analysis_sheet_name.replace("'", "''")
+
+    # ヘッダー行: 勘定科目・年度・各セグメント列をそのままコピー参照
+    header = ["勘定科目", "年度"]
+    for col_idx in range(3, max_col + 1):
+        cl = get_column_letter(col_idx)
+        header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    ratio_ws.append(header)
+
+    # -----------------------------------------------------------------------
+    # 5. データ行: 各行 × 各列に売上高比率の数式を出力
+    # -----------------------------------------------------------------------
+    for row in range(2, max_row + 1):
+        pv = analysis_ws.cell(row, 2).value
+        ps = _to_period_str(pv)
+        sales_row = period_sales_row.get(ps) if ps else None
+
+        row_data = [
+            f"='{escaped}'!A{row}",
+            f"='{escaped}'!B{row}",
+        ]
+        for col_idx in range(3, max_col + 1):
+            cl = get_column_letter(col_idx)
+            if sales_row is None:
+                row_data.append("")
+            else:
+                formula = (
+                    f"=IF(OR('{escaped}'!{cl}{row}=\"\","
+                    f"'{escaped}'!{cl}${sales_row}=\"\"),"
+                    f"\"\","
+                    f"'{escaped}'!{cl}{row}/'{escaped}'!{cl}${sales_row})"
+                )
+                row_data.append(formula)
+        ratio_ws.append(row_data)
+
+    # -----------------------------------------------------------------------
+    # 6. 書式設定・列幅・ウィンドウ枠
+    # -----------------------------------------------------------------------
+    for row in ratio_ws.iter_rows(min_row=2, max_row=ratio_ws.max_row, min_col=3, max_col=max_col):
+        for cell in row:
+            cell.number_format = '0.0%'
+
+    ratio_ws.freeze_panes = 'B2'
+    ratio_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, max_col + 1):
+        ratio_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    debug_log(f"[SalesRatio] Completed sales ratio sheet: {ratio_sheet_name}")
+
+
+def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+    """
+    従業員比率シートを作成（内部関数）
+
+    分析シートの各セルを同一期間の従業員数（下から2番目のラベル）で割った比率を
+    表示するシートを生成する。
+    数式例: =IF(OR('分析'!C2="", '分析'!C$24=""), "", '分析'!C2/'分析'!C$24)
+
+    Args:
+        workbook: openpyxlワークブック
+        analysis_sheet_name: 参照元の分析シート名
+        used_sheet_names: 使用済みシート名のセット
+        debug_log: デバッグログ関数
+    """
+    from openpyxl.utils import get_column_letter
+
+    ratio_sheet_name = analysis_sheet_name + "_従業員比率"
+    if len(ratio_sheet_name) > 31:
+        ratio_sheet_name = analysis_sheet_name[:22] + "_従業員比率"
+
+    debug_log(f"[EmpRatio] Creating employee ratio sheet: {ratio_sheet_name}")
+
+    if analysis_sheet_name not in workbook.sheetnames:
+        debug_log(f"[EmpRatio] Analysis sheet '{analysis_sheet_name}' not found, skipping")
+        return
+
+    analysis_ws = workbook[analysis_sheet_name]
+    max_col = analysis_ws.max_column
+    max_row = analysis_ws.max_row
+
+    # -----------------------------------------------------------------------
+    # 1. 各行のラベルと期間を収集
+    # -----------------------------------------------------------------------
+    all_labels_ordered = []   # 重複なし・出現順
+    period_label_row = {}     # (period_str, label) -> row_index
+
+    def _to_period_str(v):
+        if v is None:
+            return None
+        if hasattr(v, 'strftime'):
+            return v.strftime('%Y-%m-%d')
+        return str(v).strip()
+
+    seen_labels = set()
+    for r in range(2, max_row + 1):
+        lv = analysis_ws.cell(r, 1).value
+        pv = analysis_ws.cell(r, 2).value
+        if not lv:
+            continue
+        label = str(lv).strip()
+        ps = _to_period_str(pv)
+        if label not in seen_labels:
+            seen_labels.add(label)
+            all_labels_ordered.append(label)
+        if ps:
+            period_label_row[(ps, label)] = r
+
+    if len(all_labels_ordered) < 2:
+        debug_log(f"[EmpRatio] Not enough labels in analysis sheet, skipping")
+        return
+
+    # -----------------------------------------------------------------------
+    # 2. 従業員数ラベル = 下から2番目のラベル（「従業員」を含むことを確認）
+    # -----------------------------------------------------------------------
+    employee_label = all_labels_ordered[-2]
+    if "従業員" not in employee_label:
+        debug_log(f"[EmpRatio] Second-to-last label '{employee_label}' is not employee count, skipping")
+        return
+
+    debug_log(f"[EmpRatio] Employee label detected: '{employee_label}'")
+
+    # -----------------------------------------------------------------------
+    # 3. 期間ごとの従業員数行番号を構築
+    # -----------------------------------------------------------------------
+    period_employee_row = {}  # period_str -> row index in analysis_ws
+    for (ps, lbl), row_idx in period_label_row.items():
+        if lbl == employee_label:
+            period_employee_row[ps] = row_idx
+
+    if not period_employee_row:
+        debug_log(f"[EmpRatio] No period data found for employee label '{employee_label}', skipping")
+        return
+
+    # -----------------------------------------------------------------------
+    # 4. シートを作成しヘッダー行を出力
+    # -----------------------------------------------------------------------
+    ratio_ws = workbook.create_sheet(title=ratio_sheet_name)
+    used_sheet_names.add(ratio_sheet_name)
+
+    escaped = analysis_sheet_name.replace("'", "''")
+
+    header = ["勘定科目", "年度"]
+    for col_idx in range(3, max_col + 1):
+        cl = get_column_letter(col_idx)
+        header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    ratio_ws.append(header)
+
+    # -----------------------------------------------------------------------
+    # 5. データ行: 各行 × 各列に従業員比率の数式を出力
+    # -----------------------------------------------------------------------
+    for row in range(2, max_row + 1):
+        pv = analysis_ws.cell(row, 2).value
+        ps = _to_period_str(pv)
+        emp_row = period_employee_row.get(ps) if ps else None
+
+        row_data = [
+            f"='{escaped}'!A{row}",
+            f"='{escaped}'!B{row}",
+        ]
+        for col_idx in range(3, max_col + 1):
+            cl = get_column_letter(col_idx)
+            if emp_row is None:
+                row_data.append("")
+            else:
+                formula = (
+                    f"=IF(OR('{escaped}'!{cl}{row}=\"\","
+                    f"'{escaped}'!{cl}${emp_row}=\"\"),"
+                    f"\"\","
+                    f"'{escaped}'!{cl}{row}/'{escaped}'!{cl}${emp_row})"
+                )
+                row_data.append(formula)
+        ratio_ws.append(row_data)
+
+    # -----------------------------------------------------------------------
+    # 6. 書式設定・列幅・ウィンドウ枠
+    # -----------------------------------------------------------------------
+    for row in ratio_ws.iter_rows(min_row=2, max_row=ratio_ws.max_row, min_col=3, max_col=max_col):
+        for cell in row:
+            cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+
+    ratio_ws.freeze_panes = 'B2'
+    ratio_ws.column_dimensions['A'].width = 31
+    for col_idx in range(2, max_col + 1):
+        ratio_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    debug_log(f"[EmpRatio] Completed employee ratio sheet: {ratio_sheet_name}")
