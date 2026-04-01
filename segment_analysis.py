@@ -2904,22 +2904,33 @@ def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, d
 
     # -----------------------------------------------------------------------
     # 2. 売上高ラベルを検出
-    #    優先順: "計" -> "売上収益" -> 最初の利益/損失ラベルの直前のラベル
+    #    優先順: 完全一致"計" -> 完全一致"売上収益" -> 部分一致"売上収益" ->
+    #           最初の利益/損失ラベルの直前のラベル
+    #    ※ラベルは全角スペースを含む場合があるためstrip()して比較
     # -----------------------------------------------------------------------
     sales_label = None
 
-    # 優先1: "計"
-    if "計" in all_labels_ordered:
-        sales_label = "計"
+    # 優先1: stripped後に完全一致 "計"
+    for lbl in all_labels_ordered:
+        if lbl.strip() == "計":
+            sales_label = lbl
+            break
 
-    # 優先2: "売上収益" (IFRSで多い)
+    # 優先2: stripped後に完全一致 "売上収益" (IFRSで多い)
+    if sales_label is None:
+        for lbl in all_labels_ordered:
+            if lbl.strip() == "売上収益":
+                sales_label = lbl
+                break
+
+    # 優先3: "売上収益" を含む (部分一致フォールバック)
     if sales_label is None:
         for lbl in all_labels_ordered:
             if "売上収益" in lbl:
                 sales_label = lbl
                 break
 
-    # 優先3: 最初の利益/損失ラベルの直前のラベル
+    # 優先4: 最初の利益/損失ラベルの直前のラベル
     if sales_label is None:
         for i, lbl in enumerate(all_labels_ordered):
             if "利益" in lbl or "損失" in lbl:
@@ -3064,11 +3075,16 @@ def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names
         return
 
     # -----------------------------------------------------------------------
-    # 2. 従業員数ラベル = 下から2番目のラベル（「従業員」を含むことを確認）
+    # 2. 従業員数ラベルを末尾から検索（「従業員数」を含む最後のラベル）
     # -----------------------------------------------------------------------
-    employee_label = all_labels_ordered[-2]
-    if "従業員" not in employee_label:
-        debug_log(f"[EmpRatio] Second-to-last label '{employee_label}' is not employee count, skipping")
+    employee_label = None
+    for lbl in reversed(all_labels_ordered):
+        if "従業員数" in lbl:
+            employee_label = lbl
+            break
+
+    if employee_label is None:
+        debug_log(f"[EmpRatio] No employee count label found, skipping")
         return
 
     debug_log(f"[EmpRatio] Employee label detected: '{employee_label}'")
