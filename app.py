@@ -38,6 +38,7 @@ XBRL to Excel Converter - Web Application
 """
 
 import os
+import time
 import tempfile
 import urllib.parse
 import shutil
@@ -62,6 +63,62 @@ from edinet_api_key import EDINET_API_KEY
 BASE_TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
 if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR, exist_ok=True)
+
+# ========================================================================
+# HOUSEKEEPING - ログローテーション・一時ファイル定期削除
+# ========================================================================
+# cronが使えない環境向け：リクエスト時にセンチネルファイルのmtimeを確認し、
+# 一定間隔でまとめてハウスキーピングを実行する。
+
+def _run_housekeeping():
+    """ログローテーションと一時ファイル削除をまとめて実行する。
+
+    センチネルファイル（temp_uploads/.last_cleanup）のmtimeで実行間隔を管理する。
+    CHECK_INTERVAL_HOURS 未満なら即リターンするため、毎リクエスト呼んでもコストは低い。
+    """
+    CHECK_INTERVAL_HOURS = 1   # センチネルが新しければスキップ（最小チェック間隔）
+    TEMP_MAX_AGE_HOURS    = 2   # この時間より古い temp_uploads サブディレクトリを削除
+
+    sentinel = os.path.join(BASE_TEMP_DIR, '.last_cleanup')
+    now = time.time()
+
+    # チェック間隔未満ならスキップ
+    if os.path.exists(sentinel):
+        if now - os.path.getmtime(sentinel) < CHECK_INTERVAL_HOURS * 3600:
+            return
+
+    # センチネルを先に更新（並行リクエストの二重実行を緩和）
+    try:
+        open(sentinel, 'w').close()
+    except OSError:
+        return
+
+    # 1. 一時ディレクトリの古いセッションを削除
+    cutoff = now - TEMP_MAX_AGE_HOURS * 3600
+    for name in os.listdir(BASE_TEMP_DIR):
+        if name.startswith('.'):
+            continue
+        path = os.path.join(BASE_TEMP_DIR, name)
+        if os.path.isdir(path):
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path)
+            except Exception:
+                pass
+
+    # 2. ログローテーション（convert_xbrl_to_excel の rotate_logs_manually と二重構造）
+    #    CLI直接実行時は debug_log() 内のチェックが担当するため、ここでは Web経由のみカバー。
+    try:
+        import convert_xbrl_to_excel
+        convert_xbrl_to_excel.rotate_logs_manually(convert_xbrl_to_excel._LOG_FILE)
+    except Exception:
+        pass
+
+
+@app.before_request
+def before_request_housekeeping():
+    _run_housekeeping()
+
 
 # ========================================================================
 # MAIN ROUTE - ファイルアップロードと変換処理
