@@ -905,17 +905,47 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     # 2. 売上・利益ラベルを検出
     #    売上: 「計」
-    #    利益: 「利益」または「損失」を含むラベルの全候補
+    #    利益: 「利益」「損失」「純益」を含むラベルの全候補
     # -----------------------------------------------------------------------
     target_sales_label = None
     profit_label_candidates = []
     for label in unique_labels_ordered:
         if target_sales_label is None and label == "計":
             target_sales_label = label
-        if "利益" in label or "損失" in label:
+        if "利益" in label or "損失" in label or "純益" in label:
             profit_label_candidates.append(label)
 
-    # IFRS企業など「計」がない場合は「外部顧客への売上収益」等を売上ラベルとして使用
+    # Financial industry detection: 連結粗利益 / 業務粗利益 → sales label
+    #                                連結業務純益 / 業務純益  → profit label (top priority)
+    _financial_sales_kws  = ["連結粗利益", "業務粗利益"]
+    _financial_profit_kws = ["連結業務純益", "業務純益"]
+    _financial_sales_label  = None
+    _financial_profit_label = None
+    for _kw in _financial_sales_kws:
+        for _lbl in unique_labels_ordered:
+            if _lbl == _kw or _kw in _lbl:
+                _financial_sales_label = _lbl
+                break
+        if _financial_sales_label:
+            break
+    if _financial_sales_label:
+        for _kw in _financial_profit_kws:
+            for _lbl in unique_labels_ordered:
+                if _lbl == _kw or _kw in _lbl:
+                    _financial_profit_label = _lbl
+                    break
+            if _financial_profit_label:
+                break
+        target_sales_label = _financial_sales_label
+        # Prepend financial profit label so it takes top priority
+        if _financial_profit_label and _financial_profit_label not in profit_label_candidates:
+            profit_label_candidates.insert(0, _financial_profit_label)
+        elif _financial_profit_label:
+            profit_label_candidates.remove(_financial_profit_label)
+            profit_label_candidates.insert(0, _financial_profit_label)
+        debug_log(f"[PPM Analysis] Financial industry detected: sales='{target_sales_label}', profit='{_financial_profit_label}'")
+
+    # 「計」がない場合（かつ金融業でもない場合）のフォールバック
     if target_sales_label is None:
         _sales_fallback_keywords = ["外部顧客への売上収益", "売上収益", "営業収益", "売上高"]
         for _kw in _sales_fallback_keywords:
@@ -927,13 +957,21 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             if target_sales_label is not None:
                 break
 
-    # セグメント利益を営業利益より優先するよう並び替え
+    # セグメント利益を営業利益より優先するよう並び替え（金融業判定済み後）
     # 優先順: セグメント利益含むもの → その他利益/損失ラベル
     def _profit_sort_key(lbl):
+        if lbl == profit_label_candidates[0] if profit_label_candidates else False:
+            return 0   # already-pinned top candidate keeps its position
         if "セグメント利益" in lbl:
-            return 0
-        return 1
-    profit_label_candidates.sort(key=_profit_sort_key)
+            return 1
+        return 2
+    # Only re-sort non-pinned entries when no financial label was pinned
+    if not _financial_profit_label:
+        profit_label_candidates.sort(key=lambda lbl: (0 if "セグメント利益" in lbl else 1))
+
+    # Derive display labels
+    # Sales: replace "計" with "売上"; all other labels shown as-is
+    sales_display_label = "　売上" if target_sales_label == "計" else ("　" + target_sales_label if target_sales_label else "　売上")
 
     debug_log(f"[PPM Analysis] Sales label='{target_sales_label}', Profit candidates={profit_label_candidates}")
 
@@ -1027,7 +1065,6 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         return False
 
     def _get_profit_src(period_str):
-        """period_str の利益行を候補から順に探して返す"""
         for candidate in profit_label_candidates:
             row = period_lookup.get((candidate, period_str))
             if row is not None and _has_data_row(row):
