@@ -1781,6 +1781,88 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name}")
 
 
+def _reorder_ifrs_analysis_cols(analysis_ws, hokoku_col, igai_col, goukei_col, debug_log):
+    """
+    IFRS分析シートの列（C列以降）を以下の順序に物理的に並び替える:
+      1. 純粋な報告セグメント列
+      2. 報告セグメント合計列 (hokoku_col)
+      3. その他事業列（'その他' を含む列）
+      4. 報告セグメント及びその他の合計列 (goukei_col、なければ合成追加)
+      5. セグメント間取引・本社・全社・全体・消去等の調整列
+    空白ヘッダー列は除外して詰める。
+    Returns: (new_hokoku_col, new_igai_col, new_goukei_col, new_max_col)
+    """
+    from openpyxl.utils import get_column_letter
+    _ADJ_KW = ('消去', '全社', 'セグメント間', '本社', '全体', '調整', '連結財務諸表')
+
+    old_max_col = analysis_ws.max_column
+    max_row = analysis_ws.max_row
+
+    # 全列データを読み取る
+    col_data = {}
+    for c in range(3, old_max_col + 1):
+        col_data[c] = [analysis_ws.cell(r, c).value for r in range(1, max_row + 1)]
+
+    def classify(c):
+        dim = str(col_data[c][0] or '')
+        if not dim:
+            return 6  # 空ヘッダー → 除外
+        if c == hokoku_col:
+            return 2
+        if goukei_col and c == goukei_col:
+            return 4
+        if any(kw in dim for kw in _ADJ_KW):
+            return 5
+        if 'その他' in dim:
+            return 3
+        if '合計' in dim or '全体' in dim:
+            return 5  # その他集計系も末尾へ
+        return 1
+
+    sorted_cols = sorted(
+        [c for c in range(3, old_max_col + 1) if classify(c) != 6],
+        key=lambda c: (classify(c), c)
+    )
+
+    # その他列が存在し goukei_col がない場合は合成が必要
+    other_cols = [c for c in sorted_cols if classify(c) == 3]
+    needs_new_goukei = (goukei_col is None and hokoku_col is not None and other_cols)
+
+    # 全セルをクリア
+    for c in range(3, old_max_col + 1):
+        for r in range(1, max_row + 1):
+            analysis_ws.cell(r, c).value = None
+
+    # 新しい順序で書き戻す
+    new_col_map = {}
+    for new_idx, old_c in enumerate(sorted_cols):
+        new_c = 3 + new_idx
+        new_col_map[old_c] = new_c
+        for r in range(1, max_row + 1):
+            analysis_ws.cell(r, new_c).value = col_data[old_c][r - 1]
+
+    new_max_col = 2 + len(sorted_cols)
+    new_hokoku_col = new_col_map.get(hokoku_col, hokoku_col)
+    new_igai_col   = new_col_map.get(igai_col) if igai_col else None
+    new_goukei_col = new_col_map.get(goukei_col) if goukei_col else None
+
+    # goukei が存在しない場合は合成して末尾に追加
+    if needs_new_goukei:
+        new_other_cols = [new_col_map[c] for c in other_cols]
+        new_goukei_col = new_max_col + 1
+        new_max_col    = new_goukei_col
+        analysis_ws.cell(1, new_goukei_col).value = "報告セグメント及びその他の合計"
+        sum_src_cols = [new_hokoku_col] + new_other_cols
+        for _ri in range(2, max_row + 1):
+            if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float)) for c in sum_src_cols):
+                refs = ",".join(f"{get_column_letter(c)}{_ri}" for c in sum_src_cols)
+                analysis_ws.cell(_ri, new_goukei_col).value = f"=SUM({refs})"
+
+    debug_log(f"[PPM IFRS] Column reorder done: hokoku={new_hokoku_col}, "
+              f"igai={new_igai_col}, goukei={new_goukei_col}, max={new_max_col}")
+    return new_hokoku_col, new_igai_col, new_goukei_col, new_max_col
+
+
 def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log):
     """
     IFRS用PPM分析シートを作成（内部関数）
@@ -1947,6 +2029,12 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         goukei_col = new_col
         max_col = new_col
         debug_log(f"[PPM IFRS] Added '報告セグメント及びその他の合計' column at col {new_col}")
+
+    # -----------------------------------------------------------------------
+    # 3c. 列の並び順を「純粋セグメント | 報告セグ合計 | その他 | 及びその他合計 | 調整」に整理
+    # -----------------------------------------------------------------------
+    hokoku_col, igai_col, goukei_col, max_col = _reorder_ifrs_analysis_cols(
+        analysis_ws, hokoku_col, igai_col, goukei_col, debug_log)
 
     chart_end_col = goukei_col or hokoku_col
 
@@ -2235,7 +2323,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 return s[:7].replace('-', '/')
         return s[:4]
 
-    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他', 'セグメント間', '本社')
+    # IFRS では「その他事業」をデータ集約エリアに表示するため 'その他' を除外キーワードから外す
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'セグメント間', '本社')
 
     def _valid_cols(filing_idx):
         mi = filing_idx + 1
