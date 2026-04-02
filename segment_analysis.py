@@ -817,6 +817,11 @@ def _build_period_lookup(analysis_ws):
     return period_lookup, unique_labels_ordered
 
 
+# 報告セグメント合計の対象外とする列名キーワード（調整・消去・その他系）
+# これに該当する列は純粋な報告セグメントではなく、合計計算から除外する
+_PURE_SEG_EXCL_KW = ('消去', '全社', '調整', 'セグメント間', '本社', '連結財務諸表', 'その他', '合計', '全体')
+
+
 def _build_col_info(analysis_ws, max_col):
     """analysis_ws のヘッダー行からセグメント列情報を構築して返す。
 
@@ -861,6 +866,9 @@ def _make_get_val_for_filing(analysis_ws, col_to_dim,
                 if cc in (igai_col, goukei_col):
                     continue
                 dim = col_to_dim.get(cc, '')
+                # 非報告セグメント列（セグメント間取引・本社・全社・消去・その他等）をスキップ
+                if any(kw in dim for kw in _PURE_SEG_EXCL_KW):
+                    continue
                 if allowed and dim not in allowed:
                     continue
                 v = _read_numeric(analysis_ws, src_row, cc)
@@ -1211,16 +1219,18 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     if hokoku_col is None:
         if igai_col and igai_col > 3:
-            _sum_start_letter = get_column_letter(3)
-            _sum_end_letter   = get_column_letter(igai_col - 1)
+            # 純粋な報告セグメント列（調整・消去・その他等を除く）を特定して合計式を生成
+            _pure_cols = [c for c in range(3, igai_col)
+                          if not any(kw in str(analysis_ws.cell(1, c).value or '')
+                                     for kw in _PURE_SEG_EXCL_KW)]
             analysis_ws.insert_cols(igai_col)
             analysis_ws.cell(1, igai_col).value = "報告セグメント合計"
             for _ri in range(2, analysis_ws.max_row + 1):
                 if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
                        for c in range(3, igai_col)):
-                    analysis_ws.cell(_ri, igai_col).value = (
-                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
-                    )
+                    if _pure_cols:
+                        _refs = ",".join(f"{get_column_letter(c)}{_ri}" for c in _pure_cols)
+                        analysis_ws.cell(_ri, igai_col).value = f"=SUM({_refs})"
             hokoku_col = igai_col
             igai_col  += 1
             if goukei_col is not None:
@@ -1228,22 +1238,27 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             max_col += 1
             debug_log(f"[PPM Analysis] Inserted '報告セグメント合計' column at col {hokoku_col}")
         elif goukei_col is not None and goukei_col > 3:
-            # igai_col はないが goukei_col が存在する場合（例: その他事業が個別セグメントに含まれるケース）
-            # goukei_col の直前に「報告セグメント合計」を挿入する
-            _sum_start_letter = get_column_letter(3)
-            _sum_end_letter   = get_column_letter(goukei_col - 1)
-            analysis_ws.insert_cols(goukei_col)
-            analysis_ws.cell(1, goukei_col).value = "報告セグメント合計"
+            # igai_col はないが goukei_col が存在する場合（例: IFRS でセグメント間取引・その他事業・本社等が混在するケース）
+            # 純粋な報告セグメント列（調整・消去・その他等を除く）を特定し、その直後に挿入する
+            _pure_cols = [c for c in range(3, goukei_col)
+                          if not any(kw in str(analysis_ws.cell(1, c).value or '')
+                                     for kw in _PURE_SEG_EXCL_KW)]
+            _insert_at = (_pure_cols[-1] + 1) if _pure_cols else goukei_col
+            analysis_ws.insert_cols(_insert_at)
+            analysis_ws.cell(1, _insert_at).value = "報告セグメント合計"
             for _ri in range(2, analysis_ws.max_row + 1):
                 if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
-                       for c in range(3, goukei_col)):
-                    analysis_ws.cell(_ri, goukei_col).value = (
-                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
-                    )
-            hokoku_col  = goukei_col
-            goukei_col += 1
+                       for c in range(3, _insert_at)):
+                    if _pure_cols:
+                        _refs = ",".join(f"{get_column_letter(c)}{_ri}" for c in _pure_cols)
+                        analysis_ws.cell(_ri, _insert_at).value = f"=SUM({_refs})"
+            hokoku_col  = _insert_at
+            goukei_col += 1  # 挿入により goukei_col がシフト
+            if igai_col is not None and igai_col >= _insert_at:
+                igai_col += 1
             max_col    += 1
-            debug_log(f"[PPM Analysis] Inserted '報告セグメント合計' before goukei_col at col {hokoku_col}")
+            debug_log(f"[PPM Analysis] Inserted '報告セグメント合計' at col {hokoku_col} "
+                      f"(pure segs: {_pure_cols}, goukei_col→{goukei_col})")
         else:
             hokoku_col = max_col
 
@@ -1576,7 +1591,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     # growth_rates[0]=ベース, growth_rates[i+1]=valid_pairs[i]
     # profit_margins[0]=ベース, profit_margins[i+1]=valid_pairs[i]
-    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他')
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他', 'セグメント間', '本社')
 
     def _valid_cols(filing_idx):
         """3指標すべてが揃っている analysis_ws 列インデックスのリストを返す"""
@@ -1875,16 +1890,18 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
     if hokoku_col is None:
         if igai_col and igai_col > 3:
-            _sum_start_letter = get_column_letter(3)
-            _sum_end_letter   = get_column_letter(igai_col - 1)
+            # 純粋な報告セグメント列（調整・消去・その他等を除く）を特定して合計式を生成
+            _pure_cols = [c for c in range(3, igai_col)
+                          if not any(kw in str(analysis_ws.cell(1, c).value or '')
+                                     for kw in _PURE_SEG_EXCL_KW)]
             analysis_ws.insert_cols(igai_col)
             analysis_ws.cell(1, igai_col).value = "報告セグメント合計"
             for _ri in range(2, analysis_ws.max_row + 1):
                 if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
                        for c in range(3, igai_col)):
-                    analysis_ws.cell(_ri, igai_col).value = (
-                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
-                    )
+                    if _pure_cols:
+                        _refs = ",".join(f"{get_column_letter(c)}{_ri}" for c in _pure_cols)
+                        analysis_ws.cell(_ri, igai_col).value = f"=SUM({_refs})"
             hokoku_col = igai_col
             igai_col  += 1
             if goukei_col is not None:
@@ -1892,22 +1909,27 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             max_col += 1
             debug_log(f"[PPM IFRS] Inserted '報告セグメント合計' column at col {hokoku_col}")
         elif goukei_col is not None and goukei_col > 3:
-            # igai_col はないが goukei_col が存在する場合（例: その他事業が個別セグメントに含まれるケース）
-            # goukei_col の直前に「報告セグメント合計」を挿入する
-            _sum_start_letter = get_column_letter(3)
-            _sum_end_letter   = get_column_letter(goukei_col - 1)
-            analysis_ws.insert_cols(goukei_col)
-            analysis_ws.cell(1, goukei_col).value = "報告セグメント合計"
+            # igai_col はないが goukei_col が存在する場合（例: IFRS でセグメント間取引・その他事業・本社等が混在するケース）
+            # 純粋な報告セグメント列（調整・消去・その他等を除く）を特定し、その直後に挿入する
+            _pure_cols = [c for c in range(3, goukei_col)
+                          if not any(kw in str(analysis_ws.cell(1, c).value or '')
+                                     for kw in _PURE_SEG_EXCL_KW)]
+            _insert_at = (_pure_cols[-1] + 1) if _pure_cols else goukei_col
+            analysis_ws.insert_cols(_insert_at)
+            analysis_ws.cell(1, _insert_at).value = "報告セグメント合計"
             for _ri in range(2, analysis_ws.max_row + 1):
                 if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
-                       for c in range(3, goukei_col)):
-                    analysis_ws.cell(_ri, goukei_col).value = (
-                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
-                    )
-            hokoku_col  = goukei_col
-            goukei_col += 1
+                       for c in range(3, _insert_at)):
+                    if _pure_cols:
+                        _refs = ",".join(f"{get_column_letter(c)}{_ri}" for c in _pure_cols)
+                        analysis_ws.cell(_ri, _insert_at).value = f"=SUM({_refs})"
+            hokoku_col  = _insert_at
+            goukei_col += 1  # 挿入により goukei_col がシフト
+            if igai_col is not None and igai_col >= _insert_at:
+                igai_col += 1
             max_col    += 1
-            debug_log(f"[PPM IFRS] Inserted '報告セグメント合計' before goukei_col at col {hokoku_col}")
+            debug_log(f"[PPM IFRS] Inserted '報告セグメント合計' at col {hokoku_col} "
+                      f"(pure segs: {_pure_cols}, goukei_col→{goukei_col})")
         else:
             hokoku_col = max_col
 
@@ -2213,7 +2235,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 return s[:7].replace('-', '/')
         return s[:4]
 
-    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他')
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他', 'セグメント間', '本社')
 
     def _valid_cols(filing_idx):
         mi = filing_idx + 1
