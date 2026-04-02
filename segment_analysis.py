@@ -1688,6 +1688,16 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             if target_sales_label is not None:
                 break
 
+    # Fallback: セグメント利益が見つからない場合、「当期損益」「当期利益」「当期損失」を探す
+    if not profit_label_candidates:
+        _profit_fallback_keywords = ["当期損益", "当期利益", "当期損失"]
+        for _kw in _profit_fallback_keywords:
+            for _lbl in unique_labels_ordered:
+                if _kw in _lbl and _lbl not in profit_label_candidates:
+                    profit_label_candidates.append(_lbl)
+        if profit_label_candidates:
+            debug_log(f"[PPM IFRS] Profit fallback used: {profit_label_candidates}")
+
     # Prioritize segment profit labels over operating profit labels
     def _profit_sort_key(lbl):
         if "セグメント利益" in lbl:
