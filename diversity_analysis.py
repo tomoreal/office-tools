@@ -356,23 +356,37 @@ HC_UNIT_EL       = f'jpcrp_cor_MetricsUnitDescription{_HC_PREFIX}'
 HC_PERFORMANCE_EL = f'jpcrp_cor_PerformanceDescription{_HC_PREFIX}'
 
 
-def add_human_capital_sheet(workbook, global_element_period_values, debug_log=None):
+def add_human_capital_sheet(workbook, global_element_period_values, debug_log=None, filer_name=None):
     """
     人的資本シートを生成してワークブックに追加する。
 
-    列構成: 指標名 | 年度 | 目標数値 | 単位 | 実績数値
+    列構成: 会社名 | 指標名 | 年度 | 目標数値 | 実績数値 | 単位
 
     各行は (連番RowN, period) の組み合わせ。
     指標名は MetricsDescription から取得。
+    会社名は filer_name 引数（省略時は global_element_period_values から取得）。
 
     Args:
         workbook: openpyxlワークブック
         global_element_period_values: {element: {(fact_std, dim_label, period): value}}
         debug_log: デバッグログ関数（省略可）
+        filer_name: 提出会社名（省略時は CompanyNameCoverPage 等から自動取得）
     """
     if debug_log is None:
         def debug_log(msg):
             pass
+
+    # 提出会社名を解決
+    if not filer_name:
+        for suffix in ('CompanyNameCoverPage', 'EntityNameCompanyName', 'EntityNameEntityReportingName'):
+            for el_name, vals in global_element_period_values.items():
+                if el_name.endswith(suffix) and vals:
+                    filer_name = str(next(iter(vals.values()))).split('\n')[0].strip()
+                    break
+            if filer_name:
+                break
+    if not filer_name:
+        filer_name = '提出会社'
 
     # -------------------------------------------------------------------------
     # データ収集: dim_label (連番RowN) × period → 各フィールド値
@@ -476,7 +490,7 @@ def add_human_capital_sheet(workbook, global_element_period_values, debug_log=No
     right_align  = Alignment(horizontal='right',  vertical='center')
 
     # ヘッダー
-    headers = ['指標名', '年度', '目標数値', '実績数値', '単位']
+    headers = ['会社名', '指標名', '年度', '目標数値', '実績数値', '単位']
     for col_idx, h in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_idx, value=h)
         cell.font = header_font
@@ -516,6 +530,7 @@ def add_human_capital_sheet(workbook, global_element_period_values, debug_log=No
             perf_num,   perf_fmt   = apply_num(to_num(perf_val))
 
             cells_data = [
+                (filer_name,             left_align,   None),
                 (metric_name,            left_align,   None),
                 (_format_period(period), center_align, None),
                 (target_num,             right_align,  target_fmt),
@@ -535,11 +550,12 @@ def add_human_capital_sheet(workbook, global_element_period_values, debug_log=No
         current_row += 1  # 指標間に空行
 
     # 列幅
-    ws.column_dimensions['A'].width = 45
-    ws.column_dimensions['B'].width = 12
-    ws.column_dimensions['C'].width = 14
-    ws.column_dimensions['D'].width = 14
-    ws.column_dimensions['E'].width = 10
+    ws.column_dimensions['A'].width = 25  # 会社名
+    ws.column_dimensions['B'].width = 40  # 指標名
+    ws.column_dimensions['C'].width = 12  # 年度
+    ws.column_dimensions['D'].width = 14  # 目標数値
+    ws.column_dimensions['E'].width = 14  # 実績数値
+    ws.column_dimensions['F'].width = 8   # 単位
     ws.freeze_panes = 'A2'
 
     debug_log(f"[HumanCapital] シート '{sheet_name}' 作成完了")
