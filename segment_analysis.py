@@ -1227,6 +1227,23 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                 goukei_col += 1
             max_col += 1
             debug_log(f"[PPM Analysis] Inserted '報告セグメント合計' column at col {hokoku_col}")
+        elif goukei_col is not None and goukei_col > 3:
+            # igai_col はないが goukei_col が存在する場合（例: その他事業が個別セグメントに含まれるケース）
+            # goukei_col の直前に「報告セグメント合計」を挿入する
+            _sum_start_letter = get_column_letter(3)
+            _sum_end_letter   = get_column_letter(goukei_col - 1)
+            analysis_ws.insert_cols(goukei_col)
+            analysis_ws.cell(1, goukei_col).value = "報告セグメント合計"
+            for _ri in range(2, analysis_ws.max_row + 1):
+                if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
+                       for c in range(3, goukei_col)):
+                    analysis_ws.cell(_ri, goukei_col).value = (
+                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
+                    )
+            hokoku_col  = goukei_col
+            goukei_col += 1
+            max_col    += 1
+            debug_log(f"[PPM Analysis] Inserted '報告セグメント合計' before goukei_col at col {hokoku_col}")
         else:
             hokoku_col = max_col
 
@@ -1874,6 +1891,23 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 goukei_col += 1
             max_col += 1
             debug_log(f"[PPM IFRS] Inserted '報告セグメント合計' column at col {hokoku_col}")
+        elif goukei_col is not None and goukei_col > 3:
+            # igai_col はないが goukei_col が存在する場合（例: その他事業が個別セグメントに含まれるケース）
+            # goukei_col の直前に「報告セグメント合計」を挿入する
+            _sum_start_letter = get_column_letter(3)
+            _sum_end_letter   = get_column_letter(goukei_col - 1)
+            analysis_ws.insert_cols(goukei_col)
+            analysis_ws.cell(1, goukei_col).value = "報告セグメント合計"
+            for _ri in range(2, analysis_ws.max_row + 1):
+                if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
+                       for c in range(3, goukei_col)):
+                    analysis_ws.cell(_ri, goukei_col).value = (
+                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
+                    )
+            hokoku_col  = goukei_col
+            goukei_col += 1
+            max_col    += 1
+            debug_log(f"[PPM IFRS] Inserted '報告セグメント合計' before goukei_col at col {hokoku_col}")
         else:
             hokoku_col = max_col
 
