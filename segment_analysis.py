@@ -1215,12 +1215,14 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     # col_to_dim / _get_val_for_filing（dims フィルタ付き読み取り）
     # -----------------------------------------------------------------------
-    col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
-        _build_col_info(analysis_ws, max_col)
-    # _build_col_info は '報告セグメント合計' ヘッダーが存在しない場合 None を返すため、
-    # 旧来のフォールバック（最終列を hokoku_col とする）を適用する
-    if hokoku_col is None:
-        hokoku_col = max_col
+    # hokoku_col / igai_col / goukei_col は 3b で確定済みのため _build_col_info で
+    # 上書きしない。col_to_dim と is_synthesized フラグだけを構築する。
+    col_to_dim = {c: str(analysis_ws.cell(1, c).value)
+                  for c in range(3, max_col + 1)
+                  if analysis_ws.cell(1, c).value is not None}
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
+    goukei_is_synthesized = (goukei_col is not None and
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
     _get_val_for_filing = _make_get_val_for_filing(
         analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
         hokoku_is_synthesized, goukei_is_synthesized)
@@ -1823,10 +1825,14 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # col_to_dim / _get_val_for_filing（dims フィルタ付き読み取り）
     # -----------------------------------------------------------------------
-    col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
-        _build_col_info(analysis_ws, max_col)
-    if hokoku_col is None:
-        hokoku_col = max_col
+    # hokoku_col / igai_col / goukei_col は 3b で確定済みのため _build_col_info で
+    # 上書きしない。col_to_dim と is_synthesized フラグだけを構築する。
+    col_to_dim = {c: str(analysis_ws.cell(1, c).value)
+                  for c in range(3, max_col + 1)
+                  if analysis_ws.cell(1, c).value is not None}
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
+    goukei_is_synthesized = (goukei_col is not None and
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
     _get_val_for_filing = _make_get_val_for_filing(
         analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
         hokoku_is_synthesized, goukei_is_synthesized)
