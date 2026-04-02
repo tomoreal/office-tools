@@ -1216,6 +1216,10 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
         _build_col_info(analysis_ws, max_col)
+    # _build_col_info は '報告セグメント合計' ヘッダーが存在しない場合 None を返すため、
+    # 旧来のフォールバック（最終列を hokoku_col とする）を適用する
+    if hokoku_col is None:
+        hokoku_col = max_col
     _get_val_for_filing = _make_get_val_for_filing(
         analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
         hokoku_is_synthesized, goukei_is_synthesized)
@@ -1810,6 +1814,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
         _build_col_info(analysis_ws, max_col)
+    if hokoku_col is None:
+        hokoku_col = max_col
     _get_val_for_filing = _make_get_val_for_filing(
         analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
         hokoku_is_synthesized, goukei_is_synthesized)
