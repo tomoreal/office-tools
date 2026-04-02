@@ -1664,7 +1664,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # -----------------------------------------------------------------------
     # 13. バブルチャート作成ヘルパー
     # -----------------------------------------------------------------------
-    def _make_chart(title_str):
+    def _make_chart(title_str, bubble_scale=None):
         chart = BubbleChart()
         chart.style = 2
         chart.height, chart.width = 15, 15
@@ -1680,7 +1680,23 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         chart.y_axis.scaling.min = common_y_min
         chart.y_axis.scaling.max = common_y_max
         chart.legend = None
+        if bubble_scale is not None:
+            chart.bubbleScale = bubble_scale
         return chart
+
+    def _max_sales(filing_idx):
+        """指定期の個別セグメント売上最大値を返す（hokoku_col以上を除く）"""
+        fp = valid_pairs[filing_idx]
+        cur_p = fp['current']
+        cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
+        max_val = 0
+        for c in _valid_cols(filing_idx):
+            if hokoku_col is not None and c >= hokoku_col:
+                continue
+            val = _get_val_for_filing(cur_src, c, fp, True)
+            if val is not None and val > max_val:
+                max_val = val
+        return max_val if max_val > 0 else None
 
     def _add_series(chart, ws, sec_start, sec_max_col):
         xv = Reference(ws, min_col=COL_DATA, min_row=sec_start + 1, max_col=sec_max_col, max_row=sec_start + 1)
@@ -1691,20 +1707,36 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # 最新期セクション: margin_end_row の直下に1行空けてから開始
     lat_sec_start = margin_end_row + 2
     lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
-    chart_latest = _make_chart(_fmt_year_str(valid_pairs[LATEST_IDX]['current']))
-    _add_series(chart_latest, ppm_ws, lat_start, lat_chart_max_col)
 
     # -----------------------------------------------------------------------
     # 14. 5年前データセクション（N >= 6 の場合）
     # -----------------------------------------------------------------------
     chart_5y = None
+    five_start = five_end = five_chart_max_col = None
     if N > FIVE_AGO_OFFSET:
         # 最新期セクション末尾から1行空けて5年前セクション開始
         five_sec_start = lat_end + 2
-        five_start, five_end, five_max_col, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
-        chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']))
-        _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
+        five_start, five_end, _, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
         debug_log("[PPM Analysis] Added 5-year comparison section")
+
+    # bubbleScale: 2セクションある場合、売上最大値の比からスケールを計算
+    lat_bubble_scale = None
+    five_bubble_scale = None
+    if N > FIVE_AGO_OFFSET:
+        sales_max_latest = _max_sales(LATEST_IDX)
+        sales_max_5y     = _max_sales(FIVE_AGO_IDX)
+        if sales_max_latest and sales_max_5y:
+            if sales_max_latest > sales_max_5y:
+                five_bubble_scale = round(sales_max_5y / sales_max_latest * 100)
+            elif sales_max_5y > sales_max_latest:
+                lat_bubble_scale = round(sales_max_latest / sales_max_5y * 100)
+
+    chart_latest = _make_chart(_fmt_year_str(valid_pairs[LATEST_IDX]['current']), lat_bubble_scale)
+    _add_series(chart_latest, ppm_ws, lat_start, lat_chart_max_col)
+
+    if N > FIVE_AGO_OFFSET:
+        chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']), five_bubble_scale)
+        _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
 
     # -----------------------------------------------------------------------
     # 15. チャートをシートに配置
@@ -2250,7 +2282,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # 13. バブルチャート作成ヘルパー
     # -----------------------------------------------------------------------
-    def _make_chart(title_str):
+    def _make_chart(title_str, bubble_scale=None):
         chart = BubbleChart()
         chart.style = 2
         chart.height, chart.width = 15, 15
@@ -2266,7 +2298,23 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         chart.y_axis.scaling.min = common_y_min
         chart.y_axis.scaling.max = common_y_max
         chart.legend = None
+        if bubble_scale is not None:
+            chart.bubbleScale = bubble_scale
         return chart
+
+    def _max_sales(filing_idx):
+        """指定期の個別セグメント売上最大値を返す（hokoku_col以上を除く）"""
+        fp = valid_pairs[filing_idx]
+        cur_p = fp['current']
+        cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
+        max_val = 0
+        for c in _valid_cols(filing_idx):
+            if hokoku_col is not None and c >= hokoku_col:
+                continue
+            val = _get_val_for_filing(cur_src, c, fp, True)
+            if val is not None and val > max_val:
+                max_val = val
+        return max_val if max_val > 0 else None
 
     def _add_series(chart, ws, sec_start, sec_max_col):
         xv = Reference(ws, min_col=COL_DATA, min_row=sec_start + 1, max_col=sec_max_col, max_row=sec_start + 1)
@@ -2277,20 +2325,36 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # 最新期セクション: margin_end_row の直下に1行空けてから開始
     lat_sec_start = margin_end_row + 2
     lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
-    chart_latest = _make_chart(_fmt_year_str(valid_pairs[LATEST_IDX]['current']))
-    _add_series(chart_latest, ppm_ws, lat_start, lat_chart_max_col)
 
     # -----------------------------------------------------------------------
     # 14. 5年前データセクション（N >= 6 の場合）
     # -----------------------------------------------------------------------
     chart_5y = None
+    five_start = five_end = five_chart_max_col = None
     if N > FIVE_AGO_OFFSET:
         # 最新期セクション末尾から1行空けて5年前セクション開始
         five_sec_start = lat_end + 2
-        five_start, five_end, five_max_col, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
-        chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']))
-        _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
+        five_start, five_end, _, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
         debug_log("[PPM IFRS] Added 5-year comparison section")
+
+    # bubbleScale: 2セクションある場合、売上最大値の比からスケールを計算
+    lat_bubble_scale = None
+    five_bubble_scale = None
+    if N > FIVE_AGO_OFFSET:
+        sales_max_latest = _max_sales(LATEST_IDX)
+        sales_max_5y     = _max_sales(FIVE_AGO_IDX)
+        if sales_max_latest and sales_max_5y:
+            if sales_max_latest > sales_max_5y:
+                five_bubble_scale = round(sales_max_5y / sales_max_latest * 100)
+            elif sales_max_5y > sales_max_latest:
+                lat_bubble_scale = round(sales_max_latest / sales_max_5y * 100)
+
+    chart_latest = _make_chart(_fmt_year_str(valid_pairs[LATEST_IDX]['current']), lat_bubble_scale)
+    _add_series(chart_latest, ppm_ws, lat_start, lat_chart_max_col)
+
+    if N > FIVE_AGO_OFFSET:
+        chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']), five_bubble_scale)
+        _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
 
     # -----------------------------------------------------------------------
     # 15. チャートをシートに配置
