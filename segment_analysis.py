@@ -793,7 +793,8 @@ def _make_get_val_for_filing(analysis_ws, col_to_dim,
             return total if has_val else None
 
         if c == goukei_col and goukei_is_synthesized:
-            v_h = _get_val_for_filing(src_row, hokoku_col, fp, is_current) if hokoku_col else None
+            v_h = (_get_val_for_filing(src_row, hokoku_col, fp, is_current)
+                   if (hokoku_col and hokoku_col != goukei_col) else None)
             v_i = None
             if igai_col:
                 igai_dim = col_to_dim.get(igai_col, '')
