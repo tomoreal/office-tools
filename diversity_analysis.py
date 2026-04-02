@@ -399,13 +399,65 @@ def add_human_capital_sheet(workbook, global_element_period_values, debug_log=No
         debug_log("[HumanCapital] データなし、シート作成をスキップ")
         return
 
-    # dim_label 単位でグループ化し、period を昇順に
-    rows_dict = {}  # {dim_label: sorted [period, ...]}
-    for (dim_label, period) in all_keys:
-        rows_dict.setdefault(dim_label, set()).add(period)
+    # -------------------------------------------------------------------------
+    # 指標名ベースに再編成
+    # (dim_label, period) → metric_name を解決し、
+    # {metric_name: {period: {target, unit, perf}}} に変換する
+    # -------------------------------------------------------------------------
 
-    sorted_dims = sorted(rows_dict.keys(), key=_row_sort_key)
-    debug_log(f"[HumanCapital] {len(sorted_dims)} 指標 × 複数年度")
+    # 全期間を収集し最新期間を特定
+    all_periods = {period for (_, period) in all_keys}
+    latest_period = max(all_periods) if all_periods else None
+
+    # 最新期間での dim_label → metric_name マッピングを取得（登場順を確定するため）
+    # dim_label の Row番号順に並べて、metric_name の登場順インデックスを決定
+    latest_dim_to_metric = {}  # {dim_label: metric_name}
+    for (dim_label, period), val in metrics_map.items():
+        if period == latest_period:
+            name = val.split('\n')[0].strip()
+            if name:
+                latest_dim_to_metric[dim_label] = name
+
+    # 最新期間での登場順（Row番号順）
+    latest_metric_order = {}  # {metric_name: index}
+    for dim_label in sorted(latest_dim_to_metric.keys(), key=_row_sort_key):
+        name = latest_dim_to_metric[dim_label]
+        if name not in latest_metric_order:
+            latest_metric_order[name] = len(latest_metric_order)
+
+    # (dim_label, period) ごとに指標名を解決してデータを集約
+    # {metric_name: {period: {'target': ..., 'unit': ..., 'perf': ...}}}
+    metric_data = {}  # type: dict
+
+    all_dim_labels = {dim_label for (dim_label, _) in all_keys}
+    for dim_label in all_dim_labels:
+        periods_for_dim = {period for (dl, period) in all_keys if dl == dim_label}
+
+        # fallback: いずれかの期間に存在する指標名（最古優先）
+        fallback_name = dim_label
+        for period in sorted(periods_for_dim):
+            n = metrics_map.get((dim_label, period), '').split('\n')[0].strip()
+            if n:
+                fallback_name = n
+                break
+
+        for period in periods_for_dim:
+            metric_name = metrics_map.get((dim_label, period), '').split('\n')[0].strip() or fallback_name
+            if metric_name not in metric_data:
+                metric_data[metric_name] = {}
+            if period not in metric_data[metric_name]:
+                metric_data[metric_name][period] = {
+                    'target': targets_map.get((dim_label, period), ''),
+                    'unit':   unit_map.get((dim_label, period), ''),
+                    'perf':   performance_map.get((dim_label, period), ''),
+                }
+
+    # 指標名を最新年度の登場順でソート（最新年度にない指標は末尾）
+    def metric_sort_key(name):
+        return latest_metric_order.get(name, len(latest_metric_order))
+
+    sorted_metrics = sorted(metric_data.keys(), key=metric_sort_key)
+    debug_log(f"[HumanCapital] {len(sorted_metrics)} 指標 × 複数年度")
 
     # -------------------------------------------------------------------------
     # シート作成
@@ -433,22 +485,15 @@ def add_human_capital_sheet(workbook, global_element_period_values, debug_log=No
 
     current_row = 2
 
-    for dim_label in sorted_dims:
-        sorted_periods = sorted(rows_dict[dim_label])
-
-        # 最初の期間から指標名を取得（他の期間にない場合の fallback）
-        metric_name = None
-        for period in sorted_periods:
-            metric_name = metrics_map.get((dim_label, period), '').split('\n')[0].strip()
-            if metric_name:
-                break
-        if not metric_name:
-            metric_name = dim_label  # フォールバック
+    for metric_name in sorted_metrics:
+        period_data = metric_data[metric_name]
+        sorted_periods = sorted(period_data.keys())
 
         for period in sorted_periods:
-            target_val  = targets_map.get((dim_label, period), '')
-            unit_val    = unit_map.get((dim_label, period), '')
-            perf_val    = performance_map.get((dim_label, period), '')
+            entry      = period_data[period]
+            target_val = entry['target']
+            unit_val   = entry['unit']
+            perf_val   = entry['perf']
 
             # 数値に変換試行
             def to_num(s):
