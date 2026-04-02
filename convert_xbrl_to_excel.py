@@ -1543,23 +1543,28 @@ def create_hierarchy(parent_child_arcs):
     ordered_items = []
     seen = set()
     
-    def traverse(node_name, path, depth, pref_label=None):
-        # Use a tuple of (node_name, pref_label) to allow the same element 
-        # to appear multiple times if it has different preferred labels 
+    def traverse(node_name, path, depth, pref_label=None, ancestors=None):
+        # Use a tuple of (node_name, pref_label) to allow the same element
+        # to appear multiple times if it has different preferred labels
         # (common in Cash Flow for beginning/ending balance)
-        node_id = (node_name, pref_label, depth)
+        node_id = (node_name, pref_label)
         if node_id in seen: return
         seen.add(node_id)
-        
+
         full_path = path + "::" + node_name
         if pref_label:
             full_path += f"|{pref_label}"
-            
+
         ordered_items.append((node_name, full_path, depth, pref_label))
-        
+
         if node_name in adj:
+            if ancestors is None:
+                ancestors = set()
+            if node_name in ancestors:
+                return  # 循環参照を検出したらスキップ
+            next_ancestors = ancestors | {node_name}
             for arc in adj[node_name]:
-                traverse(arc['child'], full_path, depth + 1, arc.get('preferredLabel'))
+                traverse(arc['child'], full_path, depth + 1, arc.get('preferredLabel'), next_ancestors)
                 
     for root in top_roots:
         traverse(root, "", 0)
