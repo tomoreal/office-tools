@@ -262,32 +262,58 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
                 unique_dims.append("報告セグメント合計")
                 synthetic_total_dim = "報告セグメント合計"
 
-    # 日本基準: 「共通」ラベルのdimが存在する場合、列を再構成して「報告セグメント合計」を挿入
-    # 「共通」は報告セグメントではなく調整項目に相当するため、報告セグメントのみの合計列を追加し
-    # 「共通」は合計列の右（報告セグメント及びその他の合計の直前）に移動する。
-    # 歴史的なセグメント変更があっても正しく合計が計算されるよう、
-    # 全報告セグメントdims（共通・集計・調整を除く）をまとめて合計列の左側に配置する。
+    # 日本基準: 「共通」ラベルのdimが存在する場合、列を再構成
+    # 列順: [全報告セグメント, 報告セグメント合計, 共通+その他個別, 報告セグメント及びその他の合計, 全社・消去等]
+    # 「報告セグメント及びその他の合計」がXBRLになければ合成列として追加する。
+    # PPMグラフ対象は「報告セグメント合計」列以左のみ（_ADJUSTMENT_KEYWORDS の「合計」フィルタで除外）。
+    synthetic_goukei_dim = None        # 合成「報告セグメント及びその他の合計」dim名
+    goukei_source_dims   = []          # synthetic_goukei_dim の合計元dims
     if synthetic_total_dim is None:
         _kyotsu_exists = any(str(d) == '共通' for d in unique_dims)
         if _kyotsu_exists:
-            # 非報告セグメントを識別するキーワード
-            _NON_REPORTING_EXACT = {'共通'}
-            _NON_REPORTING_KW = ['報告セグメント', '全社', '消去', '調整項目', '全体', '連結', '単体']
-            # 全報告セグメントdims（共通・集計・調整を除く全セグメント）
+            # 集計・調整系を識別するキーワード（これに該当しない個別dimは報告 or 非報告個別）
+            _AGG_KW = ['報告セグメント', '全社', '消去', '調整項目', '全体', '連結', '単体']
+            # 「その他」系は報告セグメントではなく共通と同グループに置く
+            _OTHER_KW = ['その他']
+            # 純粋な報告セグメント（集計・調整・共通・その他を除く個別セグメント）
             _report_segs = [
                 d for d in unique_dims
-                if str(d) not in _NON_REPORTING_EXACT
-                and not any(kw in str(d) for kw in _NON_REPORTING_KW)
+                if str(d) != '共通'
+                and not any(kw in str(d) for kw in _AGG_KW)
+                and not any(kw in str(d) for kw in _OTHER_KW)
             ]
-            # 集計・調整系dims（共通は別途挿入するので除外）
+            # 「その他」等の非報告個別セグメント（共通を除く）
+            _other_individual = [
+                d for d in unique_dims
+                if str(d) != '共通'
+                and not any(kw in str(d) for kw in _AGG_KW)
+                and any(kw in str(d) for kw in _OTHER_KW)
+            ]
+            # 集計・調整系（「報告セグメント及びその他の合計」含む）
             _agg_dims = [
                 d for d in unique_dims
-                if str(d) not in _NON_REPORTING_EXACT
-                and any(kw in str(d) for kw in _NON_REPORTING_KW)
+                if str(d) != '共通'
+                and any(kw in str(d) for kw in _AGG_KW)
             ]
+            # 「報告セグメント及びその他の合計」がXBRLに存在するか確認
+            _goukei_existing = next(
+                (d for d in _agg_dims if '報告セグメント及びその他' in str(d)), None
+            )
+            _agg_others = [d for d in _agg_dims if d != _goukei_existing]
+
             if _report_segs:
-                # 新しい列順: [全報告セグメント, 報告セグメント合計, 共通, 集計・調整列...]
-                unique_dims = _report_segs + ['報告セグメント合計', '共通'] + _agg_dims
+                # 非報告個別dims（共通 + その他系）
+                _non_report_indiv = ['共通'] + _other_individual
+                # 「報告セグメント及びその他の合計」は常に合成値で計算する
+                # （XBRLの既存値は共通を含まないケースがあるため上書き）
+                if _goukei_existing:
+                    # XBRLの既存列を除外し、合成列として作り直す
+                    _agg_others = [d for d in _agg_others if d != _goukei_existing]
+                # 列順: [報告セグメント群, 報告セグメント合計, 共通+その他, 報告セグメント及びその他の合計, 残集計]
+                unique_dims = (_report_segs + ['報告セグメント合計']
+                               + _non_report_indiv + ['報告セグメント及びその他の合計'] + _agg_others)
+                synthetic_goukei_dim = '報告セグメント及びその他の合計'
+                goukei_source_dims   = _report_segs + _non_report_indiv
                 reporting_dims_for_total = _report_segs
                 synthetic_total_dim = "報告セグメント合計"
 
@@ -304,6 +330,12 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
         synthetic_sum_first_col = _gcl(3)                  # C
         synthetic_sum_last_col  = _gcl(3 + tot_pos - 1)   # tot_pos 列分の最後
         del _gcl
+
+    # 合成「報告セグメント及びその他の合計」列の列インデックスを事前計算
+    synthetic_goukei_col_idx = None  # シート列番号（1-based）
+    if synthetic_goukei_dim:
+        _gk_pos = unique_dims.index(synthetic_goukei_dim)  # 0-based in unique_dims
+        synthetic_goukei_col_idx = 3 + _gk_pos             # C=3 が unique_dims[0]
 
     # All available years for this role (ascending)
     unique_periods = sorted(list(set(c[2] if len(c) == 3 else c[1] for c in role_columns)))
@@ -427,11 +459,12 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             period_data = label_to_data[d_label].get(period, {})
 
             for dim in unique_dims:
-                if dim == synthetic_total_dim:
-                    # 報告セグメント合計: 各報告セグメントの合計を計算
+                if dim == synthetic_total_dim or dim == synthetic_goukei_dim:
+                    # 合成合計列: 対象dims の合計を計算
+                    _src_dims = reporting_dims_for_total if dim == synthetic_total_dim else goukei_source_dims
                     total_val = 0.0
                     has_any_val = False
-                    for rd in reporting_dims_for_total:
+                    for rd in _src_dims:
                         rv = period_data.get(rd, "")
                         if rv:
                             rv_clean = unicodedata.normalize('NFKC', str(rv)).replace(',', '').strip()
@@ -466,13 +499,28 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
                 continue
             seen_rows_analysis.add(row_key)
 
+            from openpyxl.utils import get_column_letter as _gcl2
+            next_row = aws.max_row + 1
+
             # 報告セグメント合計列をSUM式で上書き
             if synthetic_total_dim and synthetic_sum_first_col and synthetic_sum_last_col:
-                next_row = aws.max_row + 1
                 row_data_analysis[synthetic_total_col_idx - 1] = (
                     f"=SUM({synthetic_sum_first_col}{next_row}:{synthetic_sum_last_col}{next_row})"
                 )
 
+            # 報告セグメント及びその他の合計列をSUM式で上書き（合成列の場合）
+            if synthetic_goukei_dim and synthetic_goukei_col_idx:
+                # goukei_source_dims のシート列を特定してSUM式を生成
+                _gk_cols = [
+                    _gcl2(3 + unique_dims.index(d))
+                    for d in goukei_source_dims
+                    if d in unique_dims
+                ]
+                if _gk_cols:
+                    _gk_formula = "=SUM(" + ",".join(f"{cl}{next_row}" for cl in _gk_cols) + ")"
+                    row_data_analysis[synthetic_goukei_col_idx - 1] = _gk_formula
+
+            del _gcl2
             aws.append(row_data_analysis)
 
         # キャッシュ・フロー計算書の場合、特定の要素で停止
@@ -822,16 +870,33 @@ def _make_get_val_for_filing(analysis_ws, col_to_dim,
             return total if has_val else None
 
         if c == goukei_col and goukei_is_synthesized:
+            # 報告セグメント合計（hokoku）＋ hokoku〜goukei 間の個別列（共通・その他）
+            # dims フィルタを適用して合算する
             v_h = (_get_val_for_filing(src_row, hokoku_col, fp, is_current)
                    if (hokoku_col and hokoku_col != goukei_col) else None)
+            # hokoku_col と goukei_col の間にある非集計個別列を合算
+            v_between = 0.0
+            has_between = False
+            if hokoku_col and goukei_col:
+                for _bc in range(hokoku_col + 1, goukei_col):
+                    if _bc == igai_col:
+                        continue
+                    _bdim = col_to_dim.get(_bc, '')
+                    if allowed and _bdim not in allowed:
+                        continue
+                    _bv = _read_numeric(analysis_ws, src_row, _bc)
+                    if _bv is not None:
+                        v_between += _bv
+                        has_between = True
+            # igai_col も加算（従来通り）
             v_i = None
             if igai_col:
                 igai_dim = col_to_dim.get(igai_col, '')
                 if not allowed or igai_dim in allowed:
                     v_i = _read_numeric(analysis_ws, src_row, igai_col)
-            if v_h is None and v_i is None:
+            if v_h is None and not has_between and v_i is None:
                 return None
-            return (v_h or 0.0) + (v_i or 0.0)
+            return (v_h or 0.0) + v_between + (v_i or 0.0)
 
         dim = col_to_dim.get(c, '')
         if allowed and dim not in allowed:
@@ -1501,8 +1566,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         mi = filing_idx + 1   # profit_margins / growth_rates のインデックス（0 はベース年）
         result = []
         for c in range(3, chart_end_col + 1):
-            # 調整項目等の非セグメント列は hokoku_col 以外では除外
-            if c != hokoku_col:
+            # 調整項目等の非セグメント列は hokoku_col / goukei_col 以外では除外
+            if c not in (hokoku_col, goukei_col):
                 dim_name = col_to_dim.get(c, '')
                 if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
                     continue
@@ -1544,7 +1609,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             ppm_ws.cell(sec_start + 2, COL_DATA + k).value = (
                 f"={get_column_letter(ci + SEG_OFFSET)}{growth_ppm_row}")
 
-        # 売上行 (sec_start+3): C="売上", D+=値参照（hokoku_col は *1% でバブルサイズ調整）
+        # 売上行 (sec_start+3): C="売上", D+=値参照（hokoku_col は *1% でバブルサイズ調整、goukei_col は通常表示）
         ppm_ws.cell(sec_start + 3, COL_YEAR).value = target_sales_label or "売上"
         for k, ci in enumerate(vcols):
             cl = get_column_letter(ci + SEG_OFFSET)
@@ -2088,8 +2153,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         mi = filing_idx + 1
         result = []
         for c in range(3, chart_end_col + 1):
-            # 調整項目等の非セグメント列は hokoku_col 以外では除外
-            if c != hokoku_col:
+            # 調整項目等の非セグメント列は hokoku_col / goukei_col 以外では除外
+            if c not in (hokoku_col, goukei_col):
                 dim_name = col_to_dim.get(c, '')
                 if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
                     continue
@@ -2131,7 +2196,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             ppm_ws.cell(sec_start + 2, COL_DATA + k).value = (
                 f"={get_column_letter(ci + SEG_OFFSET)}{growth_ppm_row}")
 
-        # 売上行 (sec_start+3)
+        # 売上行 (sec_start+3): hokoku_col は *1% でバブルサイズ調整、goukei_col は通常表示
         ppm_ws.cell(sec_start + 3, COL_YEAR).value = target_sales_label or "売上収益"
         for k, ci in enumerate(vcols):
             cl = get_column_letter(ci + SEG_OFFSET)
