@@ -262,6 +262,18 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
                 unique_dims.append("報告セグメント合計")
                 synthetic_total_dim = "報告セグメント合計"
 
+    # 日本基準: 「共通」ラベルのdimが存在する場合、その直前に「報告セグメント合計」を挿入
+    # 「共通」は報告セグメントではなく調整項目に相当するため、報告セグメントのみの合計列を追加する
+    if synthetic_total_dim is None:
+        _kyotsu_idx = next(
+            (i for i, d in enumerate(unique_dims) if str(d) == '共通'),
+            None
+        )
+        if _kyotsu_idx is not None and _kyotsu_idx > 0:
+            reporting_dims_for_total = unique_dims[:_kyotsu_idx]
+            unique_dims.insert(_kyotsu_idx, "報告セグメント合計")
+            synthetic_total_dim = "報告セグメント合計"
+
     # 報告セグメント合計列のSUM式用: 列位置を事前計算
     # unique_dims 内の synthetic_total_dim の位置 → シート上の列番号 (A=1, B=2, C=3...)
     synthetic_total_col_idx = None   # シート列番号（1-based）
