@@ -210,7 +210,6 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         required_items = {
             '売上収益': sales_row,
             '当期利益（親会社帰属）': profit_row,
-            '親会社の所有者に帰属する持分': equity_row,
             '総資産額': total_assets_row,
             '親会社所有者帰属持分比率': equity_ratio_row,
             'ROE': roe_row
@@ -269,7 +268,16 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     add_reference_row_full(profit_row)
     if is_ifrs:
         # IFRS: 親会社の所有者に帰属する持分を追加
-        add_reference_row_full(equity_row)
+        if equity_row is not None:
+            add_reference_row_full(equity_row)
+        else:
+            # 持分が元データにない場合は、総資産額 × 親会社持分比率 で計算行を作成
+            row_data = ['　親会社の所有者に帰属する持分（計算値）', '']
+            for col in range(3, num_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                formula = f"='{source_sheet_name}'!{col_letter}{total_assets_row}*'{source_sheet_name}'!{col_letter}{equity_ratio_row}"
+                row_data.append(formula)
+            analysis_ws.append(row_data)
     else:
         # 日本基準: 純資産額を追加
         add_reference_row_full(net_assets_row)
