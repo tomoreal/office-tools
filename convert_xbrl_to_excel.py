@@ -1517,6 +1517,106 @@ def parse_ixbrl_facts(ixbrl_files, contexts, units):
     return facts
 
 
+def parse_standard_xbrl_facts(f, contexts, units):
+    """Parse facts from a standard XBRL instance (.xbrl file)."""
+    facts = []
+    if not f or not os.path.exists(f):
+        return facts
+    
+    t_start = time.time()
+    try:
+        from lxml import etree
+        tree = etree.parse(f)
+        root = tree.getroot()
+        
+        # All non-metadata elements in the root are potential facts
+        # Standard XBRL elements have contextRef and sometimes unitRef
+        elem_order_in_file = 0
+        for tag in root.iterchildren():
+            # Skip metadata/infrastructure tags
+            if '}' in tag.tag:
+                local_name = tag.tag.split('}')[-1]
+            else:
+                local_name = tag.tag
+            
+            if local_name in ('context', 'unit', 'schemaRef', 'footnoteLink'):
+                continue
+            
+            ctx_ref = tag.get('contextRef')
+            if not ctx_ref or ctx_ref not in contexts:
+                continue
+            
+            element_name = tag.tag
+            if '}' in element_name:
+                # Keep the prefix if possible or just use the local name with a synthetic prefix
+                # In this script, we usually use prefix_localname
+                # We need to find the prefix from the namespace map
+                prefix = None
+                ns_uri = tag.tag.split('}')[0][1:]
+                for p, uri in tag.nsmap.items():
+                    if uri == ns_uri:
+                        prefix = p
+                        break
+                if prefix:
+                    element_name = f"{prefix}_{local_name}"
+                else:
+                    element_name = local_name
+            
+            if ':' in element_name:
+                element_name = element_name.replace(':', '_')
+                
+            value = (tag.text or "").strip()
+            if not value and len(tag) > 0:
+                # Handle cases where value might be in a child (rare in standard facts but possible)
+                continue
+            
+            unit_ref = tag.get('unitRef')
+            scale = tag.get('decimals', '0') # Standard XBRL often uses decimals instead of scale
+            # But Hitachi's .xbrl might use scale if it's an extension?
+            # Actually standard XBRL uses decimals or precision.
+            # However, for simplicity and compatibility with the rest of the script:
+            scale = tag.get('scale', '0') 
+            sign = tag.get('sign', '')
+            
+            is_jpy = units.get(unit_ref, False) if unit_ref else False
+            clean_val = value.replace(',', '').replace('△', '-').replace('▲', '-').replace('(', '-').replace(')', '').strip()
+            
+            valStr = ""
+            try:
+                if clean_val:
+                    amt = float(clean_val)
+                    if sign == '-': amt *= -1
+                    # Note: Standard XBRL 'decimals' works differently than 'scale', 
+                    # but many Japanese filings use 'scale' attribute even in .xbrl for consistency.
+                    amt *= (10 ** int(scale or 0))
+                    if is_jpy: amt /= 1000000.0
+                    valStr = str(int(amt)) if amt.is_integer() else str(amt)
+                else:
+                    valStr = ""
+            except Exception:
+                valStr = value
+                
+            f_data = {
+                'element': element_name,
+                'context': ctx_ref,
+                'period': contexts[ctx_ref][0],
+                'dimension': contexts[ctx_ref][1],
+                'value': valStr,
+                'source_file': f,
+                'elem_order': elem_order_in_file
+            }
+            if contexts[ctx_ref][2]: # start_date
+                f_data['start_date'] = contexts[ctx_ref][2]
+            facts.append(f_data)
+            elem_order_in_file += 1
+            
+        debug_log(f"COMPLETED: Parsed {len(facts)} facts from standard XBRL {os.path.basename(f)} in {time.time() - t_start:.2f}s")
+    except Exception as e:
+        debug_log(f"ERROR: Error parsing standard XBRL {f}: {e}")
+        
+    return facts
+
+
 
 
 def create_hierarchy(parent_child_arcs):
@@ -1846,9 +1946,24 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     ix_files.append(os.path.join(public_doc_dir, f))
             ix_files = sorted(ix_files)
 
-            facts = parse_ixbrl_facts(ix_files, contexts, units) # Corrected: pass units, not labels
+            facts = parse_ixbrl_facts(ix_files, contexts, units) 
+            # NEW: Also parse standard XBRL facts for non-consolidated data often missing from iXBRL
+            std_facts = parse_standard_xbrl_facts(xbrl_files['xbrl'], contexts, units)
+            
+            # Merge facts, avoiding duplicates (favor Inline XBRL if both exist for same element/context)
+            seen_facts = {}
+            for f in facts:
+                key = (f['element'], f['context'])
+                seen_facts[key] = f
+            
+            for f in std_facts:
+                key = (f['element'], f['context'])
+                if key not in seen_facts:
+                    facts.append(f)
+                    seen_facts[key] = f
+
             thread_facts.extend(facts)
-            debug_log(f"Worker for {os.path.basename(zip_path)} found {len(facts)} facts in {len(ix_files)} files")
+            debug_log(f"Worker for {os.path.basename(zip_path)} found {len(facts)} total facts ({len(std_facts)} from .xbrl)")
             
             for f in facts:
                 el = f['element']
@@ -2231,6 +2346,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     finally:
         shutil.rmtree(temp_base)
 
+    # Pre-collect elements with facts to identify non-abstract items (abstract=false)
+    # This is used to allow relevant extension tags in major statements.
+    elements_with_facts = {f['element'] for f in all_facts}
+
     # --- Fallback for old EDINET format (e.g. 2016-2018) ---
     # build synthetic roles from the element appearance order in the known ixbrl files.
     EDINET_DOC_ROLE_MAP = {
@@ -2262,6 +2381,8 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
         # Debug: Show some of the presentation orders
         debug_log(f"[Presentation-Order-Map] Built map with {len(elem_presentation_order)} elements")
+        elements_with_facts = set(f['element'] for f in all_facts if f['value'].strip() != "")
+            
         sample_elements = list(elem_presentation_order.items())[:10]
         for el, order in sample_elements:
             debug_log(f"  {el}: {order}")
@@ -2391,9 +2512,15 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                              # Backup check for prefix without _cor if it's very standard
                              is_standard_ns = True
 
-                        # Avoid extension namespaces (e.g. jpcrp030000-asr_E00436-000)
-                        if 'E' in prefix and '-' in prefix:
-                             is_standard_ns = False
+                        # Extension namespaces (e.g. jpcrp030000-asr_E01737-000)
+                        # [主表判定] Allow extension elements in main statements IF they have actual 
+                        # fact values (non-abstract / abstract=false).
+                        # Also allow specifically for Hitachi's TradeReceivablesAndContractAssets
+                        if ('E' in prefix and '-' in prefix) or 'TradeReceivablesAndContractAssets' in elem:
+                            if elem in elements_with_facts:
+                                is_standard_ns = True # Explicitly allow if it has values
+                            else:
+                                is_standard_ns = False
 
                         # 2. Detail/Note Blacklist
                         el_lower = elem.lower()
@@ -3378,6 +3505,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             
         sorted_role_cols = sorted(list(role_columns), key=sort_col)
         
+        debug_log(f"  [DEBUG] Role columns: {sorted_role_cols}")
+        if sheet_name == '貸借対照表':
+             # Detailed trace for single BS
+             debug_log(f"  [DEBUG-Trace-BS] is_non_consolidated={is_non_consolidated}")
+        
         # '全体', '連結', '全社', '単体', '個別' などの基礎区分のみの場合はセグメント無し（単一階層ヘッダー）とする
         has_segments = any(c[1] not in ('全体', '連結', '全社', '単体', '個別') for c in sorted_role_cols)
         
@@ -3502,10 +3634,17 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             elif base_name in common_dict:
                 label = common_dict[base_name]
             else:
+                # 4. labels_map from XBRL (Local or Standard)
                 label = labels_map.get(el)
-                if label: label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
+                if label: 
+                    label = label.replace(' [メンバー]', '').replace(' [要素]', '').replace(' [区分]', '').strip()
+                else:
+                    # 5. Fallback: IFRS Mapping
+                    label = IFRS_LABEL_MAPPING.get(el)
+            
+            # 6. Final Fallback: CamelCase conversion
             if not label:
-                    label = convert_camel_case_to_title(base_name)
+                label = convert_camel_case_to_title(base_name)
             
             # Append suffix for Cash Flow balances
             is_cf_sheet = 'キャッシュ・フロー' in sheet_name
@@ -3607,7 +3746,25 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                 
                 # Only use fallback if this isn't a CF start row (to avoid pulling ending balance)
                 if val == "" and not (is_cf_sheet and is_start_row):
+                    # Try exact match first (standard, dimension, period)
                     val = all_years_data[role][full_path].get(col_key, "")
+                    
+                    if "TradeReceivablesAndContractAssets" in el:
+                        debug_log(f"  [DEBUG-Trace-BS-Deep] el={el}, col_key={col_key}, val='{val}'")
+                        debug_log(f"  [DEBUG-Trace-BS-Deep] all_keys={list(all_years_data[role][full_path].keys())}")
+                        
+                    # FALLBACK: If current standard is JP_ALL and exact match failed, 
+                    # try matching by (None, dimension, period) or any other standard for extension tags
+                    # Hitachi case: TradeReceivablesAndContractAssets might be tagged as IFRS but used in JP sheet
+                    if val == "" and current_standard == 'JP_ALL':
+                        for s in [None, 'JP', 'IFRS', 'US', 'JMIS', 'Generic']:
+                            if s == col_key[0]: continue
+                            test_key = (s, col_key[1], col_key[2])
+                            v = all_years_data[role][full_path].get(test_key, "")
+                            if v != "":
+                                val = v
+                                break
+                    
                     if val == "" and (is_segment and 'AnalysisOfOperatingResults' in base_name):
                         # Fallback for analysis roles: if exact standard fails, try others for this dim/period
                         # because these roles are often sparsely populated across standards in some XBRL sets
@@ -3641,9 +3798,9 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         except Exception:
                             pass
                 row_data.append(val)
-                if val != "":
+                if val != "" :
                     has_data = True
-
+                
             # Display heading elements even if they have no data (for hierarchy structure)
             # Display data elements only if they have at least one value
             if has_data or is_heading:
