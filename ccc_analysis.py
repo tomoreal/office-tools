@@ -76,7 +76,7 @@ def add_ccc_analysis_sheets(workbook, debug_log=None):
 
     # 3. 棚卸資産、売上債権、仕入債務の抽出 (BS)
     inventory_kws = ['MerchandiseAndFinishedGoods', 'WorkInProcess', 'RawMaterialsAndSupplies', 'Inventories', 'Goods', 'SemiFinishedGoods', 'Merchandise', 'FinishedGoods']
-    receivable_kws = ['NotesAndAccountsReceivableTrade', 'AccountsReceivableTrade', 'NotesReceivableTrade', 'ElectronicallyRecordedMonetaryClaimsOperating']
+    receivable_kws = ['NotesAndAccountsReceivableTrade', 'AccountsReceivableTrade', 'NotesReceivableTrade', 'ElectronicallyRecordedMonetaryClaimsOperating', 'ContractAssets']
     payable_kws = ['NotesAndAccountsPayableTrade', 'AccountsPayableTrade', 'NotesPayableTrade', 'ElectronicallyRecordedObligationsOperating']
 
     def get_category(eng_name):
