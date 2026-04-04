@@ -68,9 +68,13 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
     for row in range(2, pl_ws.max_row + 1):
         b_val = pl_ws.cell(row, 2).value
         # PLのB列は英語名
-        if b_val and any(kw in str(b_val) for kw in sales_keywords):
-            sales_row_num = row
-            break
+        if b_val:
+            s_val = str(b_val)
+            if 'Abstract' in s_val or 'Heading' in s_val or 'LineItems' in s_val:
+                continue
+            if any(kw in s_val for kw in sales_keywords):
+                sales_row_num = row
+                break
             
     if not sales_row_num:
         debug_log(f"CCC analysis skipped: NetSales not found in {pl_sheet_name}")
@@ -84,7 +88,7 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
             pl_date_to_col[str(dt).strip()] = openpyxl.utils.get_column_letter(col)
 
     # 売上高行を追加 (対応する年度の列を参照)
-    row_data = ["売上高", f"='{pl_sheet_name}'!A{sales_row_num}", f"='{pl_sheet_name}'!B{sales_row_num}"]
+    row_data = ["売上高", f"=TRIM('{pl_sheet_name}'!A{sales_row_num})", f"='{pl_sheet_name}'!B{sales_row_num}"]
     for col in range(3, max_col + 1):
         bs_dt = bs_ws.cell(1, col).value
         bs_date_key = str(bs_dt).strip() if bs_dt is not None else None
@@ -149,7 +153,7 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
             continue
         start_r = ccc_ws.max_row + 1
         for bs_row in rows:
-            row_data = [cat_name, f"='{bs_sheet_name}'!A{bs_row}", f"='{bs_sheet_name}'!B{bs_row}"]
+            row_data = [cat_name, f"=TRIM('{bs_sheet_name}'!A{bs_row})", f"='{bs_sheet_name}'!B{bs_row}"]
             for col in range(3, max_col + 1):
                 col_letter = openpyxl.utils.get_column_letter(col)
                 row_data.append(f"='{bs_sheet_name}'!{col_letter}{bs_row}")
@@ -218,10 +222,22 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
     comparison_cols = []
 
     def has_data(col_num):
-        col_letter = openpyxl.utils.get_column_letter(col_num)
         try:
-            val = pl_ws[f'{col_letter}{sales_row_num}'].value
-            return val is not None and val != ''
+            bs_dt = bs_ws.cell(1, col_num).value
+            bs_date_key = str(bs_dt).strip() if bs_dt is not None else None
+            pl_col_letter = pl_date_to_col.get(bs_date_key) if bs_date_key else None
+            
+            if not pl_col_letter:
+                return False
+                
+            val = pl_ws[f'{pl_col_letter}{sales_row_num}'].value
+            if val is None:
+                return False
+            if isinstance(val, str) and val.strip() in ('', '-', '0'):
+                return False
+            if isinstance(val, (int, float)) and val == 0:
+                return False
+            return True
         except Exception:
             return False
 

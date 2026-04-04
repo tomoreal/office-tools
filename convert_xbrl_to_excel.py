@@ -3045,6 +3045,25 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
     debug_log(f"Sheet planning completed in {time.time() - t_sheet_planning_start:.2f}s ({len(all_role_work)} sheets to process)")
 
+    # Pre-calculate PL minimum period per standard to filter CF and CE
+    pl_start_periods = {}
+    for r, o_keys, c_std in all_role_work:
+        b_name = r.split('_')[-1]
+        if 'ConsolidatedStatementOfIncome' in b_name or 'ConsolidatedStatementOfProfitOrLoss' in b_name or 'StatementOfIncome' in b_name or 'StatementOfProfitOrLoss' in b_name:
+            for fp_data in o_keys:
+                fp, _ = fp_data
+                if fp in all_years_data[r]:
+                    for c in all_years_data[r][fp].keys():
+                        f_std, f_dim, f_p = c if len(c) == 3 else ("JP", c[0], c[1])
+                        if f_dim not in ('全体', '連結', '全社', '単体', '個別'):
+                            continue
+                        if c_std != 'JP_ALL' and f_std is not None and f_std != c_std:
+                            continue
+                        
+                        period = c[2] if len(c) == 3 else c[1]
+                        if c_std not in pl_start_periods or period < pl_start_periods[c_std]:
+                            pl_start_periods[c_std] = period
+
     # Generate Excel sheets
     t_sheet_generation_start = time.time()
     for role, ordered_keys, current_standard in all_role_work:
@@ -3278,6 +3297,19 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                             
                         role_columns.add(c)
         
+        # Filter Sheets (BS, CE, CF) to ensures they don't precede the PL start period
+        target_sheet_keywords = ['株主資本等変動計算書', 'キャッシュ・フロー計算書', '持分変動計算書', '貸借対照表', '財政状態計算書']
+        if any(kw in sheet_name for kw in target_sheet_keywords):
+            if current_standard in pl_start_periods:
+                pl_min = pl_start_periods[current_standard]
+                filtered_cols = set()
+                for c in role_columns:
+                    period = c[2] if len(c) == 3 else c[1]
+                    # Only include periods that are on or after the PL start period
+                    if period >= pl_min:
+                        filtered_cols.add(c)
+                role_columns = filtered_cols
+
         if not role_columns:
             continue
             
