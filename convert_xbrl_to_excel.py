@@ -78,6 +78,9 @@ from financial_analysis import add_financial_analysis_sheets
 # Import segment analysis module
 from segment_analysis import add_segment_analysis_sheets
 
+# Import ccc analysis module
+from ccc_analysis import add_ccc_analysis_sheets
+
 # Import diversity analysis module
 from diversity_analysis import add_diversity_sheet, add_human_capital_sheet
 
@@ -4027,6 +4030,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     # ============================================================================
     # セグメント分析シートを追加（segment_analysis.pyモジュールを使用）
     add_segment_analysis_sheets(wb, segment_sheets_info, debug_log)
+
+    # ============================================================================
+    # CCC ANALYSIS SHEET (CCC分析)
+    # ============================================================================
+    add_ccc_analysis_sheets(wb, debug_log)
 
     # ============================================================================
     # DIVERSITY SHEET (ダイバーシティ)
