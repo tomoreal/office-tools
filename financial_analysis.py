@@ -63,56 +63,57 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         if english_name:
             row_mapping[english_name] = row
 
-    def find_row_by_keywords(keywords_list, item_name):
+    def find_all_rows_by_keywords(keywords_list, item_name):
         """
-        複数のキーワード候補で行を検索（部分一致）
-
-        Args:
-            keywords_list: キーワードのリスト（優先度順）
-            item_name: 項目名（ログ用）
-
-        Returns:
-            見つかった行番号、または None
+        複数のキーワード候補で見つかったすべての行を検索（部分一致）
         """
+        all_found = []
         for keywords in keywords_list:
-            # キーワードが文字列の場合はリストに変換
             if isinstance(keywords, str):
                 keywords = [keywords]
 
-            # 候補を検索（すべてのキーワードを含む英語名）
-            candidates = []
             for eng_name, row_num in row_mapping.items():
                 if all(kw in eng_name for kw in keywords):
-                    candidates.append((eng_name, row_num))
+                    if row_num not in all_found:
+                        all_found.append(row_num)
+        
+        if all_found:
+            debug_log(f"{item_name}: found {len(all_found)} rows: {all_found}")
+        return all_found
 
-            if candidates:
-                # 最初の候補を使用
-                eng_name, row_num = candidates[0]
-                if len(candidates) > 1:
-                    debug_log(f"{item_name}: multiple matches found, using '{eng_name}' (row {row_num})")
-                else:
-                    debug_log(f"{item_name}: found '{eng_name}' (row {row_num})")
-                return row_num
-
-        return None
+    def find_row_by_keywords(keywords_list, item_name):
+        rows = find_all_rows_by_keywords(keywords_list, item_name)
+        return rows[0] if rows else None
 
     # IFRS判定
     is_ifrs = 'IFRS' in source_sheet_name
 
     # 必要な勘定科目のキーワード候補（優先度順）
-    if is_ifrs:
-        # IFRS用キーワード
-        sales_keywords = [
-            ['Revenue', 'IFRS', 'Summary'],  # 売上収益（IFRS）
-            ['Revenue', 'Summary'],  # 売上収益（汎用）
-            ['Revenue'],  # 最低限
-        ]
+    # いずれの標準でも、推移表では「売上高」と「売上収益」の両方が現れうるため、混合して定義する
+    sales_keywords_all = [
+        ['Revenue', 'KeyFinancialData'],  # 売上収益（主要指標用）
+        ['NetSales', 'KeyFinancialData'], # 売上高（主要指標用）
+        ['Revenue', 'Summary'],  # 売上収益
+        ['NetSales', 'Summary'],  # 売上高
+        ['Revenue'],
+        ['NetSales'],
+        ['Sales', 'Summary'],
+    ]
+    
+    profit_keywords_all = [
+        ['ProfitLoss', 'OwnersOfParent', 'KeyFinancialData'],
+        ['NetIncome', 'KeyFinancialData'],
+        ['ProfitLoss', 'OwnersOfParent', 'Summary'],
+        ['ProfitLoss', 'Attributable', 'OwnersOfParent'],
+        ['ProfitLoss', 'Parent', 'Summary'],
+        ['Profit', 'OwnersOfParent'],
+        ['ProfitLoss', 'Summary'],
+    ]
 
-        profit_keywords = [
-            ['ProfitLoss', 'OwnersOfParent', 'IFRS', 'Summary'],  # 親会社の所有者に帰属（IFRS）
-            ['ProfitLoss', 'Attributable', 'OwnersOfParent'],  # 代替パターン
-            ['Profit', 'OwnersOfParent'],  # 汎用
-        ]
+    if is_ifrs:
+        # IFRS用キーワード (優先度順)
+        sales_keywords = sales_keywords_all
+        profit_keywords = profit_keywords_all
 
         # IFRS用: 親会社の所有者に帰属する持分（自己資本の代わり）
         equity_keywords = [
@@ -140,18 +141,8 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         ]
     else:
         # 日本基準用キーワード
-        sales_keywords = [
-            ['NetSales', 'Summary'],  # 売上高（標準）
-            ['NetSales'],  # 売上高（汎用）
-            ['Sales', 'Summary'],  # 代替パターン
-        ]
-
-        profit_keywords = [
-            ['ProfitLoss', 'OwnersOfParent', 'Summary'],  # 親会社株主に帰属する当期純利益（標準）
-            ['ProfitLoss', 'Parent', 'Summary'],  # 代替パターン1
-            ['Profit', 'OwnersOfParent'],  # 代替パターン2
-            ['ProfitLoss', 'Summary'],  # 汎用
-        ]
+        sales_keywords = sales_keywords_all
+        profit_keywords = profit_keywords_all
 
         net_assets_keywords = [
             ['NetAssets', 'Summary'],  # 純資産額（標準）
@@ -176,7 +167,21 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         ]
 
     # 元シートの行番号を取得（部分一致検索）
-    sales_row = find_row_by_keywords(sales_keywords, '売上高/売上収益')
+    sales_rows = find_all_rows_by_keywords(sales_keywords, '売上高/売上収益')
+    
+    # 優先順位付け: IFRS(Revenue)を優先する (年度の新しいほうを採用)
+    def sales_priority_roe(row_num):
+        # source_wsのB列（英名）で判定
+        b_val = str(source_ws.cell(row_num, 2).value or "")
+        if 'Revenue' in b_val or 'IFRS' in b_val:
+            return 0
+        return 1
+    
+    if sales_rows:
+        sales_rows.sort(key=sales_priority_roe)
+        debug_log(f"ROE Sales rows (prioritized): {sales_rows}")
+        
+    sales_row = sales_rows[0] if sales_rows else None
     profit_row = find_row_by_keywords(profit_keywords, '当期純利益/当期利益')
 
     if is_ifrs:
@@ -264,7 +269,21 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         analysis_ws.append(row_data)
 
     # 3-8行目: 基本指標（元シートから参照）
-    add_reference_row_full(sales_row)
+    if len(sales_rows) > 1:
+        # 複数行ある場合は優先順位に従って「年度の新しいほう（IFRS等）」を採用する (Deduplication)
+        # IF(収益<>0, 収益, 売上高) の形式で数式を作成
+        row_data = [re.sub(r'\(.*?\)', '', source_ws.cell(sales_rows[0], 1).value).strip() if source_ws.cell(sales_rows[0], 1).value else '売上高', ' / '.join([f"'{source_sheet_name}'!B{r}" for r in sales_rows])]
+        for col in range(3, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            # 優先順位に従った数式 (売上高1<>"", 売上高1, 売上高2...)
+            formula = f"'{source_sheet_name}'!{col_letter}{sales_rows[-1]}"
+            for r in reversed(sales_rows[:-1]):
+                curr_cell = f"'{source_sheet_name}'!{col_letter}{r}"
+                formula = f"IF({curr_cell}<>\"\",{curr_cell},{formula})"
+            row_data.append(f"={formula}")
+        analysis_ws.append(row_data)
+    else:
+        add_reference_row_full(sales_row)
     add_reference_row_full(profit_row)
     if is_ifrs:
         # IFRS: 親会社の所有者に帰属する持分を追加
@@ -1059,79 +1078,98 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
         english_name = source_ws.cell(row, 2).value  # B列: 項目（英名）
         if english_name:
             row_mapping[english_name] = row
+            
+    debug_log(f"ROE Standalone: Mapped {len(row_mapping)} element names from {source_ws.max_row} rows")
+    debug_log(f"ROE Standalone: row_mapping keys: {list(row_mapping.keys())[:10]}")
 
-    def find_row_by_keywords(keywords_list, item_name):
+    def find_all_rows_by_keywords(keywords_list, item_name):
         """
-        複数のキーワード候補で行を検索（部分一致）
-
-        Args:
-            keywords_list: キーワードのリスト（優先度順）
-            item_name: 項目名（ログ用）
-
-        Returns:
-            見つかった行番号、または None
+        複数のキーワード候補をすべて検索し、行番号のリストを返す（部分一致）
         """
+        row_nums = []
         for keywords in keywords_list:
-            # キーワードが文字列の場合はリストに変換
             if isinstance(keywords, str):
                 keywords = [keywords]
-
-            # 候補を検索（すべてのキーワードを含む英語名）
-            candidates = []
+            found_for_these_kws = False
             for eng_name, row_num in row_mapping.items():
-                if all(kw in eng_name for kw in keywords):
-                    candidates.append((eng_name, row_num))
+                if all(kw in str(eng_name) for kw in keywords):
+                    if row_num not in row_nums:
+                        row_nums.append(row_num)
+                        found_for_these_kws = True
+            
+            if found_for_these_kws:
+                debug_log(f"  [Matching] Keyword set {keywords} found rows: {row_nums}")
+        
+        if row_nums:
+            debug_log(f"{item_name}: overall found {len(row_nums)} rows: {row_nums}")
+        else:
+            debug_log(f"{item_name}: NOT FOUND among {len(row_mapping)} mapped elements")
+        return row_nums
 
-            if candidates:
-                # 最初の候補を使用
-                eng_name, row_num = candidates[0]
-                if len(candidates) > 1:
-                    debug_log(f"{item_name}: multiple matches found, using '{eng_name}' (row {row_num})")
-                else:
-                    debug_log(f"{item_name}: found '{eng_name}' (row {row_num})")
-                return row_num
+    def find_row_by_keywords(keywords_list, item_name):
+        res = find_all_rows_by_keywords(keywords_list, item_name)
+        return res[0] if res else None
 
-        return None
-
-    # 単体用の勘定科目のキーワード候補（優先度順）
+    # 単体用の勘定科目のキーワード候補
+    # 売上高と売上収益を混合して定義
     sales_keywords = [
-        ['NetSales', 'Summary', 'BusinessResults'],  # 売上高（単体標準）
-        ['NetSales', 'Summary'],  # 売上高（汎用）
+        ['Revenue', 'KeyFinancialData'],
+        ['NetSales', 'KeyFinancialData'],
+        ['Revenue', 'Summary'],
+        ['NetSales', 'Summary'],
+        ['Revenue'],
         ['NetSales'],
+        ['Sales', 'Summary'],
     ]
 
     profit_keywords = [
-        ['NetIncomeLoss', 'Summary', 'BusinessResults'],  # 当期純利益（単体標準）
-        ['NetIncome', 'Summary'],  # 代替パターン
+        ['NetIncome', 'KeyFinancialData'],
+        ['NetIncome', 'Summary'],
+        ['ProfitLoss', 'OwnersOfParent', 'Summary'],
+        ['ProfitLoss', 'Summary'],
+        ['NetIncomeLoss', 'Summary'],
         ['NetIncomeLoss'],
     ]
 
     net_assets_keywords = [
-        ['NetAssets', 'Summary', 'BusinessResults'],  # 純資産額（単体標準）
+        ['NetAssets', 'KeyFinancialData'],
         ['NetAssets', 'Summary'],
         ['NetAssets'],
     ]
 
     total_assets_keywords = [
-        ['TotalAssets', 'Summary', 'BusinessResults'],  # 総資産額（単体標準）
+        ['TotalAssets', 'KeyFinancialData'],
         ['TotalAssets', 'Summary'],
         ['TotalAssets'],
     ]
 
     equity_ratio_keywords = [
-        ['EquityToAssetRatio', 'Summary', 'BusinessResults'],  # 自己資本比率（単体標準）
-        ['EquityToAsset', 'Summary'],
+        ['EquityToAssetRatio', 'KeyFinancialData'],
+        ['EquityToAssetRatio', 'Summary'],
         ['EquityRatio'],
     ]
 
     roe_keywords = [
-        ['RateOfReturnOnEquity', 'Summary', 'BusinessResults'],  # ROE（単体標準）
+        ['RateOfReturnOnEquity', 'KeyFinancialData'],
         ['ReturnOnEquity', 'Summary'],
         ['ROE'],
     ]
 
-    # 元シートの行番号を取得（部分一致検索）
-    sales_row = find_row_by_keywords(sales_keywords, '売上高')
+    # 元シートの行番号を取得
+    sales_rows = find_all_rows_by_keywords(sales_keywords, '売上高/売上収益')
+    
+    # 優先順位付け: IFRS(Revenue)を優先する (年度の新しいほうを採用)
+    def sales_priority_stand(row_num):
+        b_val = str(source_ws.cell(row_num, 2).value or "")
+        if 'Revenue' in b_val or 'IFRS' in b_val:
+            return 0
+        return 1
+    
+    if sales_rows:
+        sales_rows.sort(key=sales_priority_stand)
+        debug_log(f"ROE Standalone Sales rows (prioritized): {sales_rows}")
+        
+    sales_row = sales_rows[0] if sales_rows else None
     profit_row = find_row_by_keywords(profit_keywords, '当期純利益')
     net_assets_row = find_row_by_keywords(net_assets_keywords, '純資産額')
     total_assets_row = find_row_by_keywords(total_assets_keywords, '総資産額')
@@ -1196,8 +1234,22 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
             row_data.append('')
         analysis_ws.append(row_data)
 
-    # 3-8行目: 基本指標
-    add_reference_row_full(sales_row)
+    # 3行目: 売上高
+    if len(sales_rows) > 1:
+        # 複数行ある場合は優先順位に従って「年度の新しいほう（IFRS等）」を採用する (Deduplication)
+        # IF(収益<>"", 収益, 売上高) の形式で数式を作成
+        row_data = ['売上高', ' / '.join([f"'{source_sheet_name}'!B{r}" for r in sales_rows])]
+        for col in range(3, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            # 優先順位に従った数式 (収益<>"", 収益, 売上高)
+            formula = f"'{source_sheet_name}'!{col_letter}{sales_rows[-1]}"
+            for r in reversed(sales_rows[:-1]):
+                curr_cell = f"'{source_sheet_name}'!{col_letter}{r}"
+                formula = f"IF({curr_cell}<>\"\",{curr_cell},{formula})"
+            row_data.append(f"={formula}")
+        analysis_ws.append(row_data)
+    else:
+        add_reference_row_full(sales_row)
     add_reference_row_full(profit_row)
     add_reference_row_full(net_assets_row)
     add_reference_row_full(total_assets_row)

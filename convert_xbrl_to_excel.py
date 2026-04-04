@@ -3196,6 +3196,26 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     for role, ordered_keys, current_standard in all_role_work:
         # Clean role name for sheet
         base_name = role.split('_')[-1]
+
+        # REORDERING: For Summary of Business Results (Reporting Company), 
+        # ensure RevenueKeyFinancialData follows NetSalesSummaryOfBusinessResults
+        if base_name == 'BusinessResultsOfReportingCompany':
+            temp_keys = list(ordered_keys)
+            target_el = 'jpcrp_cor_RevenueKeyFinancialData'
+            base_el = 'jpcrp_cor_NetSalesSummaryOfBusinessResults'
+            
+            target_idx = -1
+            base_idx = -1
+            for i, (fp, _) in enumerate(temp_keys):
+                if base_el in fp: base_idx = i
+                if target_el in fp: target_idx = i
+                
+            if base_idx != -1 and target_idx != -1 and target_idx != base_idx + 1:
+                item = temp_keys.pop(target_idx)
+                if target_idx < base_idx: base_idx -= 1
+                temp_keys.insert(base_idx + 1, item)
+                ordered_keys = temp_keys
+
         sheet_mapping = {
             'ConsolidatedBalanceSheet': '連結貸借対照表',
             'ConsolidatedStatementOfIncome': '連結損益計算書',

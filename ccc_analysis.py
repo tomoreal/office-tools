@@ -64,7 +64,7 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
     sales_keywords_jp = ['NetSales', 'Sales']
     sales_keywords_ifrs = ['Revenue']
     sales_keywords = sales_keywords_jp + sales_keywords_ifrs
-    sales_row_num = None
+    sales_row_nums = []
     for row in range(2, pl_ws.max_row + 1):
         b_val = pl_ws.cell(row, 2).value
         # PLのB列は英語名
@@ -73,12 +73,21 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
             if 'Abstract' in s_val or 'Heading' in s_val or 'LineItems' in s_val:
                 continue
             if any(kw in s_val for kw in sales_keywords):
-                sales_row_num = row
-                break
+                sales_row_nums.append(row)
             
-    if not sales_row_num:
-        debug_log(f"CCC analysis skipped: NetSales not found in {pl_sheet_name}")
+    if not sales_row_nums:
+        debug_log(f"CCC analysis skipped: NetSales/Revenue not found in {pl_sheet_name}")
         return
+
+    # 優先順位付け: IFRS(Revenue)を優先する (年度の新しいほうを採用)
+    def sales_priority(row_num):
+        b_val = str(pl_ws.cell(row_num, 2).value or "")
+        if any(kw in b_val for kw in sales_keywords_ifrs):
+            return 0  # High priority
+        return 1  # Lower priority
+    
+    sales_row_nums.sort(key=sales_priority)
+    debug_log(f"CCC Sales rows (prioritized): {sales_row_nums}")
 
     # PLシートの年度(1行目の値)と列のマッピングを作成
     pl_date_to_col = {}
@@ -88,14 +97,27 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
             pl_date_to_col[str(dt).strip()] = openpyxl.utils.get_column_letter(col)
 
     # 売上高行を追加 (対応する年度の列を参照)
-    row_data = ["売上高", f"=TRIM('{pl_sheet_name}'!A{sales_row_num})", f"='{pl_sheet_name}'!B{sales_row_num}"]
+    # 複数行ある場合は優先順位に従って「年度の新しいほう（IFRS等）」を採用する (Deduplication)
+    label = f"=TRIM('{pl_sheet_name}'!A{sales_row_nums[0]})"
+    names = " / ".join([f"'{pl_sheet_name}'!B{r}" for r in sales_row_nums])
+    row_data = ["売上高", label, f"={names}" if len(sales_row_nums) > 1 else f"='{pl_sheet_name}'!B{sales_row_nums[0]}"]
+    
     for col in range(3, max_col + 1):
         bs_dt = bs_ws.cell(1, col).value
         bs_date_key = str(bs_dt).strip() if bs_dt is not None else None
         
         pl_col_letter = pl_date_to_col.get(bs_date_key) if bs_date_key else None
         if pl_col_letter:
-            row_data.append(f"='{pl_sheet_name}'!{pl_col_letter}{sales_row_num}")
+            if len(sales_row_nums) > 1:
+                # 優先順位に従った数式を作成: IF(収益<>"", 収益, 売上高)
+                # 3つ以上ある場合はネスト
+                formula = f"'{pl_sheet_name}'!{pl_col_letter}{sales_row_nums[-1]}"
+                for r in reversed(sales_row_nums[:-1]):
+                    curr_cell = f"'{pl_sheet_name}'!{pl_col_letter}{r}"
+                    formula = f"IF({curr_cell}<>\"\",{curr_cell},{formula})"
+                row_data.append(f"={formula}")
+            else:
+                row_data.append(f"='{pl_sheet_name}'!{pl_col_letter}{sales_row_nums[0]}")
         else:
             row_data.append("")
     ccc_ws.append(row_data)
@@ -199,7 +221,7 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
                     row_data.append('')
             else:
                 # 分類 / 売上高 * 365
-                if target_sum_row and sales_row_num:
+                if target_sum_row and sales_row_nums:
                     row_data.append(f"=IF({new_col_letter}{ccc_sales_data_row}=0,\"\",({new_col_letter}{target_sum_row}/{new_col_letter}{ccc_sales_data_row})*365)")
                 else:
                     row_data.append('')
@@ -230,14 +252,11 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
             if not pl_col_letter:
                 return False
                 
-            val = pl_ws[f'{pl_col_letter}{sales_row_num}'].value
-            if val is None:
-                return False
-            if isinstance(val, str) and val.strip() in ('', '-', '0'):
-                return False
-            if isinstance(val, (int, float)) and val == 0:
-                return False
-            return True
+            for r in sales_row_nums:
+                val = pl_ws[f'{pl_col_letter}{r}'].value
+                if val is not None and not (isinstance(val, str) and val.strip() in ('', '-', '0')) and not (isinstance(val, (int, float)) and val == 0):
+                    return True
+            return False
         except Exception:
             return False
 
