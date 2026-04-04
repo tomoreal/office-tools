@@ -776,21 +776,59 @@ def _to_period_str(pv):
 
 
 def _read_numeric(ws, row, col):
-    """セルの実数値を返す。SUM式セルは個別列を合計して代替する。"""
-    if row is None:
+    """
+    セルの実数値を返す。
+    SUM式セルの場合、Excelが評価前であっても独自に数式または範囲を解析して合算値を返す。
+    """
+    if row is None or col is None:
         return None
-    val = ws.cell(row, col).value
+    cell = ws.cell(row, col)
+    val = cell.value
+
+    # 数値ならそのまま返す
     if isinstance(val, (int, float)):
         return val
+
+    # SUM数式の場合の独自計算
     if isinstance(val, str) and val.startswith('=SUM('):
+        import re
+        # =SUM(A1:B1) または =SUM(A1,B1,C1) の形式を抽出
+        content = val[5:-1]
         total = 0.0
         has_val = False
-        for c in range(3, col):
-            v = ws.cell(row, c).value
-            if isinstance(v, (int, float)):
-                total += v
-                has_val = True
+        
+        # カンマで区切られたパーツ（範囲または単一セル）を処理
+        parts = content.split(',')
+        for part in parts:
+            if ':' in part:
+                # 範囲形式: A1:C1
+                try:
+                    start_cell, end_cell = part.split(':')
+                    # 列文字のみを抽出して数値に変換 (行は row を固定で使用)
+                    start_col = column_index_from_string(re.sub(r'\d+', '', start_cell))
+                    end_col = column_index_from_string(re.sub(r'\d+', '', end_cell))
+                    for c in range(start_col, end_col + 1):
+                        v = _read_numeric(ws, row, c)
+                        if v is not None:
+                            total += v
+                            has_val = True
+                except Exception:
+                    continue
+            else:
+                # 単一セル形式: A1
+                try:
+                    c = column_index_from_string(re.sub(r'\d+', '', part))
+                    # 自分自身を指している場合はスキップ（無限ループ防止）
+                    if c == col:
+                        continue
+                    v = _read_numeric(ws, row, c)
+                    if v is not None:
+                        total += v
+                        has_val = True
+                except Exception:
+                    continue
         return total if has_val else None
+
     return None
 
 
@@ -1190,79 +1228,104 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     debug_log(f"[PPM Analysis] Sales label='{target_sales_label}', Profit candidates={profit_label_candidates}")
 
     # -----------------------------------------------------------------------
-    # 3b. 列位置の検出（報告セグメント / 以外 / 及びその他の合計）
+    # 3b. 列の再構成と合計列の挿入（1.報告 2.合計 3.その他 4.合計 5.調整 6.全社 7.既存合計）
     # -----------------------------------------------------------------------
-    hokoku_col = None
-    igai_col   = None
-    goukei_col = None
+    # キーワード定義
+    OTHER_KW = ["その他", "以外", "Other"]
+    ADJ_KW   = ["調整", "消去", "内部", "Adjustment", "Elimination"]
+    TOTAL_KW = ["合計", "計", "Total", "全社", "全体", "連結", "単体"]
+
+    def _get_category(col_idx):
+        val = str(analysis_ws.cell(1, col_idx).value or "")
+        if val == "報告セグメント" or val == "全体":
+            return "existing_total"
+        if any(kw in val for kw in TOTAL_KW):
+            return "existing_total"
+        if any(kw in val for kw in ADJ_KW):
+            return "adj"
+        if any(kw in val for kw in OTHER_KW):
+            return "other"
+        return "reporting"
+
+    # 全列の情報を一旦収集し、カテゴリ分けする
+    all_col_data = []
+    total_rows = analysis_ws.max_row
     for _ci in range(3, max_col + 1):
-        _hv = analysis_ws.cell(1, _ci).value
-        if not _hv:
-            continue
-        _hv_str = str(_hv)
-        if "報告セグメント" not in _hv_str:
-            continue
-        if "以外" in _hv_str:
-            igai_col = _ci
-        elif "及びその他" in _hv_str:
-            goukei_col = _ci
-        elif hokoku_col is None:
-            hokoku_col = _ci
+        cat = _get_category(_ci)
+        header = analysis_ws.cell(1, _ci).value
+        data = []
+        for _ri in range(2, total_rows + 1):
+            data.append(analysis_ws.cell(_ri, _ci).value)
+        all_col_data.append({"header": header, "cat": cat, "original_idx": _ci, "data": data})
 
-    if hokoku_col is None:
-        if igai_col and igai_col > 3:
-            _sum_start_letter = get_column_letter(3)
-            _sum_end_letter   = get_column_letter(igai_col - 1)
-            analysis_ws.insert_cols(igai_col)
-            analysis_ws.cell(1, igai_col).value = "報告セグメント合計"
-            for _ri in range(2, analysis_ws.max_row + 1):
-                if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
-                       for c in range(3, igai_col)):
-                    analysis_ws.cell(_ri, igai_col).value = (
-                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
-                    )
-            hokoku_col = igai_col
-            igai_col  += 1
-            if goukei_col is not None:
-                goukei_col += 1
-            max_col += 1
-            debug_log(f"[PPM Analysis] Inserted '報告セグメント合計' column at col {hokoku_col}")
-        elif goukei_col is not None and goukei_col > 3:
-            # igai_col はないが goukei_col が存在する場合（例: その他事業が個別セグメントに含まれるケース）
-            # goukei_col の直前に「報告セグメント合計」を挿入する
-            _sum_start_letter = get_column_letter(3)
-            _sum_end_letter   = get_column_letter(goukei_col - 1)
-            analysis_ws.insert_cols(goukei_col)
-            analysis_ws.cell(1, goukei_col).value = "報告セグメント合計"
-            for _ri in range(2, analysis_ws.max_row + 1):
-                if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
-                       for c in range(3, goukei_col)):
-                    analysis_ws.cell(_ri, goukei_col).value = (
-                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
-                    )
-            hokoku_col  = goukei_col
-            goukei_col += 1
-            max_col    += 1
-            debug_log(f"[PPM Analysis] Inserted '報告セグメント合計' before goukei_col at col {hokoku_col}")
-        else:
-            hokoku_col = max_col
+    # 元の列（3列目以降）を一旦削除する（後ろから削除）
+    for _ci in range(max_col, 2, -1):
+        analysis_ws.delete_cols(_ci)
 
-    if igai_col and goukei_col is None:
-        new_col = max_col + 1
-        analysis_ws.cell(1, new_col).value = "報告セグメント及びその他の合計"
-        _h_letter = get_column_letter(hokoku_col)
-        _i_letter = get_column_letter(igai_col)
-        for _ri in range(2, analysis_ws.max_row + 1):
-            if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
-                   for c in range(3, max_col + 1)):
-                analysis_ws.cell(_ri, new_col).value = (
-                    f"=SUM({_h_letter}{_ri},{_i_letter}{_ri})"
-                )
-        goukei_col = new_col
-        max_col = new_col
-        debug_log(f"[PPM Analysis] Added '報告セグメント及びその他の合計' column at col {new_col}")
+    next_col = 3
 
-    chart_end_col = goukei_col or hokoku_col
+    # カテゴリごとに再集計・再挿入
+    def _append_col(header, data=None, formula_type=None, formula_range=None):
+        nonlocal max_col, next_col
+        new_idx = next_col
+        analysis_ws.cell(1, new_idx).value = header
+        if data:
+            for i, val in enumerate(data):
+                analysis_ws.cell(i + 2, new_idx).value = val
+        elif formula_type == "sum" and formula_range:
+            _sum_start = get_column_letter(formula_range[0])
+            _sum_end   = get_column_letter(formula_range[1])
+            for _ri in range(2, total_rows + 1):
+                analysis_ws.cell(_ri, new_idx).value = f"=SUM({_sum_start}{_ri}:{_sum_end}{_ri})"
+        elif formula_type == "sum_parts" and formula_range:
+            _parts = [get_column_letter(c) for c in formula_range]
+            for _ri in range(2, total_rows + 1):
+                formula = "=SUM(" + ",".join([f"{p}{_ri}" for p in _parts]) + ")"
+                analysis_ws.cell(_ri, new_idx).value = formula
+        max_col = new_idx
+        next_col += 1
+        return new_idx
+
+    # 1. 報告セグメント（個別）
+    rep_indiv_indices = []
+    for col in [c for c in all_col_data if c["cat"] == "reporting"]:
+        rep_indiv_indices.append(_append_col(col["header"], col["data"]))
+    
+    # 2. 報告セグメント合計(計算値)
+    if rep_indiv_indices:
+        hokoku_total_col = _append_col("報告セグメント合計(計算値)", formula_type="sum", formula_range=(rep_indiv_indices[0], rep_indiv_indices[-1]))
+    else:
+        hokoku_total_col = _append_col("報告セグメント合計(計算値)")
+
+    # 3. その他事業（個別）
+    other_indiv_indices = []
+    for col in [c for c in all_col_data if c["cat"] == "other"]:
+        other_indiv_indices.append(_append_col(col["header"], col["data"]))
+
+    # 4. 報告セグメント及びその他の合計(計算値)
+    _sum_parts = [hokoku_total_col] + other_indiv_indices
+    goukei_total_col = _append_col("報告セグメント及びその他の合計(計算値)", formula_type="sum_parts", formula_range=_sum_parts)
+
+    # 5. 調整項目（個別）
+    adj_indiv_indices = []
+    for col in [c for c in all_col_data if c["cat"] == "adj"]:
+        adj_indiv_indices.append(_append_col(col["header"], col["data"]))
+
+    # 6. 全社(計算値)
+    _sum_parts = [goukei_total_col] + adj_indiv_indices
+    grand_total_col = _append_col("全社(計算値)", formula_type="sum_parts", formula_range=_sum_parts)
+
+    # 7. 既存の合計列（「報告セグメント」や「全体」など）
+    for col in [c for c in all_col_data if c["cat"] == "existing_total"]:
+        _append_col(col["header"], col["data"])
+
+    # PPMチャート用の重要列を固定
+    hokoku_col = hokoku_total_col
+    igai_col   = other_indiv_indices[-1] if other_indiv_indices else None
+    goukei_col = goukei_total_col
+    debug_log(f"[PPM Analysis] Re-ordered columns: hokoku={hokoku_col}, goukei={goukei_col}, grand={grand_total_col}")
+
+    chart_end_col = goukei_col
 
     # -----------------------------------------------------------------------
     # 4. valid_pairs の構築（analysis_ws にデータがある報告年度のみ、最新11件）
@@ -1331,9 +1394,9 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     col_to_dim = {c: str(analysis_ws.cell(1, c).value)
                   for c in range(3, max_col + 1)
                   if analysis_ws.cell(1, c).value is not None}
-    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計(計算値)')
     goukei_is_synthesized = (goukei_col is not None and
-                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計(計算値)')
     _get_val_for_filing = _make_get_val_for_filing(
         analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
         hokoku_is_synthesized, goukei_is_synthesized)
@@ -1657,8 +1720,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             mi = fi + 1
             if 0 <= mi < len(metric_list):
                 for c, v in metric_list[mi].items():
-                    if 3 <= c <= hokoku_col and v is not None:
-                        if c != hokoku_col:
+                    if 3 <= c <= goukei_col and v is not None:
+                        if c not in (hokoku_col, goukei_col):
                             dim_name = col_to_dim.get(c, '')
                             if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
                                 continue
@@ -1854,79 +1917,109 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     debug_log(f"[PPM IFRS] Sales label='{target_sales_label}', Profit candidates={profit_label_candidates}")
 
     # -----------------------------------------------------------------------
-    # 3b. 列位置の検出（報告セグメント / 以外 / 及びその他の合計）
+    # 3b. 列の再構成と合計列の挿入（1.報告 2.合計 3.その他 4.合計 5.調整 6.全社 7.既存合計）
     # -----------------------------------------------------------------------
-    hokoku_col = None
-    igai_col   = None
-    goukei_col = None
+    # キーワード定義
+    OTHER_KW = ["その他", "以外", "Other"]
+    ADJ_KW   = ["調整", "消去", "内部", "Adjustment", "Elimination"]
+    # 既存の合計列を特定するためのキーワード（「報告セグメント」単体も合計として扱う）
+    TOTAL_KW = ["合計", "計", "Total", "全社", "全体", "連結", "単体"]
+
+    def _get_category(col_idx):
+        val = str(analysis_ws.cell(1, col_idx).value or "")
+        # 「報告セグメント」という名前のみの列は、IFRS等では既存の合計列であることが多いため既存合計扱いとする
+        if val == "報告セグメント" or val == "全体":
+            return "existing_total"
+        if any(kw in val for kw in TOTAL_KW):
+            return "existing_total"
+        if any(kw in val for kw in ADJ_KW):
+            return "adj"
+        if any(kw in val for kw in OTHER_KW):
+            return "other"
+        return "reporting"
+
+    # 全列の情報を一旦収集し、カテゴリ分けする
+    all_col_data = []
+    total_rows = analysis_ws.max_row
     for _ci in range(3, max_col + 1):
-        _hv = analysis_ws.cell(1, _ci).value
-        if not _hv:
-            continue
-        _hv_str = str(_hv)
-        if "報告セグメント" not in _hv_str:
-            continue
-        if "以外" in _hv_str:
-            igai_col = _ci
-        elif "及びその他" in _hv_str:
-            goukei_col = _ci
-        elif hokoku_col is None:
-            hokoku_col = _ci
+        cat = _get_category(_ci)
+        header = analysis_ws.cell(1, _ci).value
+        # データ行も保持（大規模な場合は注意が必要だが、セグメント数は通常少ない）
+        data = []
+        for _ri in range(2, total_rows + 1):
+            data.append(analysis_ws.cell(_ri, _ci).value)
+        all_col_data.append({"header": header, "cat": cat, "original_idx": _ci, "data": data})
 
-    if hokoku_col is None:
-        if igai_col and igai_col > 3:
-            _sum_start_letter = get_column_letter(3)
-            _sum_end_letter   = get_column_letter(igai_col - 1)
-            analysis_ws.insert_cols(igai_col)
-            analysis_ws.cell(1, igai_col).value = "報告セグメント合計"
-            for _ri in range(2, analysis_ws.max_row + 1):
-                if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
-                       for c in range(3, igai_col)):
-                    analysis_ws.cell(_ri, igai_col).value = (
-                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
-                    )
-            hokoku_col = igai_col
-            igai_col  += 1
-            if goukei_col is not None:
-                goukei_col += 1
-            max_col += 1
-            debug_log(f"[PPM IFRS] Inserted '報告セグメント合計' column at col {hokoku_col}")
-        elif goukei_col is not None and goukei_col > 3:
-            # igai_col はないが goukei_col が存在する場合（例: その他事業が個別セグメントに含まれるケース）
-            # goukei_col の直前に「報告セグメント合計」を挿入する
-            _sum_start_letter = get_column_letter(3)
-            _sum_end_letter   = get_column_letter(goukei_col - 1)
-            analysis_ws.insert_cols(goukei_col)
-            analysis_ws.cell(1, goukei_col).value = "報告セグメント合計"
-            for _ri in range(2, analysis_ws.max_row + 1):
-                if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
-                       for c in range(3, goukei_col)):
-                    analysis_ws.cell(_ri, goukei_col).value = (
-                        f"=SUM({_sum_start_letter}{_ri}:{_sum_end_letter}{_ri})"
-                    )
-            hokoku_col  = goukei_col
-            goukei_col += 1
-            max_col    += 1
-            debug_log(f"[PPM IFRS] Inserted '報告セグメント合計' before goukei_col at col {hokoku_col}")
-        else:
-            hokoku_col = max_col
+    # 元の列（3列目以降）を一旦削除する（後ろから削除）
+    for _ci in range(max_col, 2, -1):
+        analysis_ws.delete_cols(_ci)
 
-    if igai_col and goukei_col is None:
-        new_col = max_col + 1
-        analysis_ws.cell(1, new_col).value = "報告セグメント及びその他の合計"
-        _h_letter = get_column_letter(hokoku_col)
-        _i_letter = get_column_letter(igai_col)
-        for _ri in range(2, analysis_ws.max_row + 1):
-            if any(isinstance(analysis_ws.cell(_ri, c).value, (int, float))
-                   for c in range(3, max_col + 1)):
-                analysis_ws.cell(_ri, new_col).value = (
-                    f"=SUM({_h_letter}{_ri},{_i_letter}{_ri})"
-                )
-        goukei_col = new_col
-        max_col = new_col
-        debug_log(f"[PPM IFRS] Added '報告セグメント及びその他の合計' column at col {new_col}")
+    next_col = 3
 
-    chart_end_col = goukei_col or hokoku_col
+    # カテゴリごとに再集計・再挿入
+    def _append_col(header, data=None, formula_type=None, formula_range=None):
+        nonlocal max_col, next_col
+        new_idx = next_col
+        analysis_ws.cell(1, new_idx).value = header
+        if data:
+            for i, val in enumerate(data):
+                analysis_ws.cell(i + 2, new_idx).value = val
+        elif formula_type == "sum" and formula_range:
+            _sum_start = get_column_letter(formula_range[0])
+            _sum_end   = get_column_letter(formula_range[1])
+            for _ri in range(2, total_rows + 1):
+                analysis_ws.cell(_ri, new_idx).value = f"=SUM({_sum_start}{_ri}:{_sum_end}{_ri})"
+        elif formula_type == "sum_parts" and formula_range:
+            _parts = [get_column_letter(c) for c in formula_range]
+            for _ri in range(2, total_rows + 1):
+                formula = "=SUM(" + ",".join([f"{p}{_ri}" for p in _parts]) + ")"
+                analysis_ws.cell(_ri, new_idx).value = formula
+        max_col = new_idx
+        next_col += 1
+        return new_idx
+
+    # 1. 報告セグメント（個別）
+    rep_indiv_indices = []
+    for col in [c for c in all_col_data if c["cat"] == "reporting"]:
+        rep_indiv_indices.append(_append_col(col["header"], col["data"]))
+    
+    # 2. 報告セグメント合計(計算値)
+    if rep_indiv_indices:
+        hokoku_total_col = _append_col("報告セグメント合計(計算値)", formula_type="sum", formula_range=(rep_indiv_indices[0], rep_indiv_indices[-1]))
+    else:
+        # 個別がない場合は空の列
+        hokoku_total_col = _append_col("報告セグメント合計(計算値)")
+
+    # 3. その他事業（個別）
+    other_indiv_indices = []
+    for col in [c for c in all_col_data if c["cat"] == "other"]:
+        other_indiv_indices.append(_append_col(col["header"], col["data"]))
+
+    # 4. 報告セグメント及びその他の合計(計算値)
+    _sum_parts = [hokoku_total_col] + other_indiv_indices
+    goukei_total_col = _append_col("報告セグメント及びその他の合計(計算値)", formula_type="sum_parts", formula_range=_sum_parts)
+
+    # 5. 調整項目（個別）
+    adj_indiv_indices = []
+    for col in [c for c in all_col_data if c["cat"] == "adj"]:
+        adj_indiv_indices.append(_append_col(col["header"], col["data"]))
+
+    # 6. 全社(計算値)
+    _sum_parts = [goukei_total_col] + adj_indiv_indices
+    grand_total_col = _append_col("全社(計算値)", formula_type="sum_parts", formula_range=_sum_parts)
+
+    # 7. 既存の合計列（「報告セグメント」や「全体」など）
+    for col in [c for c in all_col_data if c["cat"] == "existing_total"]:
+        _append_col(col["header"], col["data"])
+
+    # PPMチャート用の重要列を固定
+    hokoku_col = hokoku_total_col
+    igai_col   = other_indiv_indices[-1] if other_indiv_indices else None
+    goukei_col = goukei_total_col
+    
+    debug_log(f"[PPM IFRS] Re-ordered columns: hokoku={hokoku_col}, goukei={goukei_col}, grand={grand_total_col}")
+
+    chart_end_col = goukei_col
 
     # -----------------------------------------------------------------------
     # 4. valid_pairs の構築（analysis_ws にデータがある報告年度のみ、最新11件）
@@ -1990,9 +2083,9 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     col_to_dim = {c: str(analysis_ws.cell(1, c).value)
                   for c in range(3, max_col + 1)
                   if analysis_ws.cell(1, c).value is not None}
-    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計')
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計(計算値)')
     goukei_is_synthesized = (goukei_col is not None and
-                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計')
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計(計算値)')
     _get_val_for_filing = _make_get_val_for_filing(
         analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
         hokoku_is_synthesized, goukei_is_synthesized)
@@ -2292,8 +2385,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             mi = fi + 1
             if 0 <= mi < len(metric_list):
                 for c, v in metric_list[mi].items():
-                    if 3 <= c <= hokoku_col and v is not None:
-                        if c != hokoku_col:
+                    if 3 <= c <= goukei_col and v is not None:
+                        if c not in (hokoku_col, goukei_col):
                             dim_name = col_to_dim.get(c, '')
                             if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
                                 continue
