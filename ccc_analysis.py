@@ -8,21 +8,43 @@ def add_ccc_analysis_sheets(workbook, debug_log=None):
         def debug_log(msg):
             pass
 
-    bs_sheet_name = '連結貸借対照表(日本基準)'
-    pl_sheet_name = '連結損益計算書(日本基準)'
+    # 判定対象の基準ペアリスト (貸借対照表, 損益計算書)
+    standards_to_try = [
+        ('連結貸借対照表(日本基準)', '連結損益計算書(日本基準)'),
+        ('連結財政状態計算書(IFRS)', '連結損益計算書(IFRS)'),
+        ('連結貸借対照表(IFRS)', '連結損益計算書(IFRS)'),
+        ('連結貸借対照表(US GAAP)', '連結損益計算書(US GAAP)'),
+        ('連結貸借対照表(JMIS)', '連結損益計算書(JMIS)'),
+        # 単体
+        ('貸借対照表', '損益計算書'),
+    ]
 
-    if bs_sheet_name not in workbook.sheetnames or pl_sheet_name not in workbook.sheetnames:
-        debug_log(f"CCC analysis skipped: Missing required sheets ({bs_sheet_name} or {pl_sheet_name})")
-        return
+    processed_any = False
+    for bs_sheet_name, pl_sheet_name in standards_to_try:
+        if bs_sheet_name in workbook.sheetnames and pl_sheet_name in workbook.sheetnames:
+            _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log)
+            processed_any = True
+
+    if not processed_any:
+        debug_log("CCC analysis skipped: No matching Balance Sheet/Profit and Loss sheets found.")
+
+def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
+    """
+    具体的なCCC分析処理（内部関数）
+    """
 
     bs_ws = workbook[bs_sheet_name]
     pl_ws = workbook[pl_sheet_name]
 
-    # CCC分析シート名
-    analysis_sheet_name = "連結貸借対照表(日本基準)_分析_CCC"
+    # CCC分析シート名 (BSシート名にサフィックスを追加)
+    analysis_sheet_name = f"{bs_sheet_name}_分析_CCC"
     
     if len(analysis_sheet_name) > 31:
-        analysis_sheet_name = analysis_sheet_name[:31]
+        # シート名が31文字を超える場合の処理
+        # 「分析_CCC」を優先して残し、前半をカット
+        suffix = "_分析_CCC"
+        allowed_base_len = 31 - len(suffix)
+        analysis_sheet_name = f"{bs_sheet_name[:allowed_base_len]}{suffix}"
 
     if analysis_sheet_name in workbook.sheetnames:
         workbook.remove(workbook[analysis_sheet_name])
@@ -39,7 +61,9 @@ def add_ccc_analysis_sheets(workbook, debug_log=None):
     ccc_ws.append(header_row)
 
     # 2. 売上高の抽出 (PL)
-    sales_keywords = ['NetSales', 'Sales']
+    sales_keywords_jp = ['NetSales', 'Sales']
+    sales_keywords_ifrs = ['Revenue']
+    sales_keywords = sales_keywords_jp + sales_keywords_ifrs
     sales_row_num = None
     for row in range(2, pl_ws.max_row + 1):
         b_val = pl_ws.cell(row, 2).value
@@ -75,9 +99,17 @@ def add_ccc_analysis_sheets(workbook, debug_log=None):
     ccc_sales_data_row = ccc_ws.max_row  # 売上高の行番号（2のはず）
 
     # 3. 棚卸資産、売上債権、仕入債務の抽出 (BS)
-    inventory_kws = ['MerchandiseAndFinishedGoods', 'WorkInProcess', 'RawMaterialsAndSupplies', 'Inventories', 'Goods', 'SemiFinishedGoods', 'Merchandise', 'FinishedGoods']
-    receivable_kws = ['NotesAndAccountsReceivableTrade', 'AccountsReceivableTrade', 'NotesReceivableTrade', 'ElectronicallyRecordedMonetaryClaimsOperating', 'ContractAssets']
-    payable_kws = ['NotesAndAccountsPayableTrade', 'AccountsPayableTrade', 'NotesPayableTrade', 'ElectronicallyRecordedObligationsOperating']
+    inventory_kws_jp = ['MerchandiseAndFinishedGoods', 'WorkInProcess', 'RawMaterialsAndSupplies', 'Inventories', 'Goods', 'SemiFinishedGoods', 'Merchandise', 'FinishedGoods']
+    inventory_kws_ifrs = [] # InventoriesはJP側でもカバー
+    inventory_kws = inventory_kws_jp + inventory_kws_ifrs
+
+    receivable_kws_jp = ['NotesAndAccountsReceivableTrade', 'AccountsReceivableTrade', 'NotesReceivableTrade', 'ElectronicallyRecordedMonetaryClaimsOperating', 'ContractAssets']
+    receivable_kws_ifrs = ['TradeAndOtherReceivables', 'TradeReceivables', 'OtherReceivables', 'ContractAssets']
+    receivable_kws = receivable_kws_jp + receivable_kws_ifrs
+
+    payable_kws_jp = ['NotesAndAccountsPayableTrade', 'AccountsPayableTrade', 'NotesPayableTrade', 'ElectronicallyRecordedObligationsOperating']
+    payable_kws_ifrs = ['TradeAndOtherPayables', 'TradePayables', 'OtherPayables']
+    payable_kws = payable_kws_jp + payable_kws_ifrs
 
     def get_category(eng_name):
         if 'Abstract' in eng_name:
