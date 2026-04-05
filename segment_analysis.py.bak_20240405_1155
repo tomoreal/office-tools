@@ -273,7 +273,7 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
         _kyotsu_exists = any(str(d) == '共通' for d in unique_dims)
         if _kyotsu_exists:
             # 集計・調整系を識別するキーワード（これに該当しない個別dimは報告 or 非報告個別）
-            _AGG_KW = ['報告セグメント', '全社', '消去', '調整項目', '全体', '連結', '単体', '計', '合計']
+            _AGG_KW = ['報告セグメント', '全社', '消去', '調整項目', '全体', '連結', '単体']
             # 「その他」系は報告セグメントではなく共通と同グループに置く
             _OTHER_KW = ['その他']
             # 純粋な報告セグメント（集計・調整・共通・その他を除く個別セグメント）
@@ -893,15 +893,6 @@ def _make_get_val_for_filing(analysis_ws, col_to_dim,
             return None
         allowed = fp.get('current_dims', set()) if is_current else fp.get('prior_dims', set())
 
-        # 合計列かつフィルタがない場合、または既に数値（XBRL等の上書き）がある場合は、
-        # analysis_ws の値をそのまま使用する（再計算による2重計上を防ぐため）
-        if c in (hokoku_col, goukei_col):
-            # フィルタがない場合は、事前計算済みの値を優先
-            if not allowed:
-                v = _read_numeric(analysis_ws, src_row, c)
-                if v is not None:
-                    return v
-
         if c == hokoku_col and hokoku_is_synthesized:
             total = 0.0
             has_val = False
@@ -1303,116 +1294,107 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     for col in [c for c in all_col_data if c["cat"] == "reporting"]:
         rep_indiv_indices.append(_append_col(col["header"], col["data"]))
     
-    # 2. 報告セグメント合計(計算値・XBRL優先)
-    hokoku_total_col = _append_col("報告セグメント合計(計算値)")
+    # 2. 報告セグメント合計(計算値)
+    if rep_indiv_indices:
+        hokoku_total_col = _append_col("報告セグメント合計(計算値)", formula_type="sum", formula_range=(rep_indiv_indices[0], rep_indiv_indices[-1]))
+    else:
+        hokoku_total_col = _append_col("報告セグメント合計(計算値)")
 
     # 3. その他事業（個別）
     other_indiv_indices = []
     for col in [c for c in all_col_data if c["cat"] == "other"]:
         other_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 4. 報告セグメント及びその他の合計(計算値・XBRL優先)
-    goukei_total_col = _append_col("報告セグメント及びその他の合計(計算値)")
+    # 4. 報告セグメント及びその他の合計(計算値)
+    _sum_parts = [hokoku_total_col] + other_indiv_indices
+    goukei_total_col = _append_col("報告セグメント及びその他の合計(計算値)", formula_type="sum_parts", formula_range=_sum_parts)
 
     # 5. 調整項目（個別）
     adj_indiv_indices = []
     for col in [c for c in all_col_data if c["cat"] == "adj"]:
         adj_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 6. 全社(計算値・XBRL優先)
+    # 6. 全社(計算値)
+    #   - all_col_data の goukei + adj の data を直接集計（数式に依存しない）
+    #   - gepv の '全体' dim NetSales で上書き（2階層セグメント対応）
     grand_total_col = _append_col("全社(計算値)")
 
-    # ソースシートの「報告セグメント及びその他の合計」データを探す
-    source_total_data = None
-    for col in all_col_data:
-        if col["header"] == "報告セグメント及びその他の合計":
-            source_total_data = col["data"]
-            break
+    # all_col_data から goukei / adj カテゴリのデータを取得
+    _goukei_data_lists = [c["data"] for c in all_col_data if c["cat"] in ("xbrl_goukei",)]
+    _adj_data_lists    = [c["data"] for c in all_col_data if c["cat"] == "adj"]
 
-    # --- 数値取得・計算ロジック ---
     def _safe_float(v):
-        if v is None or v == "": return 0.0
-        try: return float(v)
-        except (ValueError, TypeError): return 0.0
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
 
-    def _get_gepv_val(elems, dims, pstr, comparison_val=None):
-        if not gepv: return None
-        for el in elems:
-            edata = gepv.get(el)
-            if not edata or not isinstance(edata, dict): continue
-            for d in dims:
-                for std in ('JP', 'IFRS', 'US', None):
-                    val = edata.get((std, d, pstr))
-                    if val is not None:
-                        try:
-                            fv = float(str(val).replace(',', ''))
-                            # スケール調整（比較値があれば1000倍以上の差で1/M変換）
-                            if comparison_val and abs(comparison_val) > 0 and abs(fv) > abs(comparison_val) * 1000:
-                                fv /= 1_000_000
-                            return fv
-                        except: pass
-        return None
-
-    # 各行のデータを確定
-    netsales_elems = ['jppfs_cor_NetSales', 'jpcrp_cor_NetSalesSummaryOfBusinessResults', 'jppfs_cor_NetRevenue', 'ifrs-full_Revenue']
-    
+    # ① 計算値: goukei 列(合計列)と adj 列の和
+    #    reporting 列の和ではなく、analysis_ws の '合計' 系列を直接使う
+    #    goukei 列がなければ reporting 列の合計を使う
+    if not _goukei_data_lists:
+        _goukei_data_lists = [c["data"] for c in all_col_data if c["cat"] == "reporting"]
     for _ri_idx, _row in enumerate(range(2, total_rows + 1)):
-        # 期間取得
-        _period_cell = analysis_ws.cell(_row, 2).value
-        _pstr = _to_period_str(_period_cell) if _period_cell else None
-        
-        # 個別列の合計を計算
-        _rep_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "reporting")
-        _oth_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "other")
-        _adj_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "adj")
+        _g_vals = []
+        for _dl in _goukei_data_lists:
+            v = _safe_float(_dl[_ri_idx] if _ri_idx < len(_dl) else None)
+            if v is not None:
+                _g_vals.append(v)
+        _a_vals = []
+        for _dl in _adj_data_lists:
+            v = _safe_float(_dl[_ri_idx] if _ri_idx < len(_dl) else None)
+            if v is not None:
+                _a_vals.append(v)
+        if _g_vals or _a_vals:
+            _calc = (sum(_g_vals) if _g_vals else 0.0) + (sum(_a_vals) if _a_vals else 0.0)
+            analysis_ws.cell(_row, grand_total_col).value = round(_calc, 6)
 
-        # ① 報告セグメント及びその他の合計 (Goukei)
-        # 1. ソースデータ(all_col_data)に既にある合計列を最優先
-        _gv_src = _safe_float(source_total_data[_ri_idx]) if source_total_data else None
-        
-        # 2. XBRL直接取得 (fallback 1)
-        _xbrl_goukei = None
-        if _gv_src is None or _gv_src == 0:
-            _xbrl_goukei = _get_gepv_val(netsales_elems, [
-                '報告セグメント及びその他の合計', 
-                '報告セグメント及びその他合計', 
-                'TotalOfReportableSegmentsAndOthersMember',
-                'TotalOfReportableSegmentsAndOthers',
-                'Total of reportable segments and others'
-            ], _pstr, _rep_sum + _oth_sum)
-
-        # 確定
-        if _gv_src:
-            _gv = _gv_src
-            debug_log(f"[PPM] Goukei-Total from source data: {_gv} (row={_row})")
-        elif _xbrl_goukei is not None:
-            _gv = _xbrl_goukei
-            debug_log(f"[PPM] Goukei-Total override from XBRL: {_gv} (row={_row})")
-        else:
-            _gv = _rep_sum + _oth_sum
-        
-        analysis_ws.cell(_row, goukei_total_col).value = round(_gv, 6)
-
-        # ② 報告セグメント合計 (Hokoku)
-        # 1.1 のロジック: Goukei(XBRL)がある場合はそこからOthersを引く
-        if _xbrl_goukei is not None:
-            _hv = _gv - _oth_sum
-        else:
-            _hv = _rep_sum
-        
-        analysis_ws.cell(_row, hokoku_total_col).value = round(_hv, 6)
-
-        # ③ 全社 (Grand Total / Consolidated)
-        # XBRL優先 ('全体'/'連結')
-        _xbrl_zen = _get_gepv_val(netsales_elems, ['全体', '連結'], _pstr, _gv + _adj_sum)
-        if _xbrl_zen is not None:
-            _zv = _xbrl_zen
-            debug_log(f"[PPM] Grand-Total override from XBRL: {_zv} (row={_row})")
-        else:
-            _zv = _gv + _adj_sum
-        
-        analysis_ws.cell(_row, grand_total_col).value = round(_zv, 6)
-
+    # ② gepv の '全体' dim NetSales でオーバーライド（最優先）
+    #   XBRL の contextRef="CurrentYearDuration"（次元なし=連結）は
+    #   gepv では dim_label='全体' に変換されて格納されている。
+    #   → ヨネックス等の2階層セグメントで計算値がダブルカウントになる問題を解決
+    if gepv:
+        _netsales_elems = [
+            'jppfs_cor_NetSales',
+            'jpcrp_cor_NetSalesSummaryOfBusinessResults',
+            'jppfs_cor_NetRevenue',
+        ]
+        _consolidated_dims = ['全体', '連結']
+        for _ri in range(2, total_rows + 1):
+            _period_cell = analysis_ws.cell(_ri, 2).value
+            if _period_cell is None:
+                continue
+            _pstr = _to_period_str(_period_cell)
+            if not _pstr:
+                continue
+            _found_val = None
+            for _elem in _netsales_elems:
+                _elem_data = gepv.get(_elem)
+                if not _elem_data or not isinstance(_elem_data, dict):
+                    continue
+                for _cdim in _consolidated_dims:
+                    for _std in ('JP', 'IFRS', 'US', None):
+                        _raw = _elem_data.get((_std, _cdim, _pstr))
+                        if _raw is not None:
+                            try:
+                                _fv = float(str(_raw).replace(',', ''))
+                                # スケール確認（計算値と比較して1/1000以上の差があれば単位変換）
+                                _cur = analysis_ws.cell(_ri, grand_total_col).value
+                                if _cur and abs(_cur) > 0 and abs(_fv) > abs(_cur) * 1000:
+                                    _fv /= 1_000_000
+                                _found_val = _fv
+                                debug_log(f"[PPM] gepv NetSales[{_cdim}] override: {_fv} (row={_ri})")
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                    if _found_val is not None:
+                        break
+                if _found_val is not None:
+                    break
+            if _found_val is not None:
+                analysis_ws.cell(_ri, grand_total_col).value = _found_val
 
     # 7. 既存の合計列（「報告セグメント」や「全体」など）
     for col in [c for c in all_col_data if c["cat"] == "existing_total"]:
@@ -1483,29 +1465,21 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     #   analysis_ws col 3 → ppm_ws col 5 (E)
     # -----------------------------------------------------------------------
     SEG_OFFSET = 2
-    # -----------------------------------------------------------------------
-    # 4b. 列インデックスの動的解決 (ユーザー提案の header_map 採用)
-    # -----------------------------------------------------------------------
-    # すべての _append_col 完了後に現在の全列からヘッダーマップを取得
-    header_map = {str(analysis_ws.cell(1, c).value): c for c in range(1, analysis_ws.max_column + 1)}
+    ppm_max_col = max_col + SEG_OFFSET   # ppm_ws の最大列
 
-    resolved_hokoku_col = header_map.get("報告セグメント合計(計算値)")
-    resolved_goukei_col = header_map.get("報告セグメント及びその他の合計(計算値)")
-    resolved_grand_col = header_map.get("全社(計算値)")
-
-    # col_to_dim と is_synthesized フラグの構築
-    latest_max_col = analysis_ws.max_column
+    # -----------------------------------------------------------------------
+    # col_to_dim / _get_val_for_filing（dims フィルタ付き読み取り）
+    # -----------------------------------------------------------------------
+    # hokoku_col / igai_col / goukei_col は 3b で確定済みのため _build_col_info で
+    # 上書きしない。col_to_dim と is_synthesized フラグだけを構築する。
     col_to_dim = {c: str(analysis_ws.cell(1, c).value)
-                  for c in range(3, latest_max_col + 1)
+                  for c in range(3, max_col + 1)
                   if analysis_ws.cell(1, c).value is not None}
-
-    hokoku_is_synthesized = (resolved_hokoku_col is not None and 
-                             col_to_dim.get(resolved_hokoku_col, '') == '報告セグメント合計(計算値)')
-    goukei_is_synthesized = (resolved_goukei_col is not None and
-                             col_to_dim.get(resolved_goukei_col, '') == '報告セグメント及びその他の合計(計算値)')
-
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計(計算値)')
+    goukei_is_synthesized = (goukei_col is not None and
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計(計算値)')
     _get_val_for_filing = _make_get_val_for_filing(
-        analysis_ws, col_to_dim, resolved_hokoku_col, igai_col, resolved_goukei_col,
+        analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
         hokoku_is_synthesized, goukei_is_synthesized)
 
     # -----------------------------------------------------------------------
@@ -1513,16 +1487,10 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     #    A=勘定科目, B=報告年度, C=前期・当期, D=会計年度, E+=セグメント名
     # -----------------------------------------------------------------------
     header = ["勘定科目", "報告年度", "前期・当期", "会計年度"]
-    for c in range(3, latest_max_col + 1):
+    for c in range(3, max_col + 1):
         hv = analysis_ws.cell(1, c).value
         header.append(hv if hv is not None else "")
     ppm_ws.append(header)
-
-    # 以降は最新の latest_max_col と resolved_*_col を使用して処理
-    hokoku_col = resolved_hokoku_col
-    goukei_col = resolved_goukei_col
-    grand_total_col = resolved_grand_col
-    ppm_max_col = latest_max_col + SEG_OFFSET
 
     # -----------------------------------------------------------------------
     # 6. 売上セクション（2*N 行）
@@ -2096,93 +2064,37 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     for col in [c for c in all_col_data if c["cat"] == "reporting"]:
         rep_indiv_indices.append(_append_col(col["header"], col["data"]))
     
-    # 2. 報告セグメント合計(計算値・XBRL優先)
-    hokoku_total_col = _append_col("報告セグメント合計(計算値)")
+    # 2. 報告セグメント合計(計算値)
+    if rep_indiv_indices:
+        hokoku_total_col = _append_col("報告セグメント合計(計算値)", formula_type="sum", formula_range=(rep_indiv_indices[0], rep_indiv_indices[-1]))
+    else:
+        # 個別がない場合は空の列
+        hokoku_total_col = _append_col("報告セグメント合計(計算値)")
 
     # 3. その他事業（個別）
     other_indiv_indices = []
     for col in [c for c in all_col_data if c["cat"] == "other"]:
         other_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 4. 報告セグメント及びその他の合計(計算値・XBRL優先)
-    goukei_total_col = _append_col("報告セグメント及びその他の合計(計算値)")
+    # 4. 報告セグメント及びその他の合計(計算値)
+    _sum_parts = [hokoku_total_col] + other_indiv_indices
+    goukei_total_col = _append_col("報告セグメント及びその他の合計(計算値)", formula_type="sum_parts", formula_range=_sum_parts)
 
     # 5. 調整項目（個別）
     adj_indiv_indices = []
     for col in [c for c in all_col_data if c["cat"] == "adj"]:
         adj_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 6. 全社(計算値・XBRL優先)
+    # 6. 全社(計算値) - 実数値として書き込む
     grand_total_col = _append_col("全社(計算値)")
-
-    # ソースデータを探す
-    source_total_data = None
-    for col in all_col_data:
-        if col["header"] == "報告セグメント及びその他の合計":
-            source_total_data = col["data"]
-            break
-
-    # --- 数値取得・計算ロジック ---
-    def _safe_float(v):
-        if v is None or v == "": return 0.0
-        try: return float(v)
-        except (ValueError, TypeError): return 0.0
-
-    def _get_gepv_val(elems, dims, pstr, comparison_val=None):
-        if not gepv: return None
-        for el in elems:
-            edata = gepv.get(el)
-            if not edata or not isinstance(edata, dict): continue
-            for d in dims:
-                for std in ('IFRS', 'JP', 'US', None):
-                    val = edata.get((std, d, pstr))
-                    if val is not None:
-                        try:
-                            fv = float(str(val).replace(',', ''))
-                            if comparison_val and abs(comparison_val) > 0 and abs(fv) > abs(comparison_val) * 1000:
-                                fv /= 1_000_000
-                            return fv
-                        except: pass
-        return None
-
-    # 各行のデータを確定
-    netsales_elems = ['ifrs-full_Revenue', 'jppfs_cor_NetSales', 'jppfs_cor_NetRevenue']
-    
-    for _ri_idx, _row in enumerate(range(2, total_rows + 1)):
-        _period_cell = analysis_ws.cell(_row, 2).value
-        _pstr = _to_period_str(_period_cell) if _period_cell else None
-        
-        _rep_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "reporting")
-        _oth_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "other")
-        _adj_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "adj")
-
-        # ① 報告セグメント及びその他の合計
-        _gv_src = _safe_float(source_total_data[_ri_idx]) if source_total_data else None
-        _xbrl_goukei = None
-        if not _gv_src:
-             _xbrl_goukei = _get_gepv_val(netsales_elems, [
-                '報告セグメント及びその他の合計', 
-                '報告セグメント及びその他合計', 
-                'TotalOfReportableSegmentsAndOthersMember',
-                'TotalOfReportableSegmentsAndOthers',
-                'Total of reportable segments and others'
-            ], _pstr, _rep_sum + _oth_sum)
-
-        _gv = _gv_src if _gv_src else (_xbrl_goukei if _xbrl_goukei is not None else (_rep_sum + _oth_sum))
-        analysis_ws.cell(_row, goukei_total_col).value = round(_gv, 6)
-
-        # ② 報告セグメント合計
-        if _xbrl_goukei is not None:
-            _hv = _gv - _oth_sum
-        else:
-            _hv = _rep_sum
-        analysis_ws.cell(_row, hokoku_total_col).value = round(_hv, 6)
-
-        # ③ 全社
-        _xbrl_zen = _get_gepv_val(netsales_elems, ['全体', '連結', 'Consolidated'], _pstr, _gv + _adj_sum)
-        _zv = _xbrl_zen if _xbrl_zen is not None else (_gv + _adj_sum)
-        analysis_ws.cell(_row, grand_total_col).value = round(_zv, 6)
-
+    for _ri in range(2, total_rows + 1):
+        _gv = _read_numeric(analysis_ws, _ri, goukei_total_col) or 0.0
+        _av = sum(
+            (_read_numeric(analysis_ws, _ri, _ac) or 0.0)
+            for _ac in adj_indiv_indices
+        )
+        if _gv != 0.0 or _av != 0.0:
+            analysis_ws.cell(_ri, grand_total_col).value = _gv + _av
 
     # 7. 既存の合計列（「報告セグメント」や「全体」など）
     for col in [c for c in all_col_data if c["cat"] == "existing_total"]:
@@ -2249,45 +2161,31 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     debug_log(f"[PPM IFRS] Building PPM sheet for {N} filing years")
 
     SEG_OFFSET = 2
-    # -----------------------------------------------------------------------
-    # 4b. 列インデックスの動的解決 (ユーザー提案の header_map 採用)
-    # -----------------------------------------------------------------------
-    # すべての _append_col 完了後に現在の全列からヘッダーマップを取得
-    header_map = {str(analysis_ws.cell(1, c).value): c for c in range(1, analysis_ws.max_column + 1)}
+    ppm_max_col = max_col + SEG_OFFSET
 
-    resolved_hokoku_col = header_map.get("報告セグメント合計(計算値)")
-    resolved_goukei_col = header_map.get("報告セグメント及びその他の合計(計算値)")
-    resolved_grand_col = header_map.get("全社(計算値)")
-
-    # col_to_dim と is_synthesized フラグの構築
-    latest_max_col = analysis_ws.max_column
+    # -----------------------------------------------------------------------
+    # col_to_dim / _get_val_for_filing（dims フィルタ付き読み取り）
+    # -----------------------------------------------------------------------
+    # hokoku_col / igai_col / goukei_col は 3b で確定済みのため _build_col_info で
+    # 上書きしない。col_to_dim と is_synthesized フラグだけを構築する。
     col_to_dim = {c: str(analysis_ws.cell(1, c).value)
-                  for c in range(3, latest_max_col + 1)
+                  for c in range(3, max_col + 1)
                   if analysis_ws.cell(1, c).value is not None}
-
-    hokoku_is_synthesized = (resolved_hokoku_col is not None and 
-                             col_to_dim.get(resolved_hokoku_col, '') == '報告セグメント合計(計算値)')
-    goukei_is_synthesized = (resolved_goukei_col is not None and
-                             col_to_dim.get(resolved_goukei_col, '') == '報告セグメント及びその他の合計(計算値)')
-
+    hokoku_is_synthesized = (col_to_dim.get(hokoku_col, '') == '報告セグメント合計(計算値)')
+    goukei_is_synthesized = (goukei_col is not None and
+                              col_to_dim.get(goukei_col, '') == '報告セグメント及びその他の合計(計算値)')
     _get_val_for_filing = _make_get_val_for_filing(
-        analysis_ws, col_to_dim, resolved_hokoku_col, igai_col, resolved_goukei_col,
+        analysis_ws, col_to_dim, hokoku_col, igai_col, goukei_col,
         hokoku_is_synthesized, goukei_is_synthesized)
 
     # -----------------------------------------------------------------------
     # 5. ヘッダー行
     # -----------------------------------------------------------------------
     header = ["勘定科目", "報告年度", "前期・当期", "会計年度"]
-    for c in range(3, latest_max_col + 1):
+    for c in range(3, max_col + 1):
         hv = analysis_ws.cell(1, c).value
         header.append(hv if hv is not None else "")
     ppm_ws.append(header)
-
-    # 以降は最新の latest_max_col と resolved_*_col を使用して処理
-    hokoku_col = resolved_hokoku_col
-    goukei_col = resolved_goukei_col
-    grand_total_col = resolved_grand_col
-    ppm_max_col = latest_max_col + SEG_OFFSET
 
     # -----------------------------------------------------------------------
     # 6. 売上収益セクション（2*N 行）
