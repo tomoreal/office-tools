@@ -71,6 +71,15 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
+            # Data AcquisitionをPPMの前に作成
+            _create_data_acquisition_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log
+            )
+
             _create_ppm_analysis_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
@@ -78,15 +87,6 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 filing_pairs=info.get('filing_pairs', []),
                 debug_log=debug_log,
                 global_element_period_values=info.get('global_element_period_values', {})
-            )
-
-            # PPM後に作成することで、PPMが分析シートに追加した集計列も反映される
-            _create_data_acquisition_sheet(
-                workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
-                used_sheet_names=info['used_sheet_names'],
-                filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
             )
 
             _create_composition_ratio_sheet(
@@ -130,6 +130,15 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
+            # Data AcquisitionをPPMの前に作成
+            _create_data_acquisition_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log
+            )
+
             _create_ppm_analysis_sheet_ifrs(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
@@ -137,15 +146,6 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 filing_pairs=info.get('filing_pairs', []),
                 debug_log=debug_log,
                 global_element_period_values=info.get('global_element_period_values', {})
-            )
-
-            # PPM後に作成することで、PPMが分析シートに追加した集計列も反映される
-            _create_data_acquisition_sheet(
-                workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
-                used_sheet_names=info['used_sheet_names'],
-                filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
             )
 
             _create_ebitda_sheet_ifrs(
@@ -1219,23 +1219,7 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
 
     debug_log(f"[Data Acquisition] Completed sheet: {acq_sheet_name} with {row_count} data rows")
 
-    # -----------------------------------------------------------------------
-    # 6. シートの表示順序を調整 (PPM分析用シートの前に移動)
-    # -----------------------------------------------------------------------
-    # PPMシート名を推定して、存在する場合はその直前に移動
-    _ppm_sn = analysis_sheet_name + "_PPM分析用"
-    if len(_ppm_sn) > 31:
-        _ppm_sn = analysis_sheet_name[:18] + "_PPM分析用"
-
-    if _ppm_sn in workbook.sheetnames:
-        try:
-            idx_ppm = workbook.sheetnames.index(_ppm_sn)
-            idx_acq = workbook.sheetnames.index(acq_sheet_name)
-            if idx_acq > idx_ppm:
-                workbook.move_sheet(acq_ws, offset=idx_ppm - idx_acq)
-                debug_log(f"[Data Acquisition] Moved '{acq_sheet_name}' before '{_ppm_sn}'")
-        except:
-            pass
+    # (シート移動ロジックは orchestrator 側で Data Acquisition を先に作成するように変更したため削除)
 
 
 def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
