@@ -1030,6 +1030,12 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
         included_cols.insert(adj_pos, target_col)
         seg_headers.insert(adj_pos, target_head)
 
+    # --- 「報告セグメント合計」列を「報告セグメント以外の全てのセグメント」の前に仮想挿入 ---
+    igai_zen_pos = next((i for i, h in enumerate(seg_headers) if "報告セグメント以外の全てのセグメント" in str(h)), None)
+    if igai_zen_pos is not None:
+        seg_headers.insert(igai_zen_pos, "報告セグメント合計")
+        included_cols.insert(igai_zen_pos, -1) # 仮想列マーカー
+
     col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
         _build_col_info(analysis_ws, max_col)
     _get_val_for_filing = _make_get_val_for_filing(
@@ -1094,7 +1100,9 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     # -----------------------------------------------------------------------
     # 全体（連結合計）列のSUM式用インデックスを特定
     zentai_idx = next((i for i, h in enumerate(seg_headers) if str(h) == "全体" or str(h) == "連結"), None)
-    goukei_idx = next((i for i, h in enumerate(seg_headers) if "報告セグメント及びその他の合計" in str(h)), None)
+    goukei_total_idx = next((i for i, h in enumerate(seg_headers) if "報告セグメント及びその他の合計" in str(h)), None)
+    hokoku_total_idx = next((i for i, h in enumerate(seg_headers) if str(h) == "報告セグメント合計"), None)
+    igai_zen_idx = next((i for i, h in enumerate(seg_headers) if "報告セグメント以外の全てのセグメント" in str(h)), None)
 
     row_count = 0
     for label in unique_canonicals_ordered:
@@ -1122,15 +1130,27 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
                 for i, c in enumerate(included_cols):
                     if zentai_idx is not None and i == zentai_idx:
                         # 全体列: 報告セグメント及びその他の合計 〜 全体の前 までを合計する数式を挿入
-                        if goukei_idx is not None and goukei_idx < zentai_idx:
+                        if goukei_total_idx is not None and goukei_total_idx < zentai_idx:
                             # カラム位置: A=1, B=2, C=3, D=4, E=5... なので 5 + インデックス
-                            first_col = get_column_letter(5 + goukei_idx)
+                            first_col = get_column_letter(5 + goukei_total_idx)
                             last_col  = get_column_letter(5 + zentai_idx - 1)
                             row_data.append(f"=SUM({first_col}{current_row_num}:{last_col}{current_row_num})")
                         else:
                             row_data.append("")
+                    elif hokoku_total_idx is not None and i == hokoku_total_idx:
+                        # 報告セグメント合計: (報告セグメント及びその他の合計) - (報告セグメント以外の全てのセグメント)
+                        if goukei_total_idx is not None and igai_zen_idx is not None:
+                            g_col = get_column_letter(5 + goukei_total_idx)
+                            i_col = get_column_letter(5 + igai_zen_idx)
+                            # 両方空なら空、それ以外は減算
+                            formula = f'=IF(AND({g_col}{current_row_num}="",{i_col}{current_row_num}=""),"",{g_col}{current_row_num}-{i_col}{current_row_num})'
+                            row_data.append(formula)
+                        else:
+                            row_data.append("")
                     else:
-                        if src_row is None:
+                        if c == -1: # 保険的チェック（通常は上記分岐で処理）
+                            row_data.append("")
+                        elif src_row is None:
                             row_data.append("")
                         else:
                             v = _get_val_for_filing(src_row, c, fp, is_current)
