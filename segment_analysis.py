@@ -135,7 +135,8 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
                 filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
+                debug_log=debug_log,
+                global_element_period_values=info.get('global_element_period_values', {})
             )
 
             # PPM後に作成することで、PPMが分析シートに追加した集計列も反映される
@@ -2027,7 +2028,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name}")
 
 
-def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log):
+def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
+                               global_element_period_values=None):
     """
     IFRS用PPM分析シートを作成（内部関数）
 
@@ -2040,6 +2042,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     import datetime
     from openpyxl.utils import get_column_letter
     from openpyxl.chart import BubbleChart, Reference, Series
+    gepv = global_element_period_values or {}
 
     # --- PPM分析シート名を生成 ---
     ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
