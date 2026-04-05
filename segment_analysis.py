@@ -1163,6 +1163,24 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
 
     debug_log(f"[Data Acquisition] Completed sheet: {acq_sheet_name} with {row_count} data rows")
 
+    # -----------------------------------------------------------------------
+    # 6. シートの表示順序を調整 (PPM分析用シートの前に移動)
+    # -----------------------------------------------------------------------
+    # PPMシート名を推定して、存在する場合はその直前に移動
+    _ppm_sn = analysis_sheet_name + "_PPM分析用"
+    if len(_ppm_sn) > 31:
+        _ppm_sn = analysis_sheet_name[:18] + "_PPM分析用"
+
+    if _ppm_sn in workbook.sheetnames:
+        try:
+            idx_ppm = workbook.sheetnames.index(_ppm_sn)
+            idx_acq = workbook.sheetnames.index(acq_sheet_name)
+            if idx_acq > idx_ppm:
+                workbook.move_sheet(acq_ws, offset=idx_ppm - idx_acq)
+                debug_log(f"[Data Acquisition] Moved '{acq_sheet_name}' before '{_ppm_sn}'")
+        except:
+            pass
+
 
 def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
                                global_element_period_values=None):
