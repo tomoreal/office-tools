@@ -998,7 +998,38 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     # -----------------------------------------------------------------------
     # 1. セグメント列情報・dims フィルタ付き読み取り関数を構築
     # -----------------------------------------------------------------------
-    seg_headers = [analysis_ws.cell(1, c).value or "" for c in range(3, max_col + 1)]
+    # --- 出力対象のカラムをフィルタリング (不要な集計列を除外) ---
+    def should_exclude(h):
+        if h is None: return False
+        h_str = str(h)
+        # 「(計算値)」が含まれる列は、プログラム側で別途計算して追加した列なので除外
+        if "(計算値)" in h_str:
+            return True
+        # 手動計算の残骸として「報告セグメント合計」と「全社」は除外
+        if h_str in ["報告セグメント合計", "全社"]:
+            return True
+        # それ以外（XBRL固有の「報告セグメント及びその他の合計」など）は保持
+        return False
+
+    included_cols = []
+    seg_headers = []
+    for c in range(3, max_col + 1):
+        h = analysis_ws.cell(1, c).value
+        if should_exclude(h):
+            continue
+        included_cols.append(c)
+        seg_headers.append(h or "")
+
+    # --- 列の出現順序を調整 (「報告セグメント及びその他の合計」を「調整項目」の前に移動) ---
+    goukei_pos = next((i for i, h in enumerate(seg_headers) if "報告セグメント及びその他の合計" in str(h)), None)
+    adj_pos = next((i for i, h in enumerate(seg_headers) if "調整項目" in str(h) or "調整額" in str(h)), None)
+    if goukei_pos is not None and adj_pos is not None and goukei_pos > adj_pos:
+        # 挿入位置を調整額の前に移動
+        target_col = included_cols.pop(goukei_pos)
+        target_head = seg_headers.pop(goukei_pos)
+        included_cols.insert(adj_pos, target_col)
+        seg_headers.insert(adj_pos, target_head)
+
     col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
         _build_col_info(analysis_ws, max_col)
     _get_val_for_filing = _make_get_val_for_filing(
@@ -1061,6 +1092,10 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     # -----------------------------------------------------------------------
     # 4. 各勘定科目 × 各 filing_pair につき前期・当期の2行を出力
     # -----------------------------------------------------------------------
+    # 全体（連結合計）列のSUM式用インデックスを特定
+    zentai_idx = next((i for i, h in enumerate(seg_headers) if str(h) == "全体" or str(h) == "連結"), None)
+    goukei_idx = next((i for i, h in enumerate(seg_headers) if "報告セグメント及びその他の合計" in str(h)), None)
+
     row_count = 0
     for label in unique_canonicals_ordered:
         aliases = canonical_to_aliases.get(label, [label])
@@ -1083,12 +1118,23 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
                             src_row = r
                             break
 
-                for c in range(3, max_col + 1):
-                    if src_row is None:
-                        row_data.append("")
+                current_row_num = acq_ws.max_row + 1
+                for i, c in enumerate(included_cols):
+                    if zentai_idx is not None and i == zentai_idx:
+                        # 全体列: 報告セグメント及びその他の合計 〜 全体の前 までを合計する数式を挿入
+                        if goukei_idx is not None and goukei_idx < zentai_idx:
+                            # カラム位置: A=1, B=2, C=3, D=4, E=5... なので 5 + インデックス
+                            first_col = get_column_letter(5 + goukei_idx)
+                            last_col  = get_column_letter(5 + zentai_idx - 1)
+                            row_data.append(f"=SUM({first_col}{current_row_num}:{last_col}{current_row_num})")
+                        else:
+                            row_data.append("")
                     else:
-                        v = _get_val_for_filing(src_row, c, fp, is_current)
-                        row_data.append(v if v is not None else "")
+                        if src_row is None:
+                            row_data.append("")
+                        else:
+                            v = _get_val_for_filing(src_row, c, fp, is_current)
+                            row_data.append(v if v is not None else "")
 
                 acq_ws.append(row_data)
                 row_count += 1
@@ -1102,7 +1148,8 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     for row in acq_ws.iter_rows(min_row=2, max_row=acq_ws.max_row, min_col=5,
                                  max_col=acq_ws.max_column):
         for cell in row:
-            if isinstance(cell.value, (int, float)):
+            # 数値または数式に書式を適用
+            if isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith('=')):
                 cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
 
     acq_ws.freeze_panes = 'E2'
