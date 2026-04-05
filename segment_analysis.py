@@ -71,25 +71,22 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
-            # Data AcquisitionをPPMの前に作成し、メタデータを取得
-            acq_meta = _create_data_acquisition_sheet(
-                workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
-                used_sheet_names=info['used_sheet_names'],
-                filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
-            )
-            acq_sheet_name, acq_headers = acq_meta if acq_meta else (None, None)
-
             _create_ppm_analysis_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
                 filing_pairs=info.get('filing_pairs', []),
                 debug_log=debug_log,
-                global_element_period_values=info.get('global_element_period_values', {}),
-                acq_sheet_name=acq_sheet_name,
-                acq_headers=acq_headers
+                global_element_period_values=info.get('global_element_period_values', {})
+            )
+
+            # PPM後に作成することで、PPMが分析シートに追加した集計列も反映される
+            _create_data_acquisition_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log
             )
 
             _create_composition_ratio_sheet(
@@ -133,25 +130,22 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
-            # Data AcquisitionをPPMの前に作成し、メタデータを取得
-            acq_meta = _create_data_acquisition_sheet(
-                workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
-                used_sheet_names=info['used_sheet_names'],
-                filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
-            )
-            acq_sheet_name, acq_headers = acq_meta if acq_meta else (None, None)
-
             _create_ppm_analysis_sheet_ifrs(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
                 filing_pairs=info.get('filing_pairs', []),
                 debug_log=debug_log,
-                global_element_period_values=info.get('global_element_period_values', {}),
-                acq_sheet_name=acq_sheet_name,
-                acq_headers=acq_headers
+                global_element_period_values=info.get('global_element_period_values', {})
+            )
+
+            # PPM後に作成することで、PPMが分析シートに追加した集計列も反映される
+            _create_data_acquisition_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log
             )
 
             _create_ebitda_sheet_ifrs(
@@ -989,18 +983,15 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
 
     if acq_sheet_name in workbook.sheetnames:
         debug_log(f"[Data Acquisition] Sheet '{acq_sheet_name}' already exists, skipping")
-        # 既存シートからヘッダーを読み取って返す
-        _ws = workbook[acq_sheet_name]
-        _headers = [str(_ws.cell(1, _c).value or "") for _c in range(5, _ws.max_column + 1)]
-        return acq_sheet_name, _headers
+        return
 
     if analysis_sheet_name not in workbook.sheetnames:
         debug_log(f"[Data Acquisition] Analysis sheet '{analysis_sheet_name}' not found, skipping")
-        return None
+        return
 
     if not filing_pairs:
         debug_log("[Data Acquisition] No filing_pairs provided, skipping")
-        return None
+        return
 
     analysis_ws = workbook[analysis_sheet_name]
     max_col = analysis_ws.max_column
@@ -1087,7 +1078,7 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
 
     if not unique_labels_ordered:
         debug_log("[Data Acquisition] Analysis sheet has no data rows, skipping")
-        return None
+        return
 
     # -----------------------------------------------------------------------
     # 2b. ラベルグループ化
@@ -1228,13 +1219,27 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
 
     debug_log(f"[Data Acquisition] Completed sheet: {acq_sheet_name} with {row_count} data rows")
 
-    # (シート移動ロジックは orchestrator 側で Data Acquisition を先に作成するように変更したため削除)
-    return acq_sheet_name, seg_headers
+    # -----------------------------------------------------------------------
+    # 6. シートの表示順序を調整 (PPM分析用シートの前に移動)
+    # -----------------------------------------------------------------------
+    # PPMシート名を推定して、存在する場合はその直前に移動
+    _ppm_sn = analysis_sheet_name + "_PPM分析用"
+    if len(_ppm_sn) > 31:
+        _ppm_sn = analysis_sheet_name[:18] + "_PPM分析用"
+
+    if _ppm_sn in workbook.sheetnames:
+        try:
+            idx_ppm = workbook.sheetnames.index(_ppm_sn)
+            idx_acq = workbook.sheetnames.index(acq_sheet_name)
+            if idx_acq > idx_ppm:
+                workbook.move_sheet(acq_ws, offset=idx_ppm - idx_acq)
+                debug_log(f"[Data Acquisition] Moved '{acq_sheet_name}' before '{_ppm_sn}'")
+        except:
+            pass
 
 
 def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
-                               global_element_period_values=None,
-                               acq_sheet_name=None, acq_headers=None):
+                               global_element_period_values=None):
     """
     PPM分析シートを作成（内部関数）
 
@@ -2059,8 +2064,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
 
 def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
-                               global_element_period_values=None,
-                               acq_sheet_name=None, acq_headers=None):
+                               global_element_period_values=None):
     """
     IFRS用PPM分析シートを作成（内部関数）
 
