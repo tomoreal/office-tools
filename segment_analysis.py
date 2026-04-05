@@ -76,7 +76,8 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
                 filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
+                debug_log=debug_log,
+                global_element_period_values=info.get('global_element_period_values', {})
             )
 
             # PPM後に作成することで、PPMが分析シートに追加した集計列も反映される
@@ -1107,7 +1108,8 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     debug_log(f"[Data Acquisition] Completed sheet: {acq_sheet_name} with {row_count} data rows")
 
 
-def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log):
+def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
+                               global_element_period_values=None):
     """
     PPM分析シートを作成（内部関数）
 
@@ -1127,6 +1129,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     import datetime
     from openpyxl.utils import get_column_letter
     from openpyxl.chart import BubbleChart, Reference, Series
+    gepv = global_element_period_values or {}
 
     # --- PPM分析シート名を生成 ---
     ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
@@ -1312,8 +1315,86 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         adj_indiv_indices.append(_append_col(col["header"], col["data"]))
 
     # 6. 全社(計算値)
-    _sum_parts = [goukei_total_col] + adj_indiv_indices
-    grand_total_col = _append_col("全社(計算値)", formula_type="sum_parts", formula_range=_sum_parts)
+    #   - all_col_data の goukei + adj の data を直接集計（数式に依存しない）
+    #   - gepv の '全体' dim NetSales で上書き（2階層セグメント対応）
+    grand_total_col = _append_col("全社(計算値)")
+
+    # all_col_data から goukei / adj カテゴリのデータを取得
+    _goukei_data_lists = [c["data"] for c in all_col_data if c["cat"] in ("xbrl_goukei",)]
+    _adj_data_lists    = [c["data"] for c in all_col_data if c["cat"] == "adj"]
+
+    def _safe_float(v):
+        if v is None or v == "":
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+    # ① 計算値: goukei 列(合計列)と adj 列の和
+    #    reporting 列の和ではなく、analysis_ws の '合計' 系列を直接使う
+    #    goukei 列がなければ reporting 列の合計を使う
+    if not _goukei_data_lists:
+        _goukei_data_lists = [c["data"] for c in all_col_data if c["cat"] == "reporting"]
+    for _ri_idx, _row in enumerate(range(2, total_rows + 1)):
+        _g_vals = []
+        for _dl in _goukei_data_lists:
+            v = _safe_float(_dl[_ri_idx] if _ri_idx < len(_dl) else None)
+            if v is not None:
+                _g_vals.append(v)
+        _a_vals = []
+        for _dl in _adj_data_lists:
+            v = _safe_float(_dl[_ri_idx] if _ri_idx < len(_dl) else None)
+            if v is not None:
+                _a_vals.append(v)
+        if _g_vals or _a_vals:
+            _calc = (sum(_g_vals) if _g_vals else 0.0) + (sum(_a_vals) if _a_vals else 0.0)
+            analysis_ws.cell(_row, grand_total_col).value = round(_calc, 6)
+
+    # ② gepv の '全体' dim NetSales でオーバーライド（最優先）
+    #   XBRL の contextRef="CurrentYearDuration"（次元なし=連結）は
+    #   gepv では dim_label='全体' に変換されて格納されている。
+    #   → ヨネックス等の2階層セグメントで計算値がダブルカウントになる問題を解決
+    if gepv:
+        _netsales_elems = [
+            'jppfs_cor_NetSales',
+            'jpcrp_cor_NetSalesSummaryOfBusinessResults',
+            'jppfs_cor_NetRevenue',
+        ]
+        _consolidated_dims = ['全体', '連結']
+        for _ri in range(2, total_rows + 1):
+            _period_cell = analysis_ws.cell(_ri, 2).value
+            if _period_cell is None:
+                continue
+            _pstr = _to_period_str(_period_cell)
+            if not _pstr:
+                continue
+            _found_val = None
+            for _elem in _netsales_elems:
+                _elem_data = gepv.get(_elem)
+                if not _elem_data or not isinstance(_elem_data, dict):
+                    continue
+                for _cdim in _consolidated_dims:
+                    for _std in ('JP', 'IFRS', 'US', None):
+                        _raw = _elem_data.get((_std, _cdim, _pstr))
+                        if _raw is not None:
+                            try:
+                                _fv = float(str(_raw).replace(',', ''))
+                                # スケール確認（計算値と比較して1/1000以上の差があれば単位変換）
+                                _cur = analysis_ws.cell(_ri, grand_total_col).value
+                                if _cur and abs(_cur) > 0 and abs(_fv) > abs(_cur) * 1000:
+                                    _fv /= 1_000_000
+                                _found_val = _fv
+                                debug_log(f"[PPM] gepv NetSales[{_cdim}] override: {_fv} (row={_ri})")
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                    if _found_val is not None:
+                        break
+                if _found_val is not None:
+                    break
+            if _found_val is not None:
+                analysis_ws.cell(_ri, grand_total_col).value = _found_val
 
     # 7. 既存の合計列（「報告セグメント」や「全体」など）
     for col in [c for c in all_col_data if c["cat"] == "existing_total"]:
@@ -2004,9 +2085,16 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     for col in [c for c in all_col_data if c["cat"] == "adj"]:
         adj_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 6. 全社(計算値)
-    _sum_parts = [goukei_total_col] + adj_indiv_indices
-    grand_total_col = _append_col("全社(計算値)", formula_type="sum_parts", formula_range=_sum_parts)
+    # 6. 全社(計算値) - 実数値として書き込む
+    grand_total_col = _append_col("全社(計算値)")
+    for _ri in range(2, total_rows + 1):
+        _gv = _read_numeric(analysis_ws, _ri, goukei_total_col) or 0.0
+        _av = sum(
+            (_read_numeric(analysis_ws, _ri, _ac) or 0.0)
+            for _ac in adj_indiv_indices
+        )
+        if _gv != 0.0 or _av != 0.0:
+            analysis_ws.cell(_ri, grand_total_col).value = _gv + _av
 
     # 7. 既存の合計列（「報告セグメント」や「全体」など）
     for col in [c for c in all_col_data if c["cat"] == "existing_total"]:
