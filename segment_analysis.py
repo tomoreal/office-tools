@@ -1047,6 +1047,24 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
         seg_headers.insert(igai_zen_pos, "報告セグメント合計")
         included_cols.insert(igai_zen_pos, target_col)
 
+    # --- 「報告セグメント及びその他の合計」を「報告セグメント以外の全てのセグメント」の直後に配置する ---
+    goukei_total_pos = next((i for i, h in enumerate(seg_headers) if "報告セグメント及びその他の合計" in str(h)), None)
+    igai_zen_pos = next((i for i, h in enumerate(seg_headers) if "報告セグメント以外の全てのセグメント" in str(h)), None)
+
+    if igai_zen_pos is not None:
+        if goukei_total_pos is not None:
+            # 既に存在する場合は抜き出して移動
+            _target_col = included_cols.pop(goukei_total_pos)
+            _target_head = seg_headers.pop(goukei_total_pos)
+            # 再計算
+            igai_zen_pos = next((i for i, h in enumerate(seg_headers) if "報告セグメント以外の全てのセグメント" in str(h)), None)
+            seg_headers.insert(igai_zen_pos + 1, _target_head)
+            included_cols.insert(igai_zen_pos + 1, _target_col)
+        else:
+            # 存在しない場合は、仮想列として挿入（マーカーとして -2）
+            seg_headers.insert(igai_zen_pos + 1, "報告セグメント及びその他の合計")
+            included_cols.insert(igai_zen_pos + 1, -2)
+
     col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
         _build_col_info(analysis_ws, max_col)
     _get_val_for_filing = _make_get_val_for_filing(
@@ -1109,11 +1127,14 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     # -----------------------------------------------------------------------
     # 4. 各勘定科目 × 各 filing_pair につき前期・当期の2行を出力
     # -----------------------------------------------------------------------
-    # 全体（連結合計）列のSUM式用インデックスを特定
+    # 各合計列のインデックスを再特定
     zentai_idx = next((i for i, h in enumerate(seg_headers) if str(h) == "全体" or str(h) == "連結"), None)
+    hokoku_total_idx = next((i for i, h in enumerate(seg_headers) if str(h) == "報告セグメント合計"), None)
+    igai_zen_idx = next((i for i, h in enumerate(seg_headers) if "報告セグメント以外の全てのセグメント" in str(h)), None)
     goukei_total_idx = next((i for i, h in enumerate(seg_headers) if "報告セグメント及びその他の合計" in str(h)), None)
 
     row_count = 0
+    current_row_num = 2 # ヘッダー行(1)の次から開始
     for label in unique_canonicals_ordered:
         aliases = canonical_to_aliases.get(label, [label])
         for fp in filing_pairs:
@@ -1135,29 +1156,47 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
                             src_row = r
                             break
 
-                current_row_num = acq_ws.max_row + 1
                 for i, c in enumerate(included_cols):
                     if zentai_idx is not None and i == zentai_idx:
                         # 全体列: 報告セグメント及びその他の合計 〜 全体の前 までを合計する数式を挿入
                         if goukei_total_idx is not None and goukei_total_idx < zentai_idx:
-                            # カラム位置: A=1, B=2, C=3, D=4, E=5... なので 5 + インデックス
                             first_col = get_column_letter(5 + goukei_total_idx)
                             last_col  = get_column_letter(5 + zentai_idx - 1)
-                            row_data.append(f"=SUM({first_col}{current_row_num}:{last_col}{current_row_num})")
+                            # 全範囲が空なら空、そうでなければSUM
+                            formula = f'=IF(COUNT({first_col}{current_row_num}:{last_col}{current_row_num})=0,"",SUM({first_col}{current_row_num}:{last_col}{current_row_num}))'
+                            row_data.append(formula)
+                        else:
+                            row_data.append("")
+                    elif goukei_total_idx is not None and i == goukei_total_idx:
+                        # 報告セグメント及びその他の合計: XBRL優先、なければ SUM(報告セグメント合計:以外の全ての...)
+                        v_xbrl = None
+                        if c >= 0: # 仮想列(-2)でなければXBRL値取得を試みる
+                            v_xbrl = _get_val_for_filing(src_row, c, fp, is_current)
+                        
+                        if v_xbrl is not None:
+                            row_data.append(v_xbrl)
+                        elif hokoku_total_idx is not None and igai_zen_idx is not None:
+                            # 2つの列をSUM (両方空なら空にするIF制御を追加)
+                            h_col = get_column_letter(5 + hokoku_total_idx)
+                            i_col = get_column_letter(5 + igai_zen_idx)
+                            formula = f'=IF(AND({h_col}{current_row_num}="",{i_col}{current_row_num}=""),"",SUM({h_col}{current_row_num}:{i_col}{current_row_num}))'
+                            row_data.append(formula)
                         else:
                             row_data.append("")
                     else:
-                        if src_row is None:
+                        if src_row is None or c < 0:
                             row_data.append("")
                         else:
                             v = _get_val_for_filing(src_row, c, fp, is_current)
                             row_data.append(v if v is not None else "")
 
                 acq_ws.append(row_data)
+                current_row_num += 1
                 row_count += 1
 
         # 勘定科目間に空行を挟む
         acq_ws.append([])
+        current_row_num += 1
 
     # -----------------------------------------------------------------------
     # 5. 書式・列幅・ウィンドウ枠
