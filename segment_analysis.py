@@ -2371,6 +2371,18 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']), five_bubble_scale)
         _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
 
+    # チャートデータエリア内の「報告セグメント及びその他の合計」を「計」に置換し、
+    # 対応する売上行（ヘッダー行+3）に *1% がなければ付加
+    for row in ppm_ws.iter_rows(min_row=lat_sec_start, max_row=ppm_ws.max_row):
+        for cell in row:
+            if cell.value == '報告セグメント及びその他の合計':
+                cell.value = '計'
+                sales_cell = ppm_ws.cell(cell.row + 3, cell.column)
+                if (isinstance(sales_cell.value, str)
+                        and sales_cell.value.startswith('=')
+                        and '*1%' not in sales_cell.value):
+                    sales_cell.value = sales_cell.value + '*1%'
+
     # -----------------------------------------------------------------------
     # 15. チャートをシートに配置
     # -----------------------------------------------------------------------
@@ -3191,12 +3203,16 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         growth_ppm_row = growth_start_row + filing_idx + 2
         margin_ppm_row = margin_start_row + filing_idx + 2
 
+        # hokoku_col が vcols にない場合は goukei_col を「計」扱いにする
+        eff_total_col = hokoku_col if (hokoku_col and hokoku_col in vcols) else (
+            goukei_col if (goukei_col and goukei_col in vcols) else None)
+
         # ヘッダ行 (sec_start): C=年度, D+=セグメント名
         ppm_ws.cell(sec_start, COL_YEAR).value = cur_p
         for k, ci in enumerate(vcols):
             ppm_ws.cell(sec_start, COL_DATA + k).value = f"={_ppm_col_letter(ci)}1"
-        if vcols_chart and hokoku_col and vcols_chart[-1] == hokoku_col:
-            hok_k = vcols.index(hokoku_col)
+        if eff_total_col in vcols:
+            hok_k = vcols.index(eff_total_col)
             ppm_ws.cell(sec_start, COL_DATA + hok_k).value = "計"
 
         # 利益率行 (sec_start+1)
@@ -3211,12 +3227,12 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             ppm_ws.cell(sec_start + 2, COL_DATA + k).value = (
                 f"={_ppm_col_letter(ci)}{growth_ppm_row}")
 
-        # 売上行 (sec_start+3): hokoku_col は *1% でバブルサイズ調整、goukei_col は通常表示
+        # 売上行 (sec_start+3): eff_total_col は *1% でバブルサイズ調整
         ppm_ws.cell(sec_start + 3, COL_YEAR).value = target_sales_label or "売上収益"
         for k, ci in enumerate(vcols):
             cl = _ppm_col_letter(ci)
             ppm_ws.cell(sec_start + 3, COL_DATA + k).value = (
-                f"={cl}{cur_sales_ppm}*1%" if ci == hokoku_col else f"={cl}{cur_sales_ppm}")
+                f"={cl}{cur_sales_ppm}*1%" if ci == eff_total_col else f"={cl}{cur_sales_ppm}")
 
         sec_end = sec_start + 3
         n_vcols  = len(vcols)
@@ -3343,6 +3359,18 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     if N > FIVE_AGO_OFFSET:
         chart_5y = _make_chart(_fmt_year_str(valid_pairs[FIVE_AGO_IDX]['current']), five_bubble_scale)
         _add_series(chart_5y, ppm_ws, five_start, five_chart_max_col)
+
+    # チャートデータエリア内の「報告セグメント及びその他の合計」を「計」に置換し、
+    # 対応する売上行（ヘッダー行+3）に *1% がなければ付加
+    for row in ppm_ws.iter_rows(min_row=lat_sec_start, max_row=ppm_ws.max_row):
+        for cell in row:
+            if cell.value == '報告セグメント及びその他の合計':
+                cell.value = '計'
+                sales_cell = ppm_ws.cell(cell.row + 3, cell.column)
+                if (isinstance(sales_cell.value, str)
+                        and sales_cell.value.startswith('=')
+                        and '*1%' not in sales_cell.value):
+                    sales_cell.value = sales_cell.value + '*1%'
 
     # -----------------------------------------------------------------------
     # 15. チャートをシートに配置
