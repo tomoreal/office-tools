@@ -125,15 +125,15 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
     ccc_sales_data_row = ccc_ws.max_row  # 売上高の行番号（2のはず）
 
     # 3. 棚卸資産、売上債権、仕入債務の抽出 (BS)
-    inventory_kws_jp = ['MerchandiseAndFinishedGoods', 'WorkInProcess', 'RawMaterialsAndSupplies', 'Inventories', 'Goods', 'SemiFinishedGoods', 'Merchandise', 'FinishedGoods']
+    inventory_kws_jp = ['MerchandiseAndFinishedGoods', 'WorkInProcess', 'RawMaterials', 'Supplies', 'Inventories', 'Goods', 'SemiFinishedGoods', 'Merchandise', 'FinishedGoods' ,'FinishedWork' , 'RealEstateForSale','DevelopmentProjectsInProgress','CostsOnRealEstateBusiness','CostsOnUncompletedServices','LandAndBuildingsForSaleInLots','LandForSaleInLots','RealEstateForSale','CostsOnUncompletedConstructionContracts']
     inventory_kws_ifrs = [] # InventoriesはJP側でもカバー
     inventory_kws = inventory_kws_jp + inventory_kws_ifrs
 
-    receivable_kws_jp = ['NotesAndAccountsReceivableTrade', 'AccountsReceivableTrade', 'NotesReceivableTrade', 'ElectronicallyRecordedMonetaryClaimsOperating', 'ContractAssets']
+    receivable_kws_jp = ['NotesAndOperatingAccountsReceivable','AccountsReceivableTrade', 'NotesReceivableTrade', 'EElectronicallyRecordedMonetaryClaimsOperating', 'ContractAssets', 'OperatingAccountsReceivableCA','NotesReceivableAccountsReceivable','ElectronicallyRecordedMonetaryClaimsOperatingCA']
     receivable_kws_ifrs = ['TradeAndOtherReceivables', 'TradeReceivables', 'OtherReceivables', 'ContractAssets']
     receivable_kws = receivable_kws_jp + receivable_kws_ifrs
 
-    payable_kws_jp = ['NotesAndAccountsPayableTrade', 'AccountsPayableTrade', 'NotesPayableTrade', 'ElectronicallyRecordedObligationsOperating']
+    payable_kws_jp = ['NotesAndAccountsPayableTrade', 'AccountsPayableTrade', 'NotesPayableTrade', 'ElectronicallyRecordedObligationsOperating','NotesPayableAccountsPayable']
     payable_kws_ifrs = ['TradeAndOtherPayables', 'TradePayables', 'OtherPayables']
     payable_kws = payable_kws_jp + payable_kws_ifrs
 
