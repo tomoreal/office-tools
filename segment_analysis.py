@@ -1293,7 +1293,7 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
         for cell in row:
             # 数値または数式に書式を適用
             if isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith('=')):
-                cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+                cell.number_format = '#,##0;[Red]-#,##0'
 
     acq_ws.freeze_panes = 'E2'
 
