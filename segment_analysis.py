@@ -2198,7 +2198,18 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     # growth_rates[0]=ベース, growth_rates[i+1]=valid_pairs[i]
     # profit_margins[0]=ベース, profit_margins[i+1]=valid_pairs[i]
-    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他')
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+    # 「その他事業」のような個別セグメントは通し、「その他」「その他（合計）」等の集計列のみ除外する
+    _SONOTA_SEGMENT_SUFFIXES = ('事業', 'セグメント', '部門', '事業部')
+
+    def _is_adjustment_col(dim_name):
+        if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+            return True
+        # 「その他」を含むが個別セグメントを示すサフィックスがない場合のみ除外
+        if 'その他' in dim_name:
+            if not any(dim_name.endswith(sfx) or sfx in dim_name for sfx in _SONOTA_SEGMENT_SUFFIXES):
+                return True
+        return False
 
     def _valid_cols(filing_idx):
         """3指標すべてが揃っている列インデックスのリストを返す"""
@@ -2211,7 +2222,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             # 調整項目等の非セグメント列は免除列以外では除外
             if c not in _bypass_set:
                 dim_name = _ppm_col_hdr_strs.get(c, col_to_dim.get(c, ''))
-                if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+                if _is_adjustment_col(dim_name):
                     continue
             if (growth_rates[mi].get(c)  is not None and
                 profit_margins[mi].get(c) is not None and
@@ -2291,7 +2302,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                     if _COL_START <= c <= _stop_col and v is not None:
                         if c != hokoku_col:
                             dim_name = _ppm_col_hdr_strs.get(c, col_to_dim.get(c, ''))
-                            if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+                            if _is_adjustment_col(dim_name):
                                 continue
                         vals.append(v)
         return vals
@@ -3195,7 +3206,18 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 return s[:7].replace('-', '/')
         return s[:4]
 
-    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表', 'その他')
+    _ADJUSTMENT_KEYWORDS = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+    # 「その他事業」のような個別セグメントは通し、「その他」「その他（合計）」等の集計列のみ除外する
+    _SONOTA_SEGMENT_SUFFIXES = ('事業', 'セグメント', '部門', '事業部')
+
+    def _is_adjustment_col(dim_name):
+        if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+            return True
+        # 「その他」を含むが個別セグメントを示すサフィックスがない場合のみ除外
+        if 'その他' in dim_name:
+            if not any(dim_name.endswith(sfx) or sfx in dim_name for sfx in _SONOTA_SEGMENT_SUFFIXES):
+                return True
+        return False
 
     def _valid_cols(filing_idx):
         mi = filing_idx + 1
@@ -3205,7 +3227,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             # 調整項目等の非セグメント列は hokoku_col / goukei_col 以外では除外
             if c not in (hokoku_col, goukei_col):
                 dim_name = _ppm_col_hdr_strs.get(c, col_to_dim.get(c, ''))
-                if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+                if _is_adjustment_col(dim_name):
                     continue
             if (growth_rates[mi].get(c)  is not None and
                 profit_margins[mi].get(c) is not None and
@@ -3284,7 +3306,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                     if _COL_START <= c <= _stop_col and v is not None:
                         if c != hokoku_col:
                             dim_name = _ppm_col_hdr_strs.get(c, col_to_dim.get(c, ''))
-                            if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
+                            if _is_adjustment_col(dim_name):
                                 continue
                         vals.append(v)
         return vals
