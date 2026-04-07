@@ -1618,11 +1618,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # 6. 全体(計算値)
     zentai_total_col = _append_col("全体(計算値)", zentai_data)
 
-    # 7. 元のXBRL列（報告セグメント及びその他の合計 / 全体）を再挿入
-    if _src_goukei:
-        _append_col(_src_goukei["header"], _src_goukei["data"])
-    if _src_zentai:
-        _append_col(_src_zentai["header"], _src_zentai["data"])
+    # 7. 元のXBRL列の再挿入は不要（PPMはデータ取得シートを直接参照するため）
 
     # PPMチャート用の重要列を固定
     hokoku_col = hokoku_total_col
