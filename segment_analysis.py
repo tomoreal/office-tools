@@ -130,6 +130,15 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
+            # データ取得シートを先に作成（PPMがデータ取得シートをセル参照するため）
+            _create_data_acquisition_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log
+            )
+
             _create_ppm_analysis_sheet_ifrs(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
@@ -137,15 +146,6 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 filing_pairs=info.get('filing_pairs', []),
                 debug_log=debug_log,
                 global_element_period_values=info.get('global_element_period_values', {})
-            )
-
-            # PPM後に作成することで、PPMが分析シートに追加した集計列も反映される
-            _create_data_acquisition_sheet(
-                workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
-                used_sheet_names=info['used_sheet_names'],
-                filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
             )
 
             _create_ebitda_sheet_ifrs(
@@ -1675,40 +1675,65 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                 return acq_lbl
         return ppm_lbl  # fallback
 
-    # PPM列とデータ取得列は1:1対応（analysis_ws col c → ppm/acq col c+SEG_OFFSET）
-    # SEG_OFFSET は後で定義されるが、ここでは定数2として先行使用
-    _ACQ_SEG_OFFSET = 2  # analysis col 3 → ppm/acq col 5 (E)
-
+    # -----------------------------------------------------------------------
+    # ヘッダーベースの列マッピング（論理キーベース・オフセット非依存）
+    # analysis_ws rebuilt col → acq_ws col は acq_col_map_ref で解決
+    # -----------------------------------------------------------------------
     def _read_from_acq(acq_label, cur_p_str, flag, analysis_col):
-        """データ取得シートから数値を読み取る（軸計算用）。列は直接マッピング。"""
+        """データ取得シートから数値を読み取る（ヘッダーベースの列マッピング）"""
         if acq_ws_ref is None or acq_label is None:
             return None
         acq_row = acq_row_lookup.get((acq_label, cur_p_str, flag))
         if acq_row is None:
             return None
-        acq_col = analysis_col + _ACQ_SEG_OFFSET  # 直接マッピング
+        acq_col = acq_col_map_ref.get(analysis_col)  # ヘッダーで一致した列
+        if acq_col is None:
+            return None
         return _raw_float(acq_ws_ref.cell(acq_row, acq_col).value)
 
     def _acq_formula(acq_label, cur_p_str, flag, analysis_col):
-        """データ取得シートへの参照数式を返す。列は直接マッピング。"""
+        """データ取得シートへの参照数式を返す（ヘッダーベースの列マッピング）"""
         if acq_ws_ref is None or acq_label is None:
             return None
         acq_row = acq_row_lookup.get((acq_label, cur_p_str, flag))
         if acq_row is None:
             return None
-        col_letter = get_column_letter(analysis_col + _ACQ_SEG_OFFSET)
+        acq_col = acq_col_map_ref.get(analysis_col)  # ヘッダーで一致した列
+        if acq_col is None:
+            return None
+        col_letter = get_column_letter(acq_col)
         safe_name = acq_sheet_name_ref.replace("'", "''")
         return f"='{safe_name}'!{col_letter}{acq_row}"
 
     _acq_sales_label = _ppm_label_to_acq(target_sales_label) if acq_ws_ref else None
 
-    # PPMシートのループ終端: データ取得シートの列数に合わせる
-    # acq_ws col 5 = analysis col 3 → acq_max_col = analysis_max_col + 2
-    _ppm_loop_end = (acq_ws_ref.max_column - _ACQ_SEG_OFFSET) if acq_ws_ref else None
+    # PPMシートのループ終端: 再構築後の analysis_ws 列範囲を使用
+    # acq_col_map_ref で対応付けられない列（(計算値)でacqにない等）は空になる
+    _ppm_loop_end = analysis_ws.max_column  # 再構築後の analysis_ws max_col
+
+    # -----------------------------------------------------------------------
+    # 実際のヘッダー文字列をPython変数に保持（Python側検索用）
+    # analysis_ws rebuilt row 1 から直接取得（実文字列が保証される）
+    # -----------------------------------------------------------------------
+    ppm_col_header_strs = {}  # analysis col c -> 実際のヘッダー文字列
+    for _c in range(3, analysis_ws.max_column + 1):
+        _hv = analysis_ws.cell(1, _c).value
+        if _hv is not None:
+            ppm_col_header_strs[_c] = str(_hv)
+
+    # igai_col の補完: analysis_ws ヘッダーから「報告セグメント以外」「その他」を検索
+    if igai_col is None:
+        for _c, _h in sorted(ppm_col_header_strs.items()):
+            if (('以外' in _h and '報告セグメント' in _h) or
+                    ('その他' in _h and '及びその他の合計' not in _h)):
+                if _c != hokoku_col and _c != goukei_col:
+                    igai_col = _c
+                    debug_log(f"[PPM Analysis] igai_col補完: col={igai_col}, header='{_h}'")
+                    break
 
     debug_log(f"[PPM Analysis] acq_ws_ref={'exists' if acq_ws_ref else 'None'}, "
               f"acq_sales_label='{_acq_sales_label}', "
-              f"ppm_loop_end={_ppm_loop_end}")
+              f"ppm_loop_end={_ppm_loop_end}, igai_col={igai_col}")
 
     chart_end_col = goukei_col
 
@@ -2085,11 +2110,14 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     def _valid_cols(filing_idx):
         """3指標すべてが揃っている analysis_ws 列インデックスのリストを返す"""
         mi = filing_idx + 1   # profit_margins / growth_rates のインデックス（0 はベース年）
+        # hokoku_col / igai_col / goukei_col はキーワードフィルタを免除
+        _bypass_set = {c for c in (hokoku_col, igai_col, goukei_col) if c is not None}
         result = []
         for c in range(3, chart_end_col + 1):
-            # 調整項目等の非セグメント列は hokoku_col / goukei_col 以外では除外
-            if c not in (hokoku_col, goukei_col):
-                dim_name = col_to_dim.get(c, '')
+            # 調整項目等の非セグメント列は免除列以外では除外
+            # ppm_col_header_strs（実際の文字列）を優先して使用
+            if c not in _bypass_set:
+                dim_name = ppm_col_header_strs.get(c, col_to_dim.get(c, ''))
                 if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
                     continue
             if (growth_rates[mi].get(c)  is not None and
@@ -2101,7 +2129,13 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     def _append_data_section(filing_idx, sec_start):
         """集約データ4行を指定行・C列起点で ppm_ws.cell() 書き込み"""
         vcols = _valid_cols(filing_idx)
-        vcols_chart = [ci for ci in vcols if ci <= hokoku_col]
+        # チャート用列範囲:
+        #   igai_col がある場合: 個別セグメント + 計(hokoku) + その他(igai) + 合計(goukei)
+        #   igai_col がない場合: 個別セグメント + 計(hokoku)
+        if igai_col is not None and goukei_col is not None:
+            vcols_chart = [ci for ci in vcols if ci <= goukei_col]
+        else:
+            vcols_chart = [ci for ci in vcols if ci <= hokoku_col]
 
         cur_p = valid_pairs[filing_idx]['current']
         cur_sales_ppm  = sales_start_row  + 2 * filing_idx + 1
@@ -2111,10 +2145,14 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         margin_ppm_row = margin_start_row + filing_idx + 2
 
         # ヘッダ行 (sec_start): C=年度, D+=セグメント名
+        # 実際の文字列を使用（セル参照ではPython側で検索できないため）
         ppm_ws.cell(sec_start, COL_YEAR).value = cur_p
         for k, ci in enumerate(vcols):
-            ppm_ws.cell(sec_start, COL_DATA + k).value = f"={get_column_letter(ci + SEG_OFFSET)}1"
-        if vcols_chart and vcols_chart[-1] == hokoku_col:
+            actual_hdr = ppm_col_header_strs.get(ci,
+                         str(analysis_ws.cell(1, ci).value or ''))
+            ppm_ws.cell(sec_start, COL_DATA + k).value = actual_hdr
+        # hokoku_col のラベルを「計」に上書き
+        if hokoku_col in vcols:
             hok_k = vcols.index(hokoku_col)
             ppm_ws.cell(sec_start, COL_DATA + hok_k).value = "計"
 
@@ -2549,6 +2587,92 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     chart_end_col = goukei_col
 
     # -----------------------------------------------------------------------
+    # 3c. データ取得シートからの参照準備
+    # -----------------------------------------------------------------------
+    acq_sheet_name_ref = analysis_sheet_name.replace("_分析", "_データ取得")
+    if len(acq_sheet_name_ref) > 31:
+        acq_sheet_name_ref = analysis_sheet_name[:22] + "_データ取得"
+    acq_ws_ref = workbook[acq_sheet_name_ref] if acq_sheet_name_ref in workbook.sheetnames else None
+
+    # acq_row_lookup: (canonical_label, cur_p, "前期"/"当期") -> row_num
+    acq_row_lookup = {}
+    if acq_ws_ref:
+        for _acq_r in range(2, acq_ws_ref.max_row + 1):
+            _la = acq_ws_ref.cell(_acq_r, 1).value
+            _lb = acq_ws_ref.cell(_acq_r, 2).value
+            _lc = acq_ws_ref.cell(_acq_r, 3).value
+            if _la and _lb and _lc:
+                acq_row_lookup[(str(_la), str(_lb), str(_lc))] = _acq_r
+
+    # acq_header_to_col_idx: header_str -> acq col idx
+    acq_header_to_col_idx = {}
+    if acq_ws_ref:
+        for _ac in range(5, acq_ws_ref.max_column + 1):
+            _ah = str(acq_ws_ref.cell(1, _ac).value or "")
+            if _ah:
+                acq_header_to_col_idx[_ah] = _ac
+
+    # acq_col_map_ref: analysis_ws post-rebuild col idx -> acq_ws col idx
+    # "(計算値)" suffix stripped for matching
+    acq_col_map_ref = {}
+    for _ac in range(3, analysis_ws.max_column + 1):
+        _ah = str(analysis_ws.cell(1, _ac).value or "").replace("(計算値)", "").strip()
+        if _ah in acq_header_to_col_idx:
+            acq_col_map_ref[_ac] = acq_header_to_col_idx[_ah]
+
+    # データ取得シートのcanonicalラベルセットを構築
+    acq_canonical_labels = set(acq_row_lookup[k] and k[0] for k in acq_row_lookup)
+
+    def _norm_lbl(lbl):
+        """ラベルの全角スペース・ASCII空白を除去して正規化"""
+        return str(lbl).replace('\u3000', '').strip() if lbl else ''
+
+    def _ppm_label_to_acq(ppm_lbl):
+        """PPMラベルをデータ取得シートのcanonicalラベルに変換
+        IFRS分析シートのラベルには全角スペースが付くため正規化して比較する"""
+        if ppm_lbl is None:
+            return None
+        norm = _norm_lbl(ppm_lbl)
+        for acq_lbl in acq_canonical_labels:
+            acq_norm = _norm_lbl(acq_lbl)
+            if norm == acq_norm:
+                return acq_lbl
+            if norm.startswith(acq_norm) or acq_norm.startswith(norm):
+                return acq_lbl
+        return ppm_lbl  # fallback
+
+    def _read_from_acq(acq_label, cur_p_str, flag, analysis_col):
+        """データ取得シートから数値を読み取る（ヘッダーベースの列マッピング）"""
+        if acq_ws_ref is None or acq_label is None:
+            return None
+        acq_row = acq_row_lookup.get((acq_label, cur_p_str, flag))
+        if acq_row is None:
+            return None
+        acq_col = acq_col_map_ref.get(analysis_col)
+        if acq_col is None:
+            return None
+        return _raw_float(acq_ws_ref.cell(acq_row, acq_col).value)
+
+    def _acq_formula(acq_label, cur_p_str, flag, analysis_col):
+        """データ取得シートへの参照数式を返す（ヘッダーベースの列マッピング）"""
+        if acq_ws_ref is None or acq_label is None:
+            return None
+        acq_row = acq_row_lookup.get((acq_label, cur_p_str, flag))
+        if acq_row is None:
+            return None
+        acq_col = acq_col_map_ref.get(analysis_col)
+        if acq_col is None:
+            return None
+        col_letter = get_column_letter(acq_col)
+        safe_name = acq_sheet_name_ref.replace("'", "''")
+        return f"='{safe_name}'!{col_letter}{acq_row}"
+
+    _acq_sales_label = _ppm_label_to_acq(target_sales_label) if acq_ws_ref else None
+
+    debug_log(f"[PPM IFRS] acq_ws_ref={'exists' if acq_ws_ref else 'None'}, "
+              f"acq_sales_label='{_acq_sales_label}'")
+
+    # -----------------------------------------------------------------------
     # 4. valid_pairs の構築（analysis_ws にデータがある報告年度のみ、最新11件）
     # -----------------------------------------------------------------------
     def _has_data_row(row):
@@ -2629,9 +2753,15 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # 5. ヘッダー行
     # -----------------------------------------------------------------------
     header = ["勘定科目", "報告年度", "前期・当期", "会計年度"]
-    for c in range(3, latest_max_col + 1):
-        hv = analysis_ws.cell(1, c).value
-        header.append(hv if hv is not None else "")
+    if acq_ws_ref:
+        _safe_acq = acq_sheet_name_ref.replace("'", "''")
+        for c in range(3, latest_max_col + 1):
+            col_letter = get_column_letter(c + SEG_OFFSET)
+            header.append(f"='{_safe_acq}'!{col_letter}1")
+    else:
+        for c in range(3, latest_max_col + 1):
+            hv = analysis_ws.cell(1, c).value
+            header.append(hv if hv is not None else "")
     ppm_ws.append(header)
 
     # 以降は最新の latest_max_col と resolved_*_col を使用して処理
@@ -2653,15 +2783,23 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
         sales_lbl = "　" + (target_sales_label or "売上収益")
         pri_row = [sales_lbl, cur_p, "前期", pri_p if pri_p else ""]
-        for c in range(3, max_col + 1):
-            v = _get_val_for_filing(pri_src, c, fp, False)
-            pri_row.append(v if v is not None else "")
+        for c in range(3, latest_max_col + 1):
+            if acq_ws_ref and _acq_sales_label:
+                formula = _acq_formula(_acq_sales_label, cur_p, "前期", c)
+                pri_row.append(formula if formula is not None else "")
+            else:
+                v = _get_val_for_filing(pri_src, c, fp, False)
+                pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
         cur_row = [sales_lbl, cur_p, "当期", cur_p]
-        for c in range(3, max_col + 1):
-            v = _get_val_for_filing(cur_src, c, fp, True)
-            cur_row.append(v if v is not None else "")
+        for c in range(3, latest_max_col + 1):
+            if acq_ws_ref and _acq_sales_label:
+                formula = _acq_formula(_acq_sales_label, cur_p, "当期", c)
+                cur_row.append(formula if formula is not None else "")
+            else:
+                v = _get_val_for_filing(cur_src, c, fp, True)
+                cur_row.append(v if v is not None else "")
         ppm_ws.append(cur_row)
 
     # 空行
@@ -2682,6 +2820,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         # 当期ラベル（cur_profit_lbl）を優先し、前期でも同ラベルのデータを探す。
         # 同ラベルが前期に存在しない場合は前期のデフォルトラベルのデータを使用。
         consistent_lbl = cur_profit_lbl or pri_profit_lbl or "セグメント利益"
+        _acq_profit_label = _ppm_label_to_acq(consistent_lbl) if acq_ws_ref else None
         if pri_p and cur_profit_lbl:
             pri_src_consistent = period_lookup.get((cur_profit_lbl, pri_p))
             pri_src = pri_src_consistent if (pri_src_consistent is not None and _has_data_row(pri_src_consistent)) else pri_src_default
@@ -2689,15 +2828,23 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             pri_src = pri_src_default
 
         pri_row = ["　" + consistent_lbl, cur_p, "前期", pri_p if pri_p else ""]
-        for c in range(3, max_col + 1):
-            v = _get_val_for_filing(pri_src, c, fp, False)
-            pri_row.append(v if v is not None else "")
+        for c in range(3, latest_max_col + 1):
+            if acq_ws_ref and _acq_profit_label:
+                formula = _acq_formula(_acq_profit_label, cur_p, "前期", c)
+                pri_row.append(formula if formula is not None else "")
+            else:
+                v = _get_val_for_filing(pri_src, c, fp, False)
+                pri_row.append(v if v is not None else "")
         ppm_ws.append(pri_row)
 
         cur_row = ["　" + consistent_lbl, cur_p, "当期", cur_p]
-        for c in range(3, max_col + 1):
-            v = _get_val_for_filing(cur_src, c, fp, True)
-            cur_row.append(v if v is not None else "")
+        for c in range(3, latest_max_col + 1):
+            if acq_ws_ref and _acq_profit_label:
+                formula = _acq_formula(_acq_profit_label, cur_p, "当期", c)
+                cur_row.append(formula if formula is not None else "")
+            else:
+                v = _get_val_for_filing(cur_src, c, fp, True)
+                cur_row.append(v if v is not None else "")
         ppm_ws.append(cur_row)
 
     profit_end_row = ppm_ws.max_row
@@ -2713,7 +2860,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
     base_prior = valid_pairs[0]['prior']
     base_row = ["売上収益対前年増加率", base_prior if base_prior else "", "", base_prior if base_prior else ""]
-    base_row += [""] * (max_col - 2)
+    base_row += [""] * (latest_max_col - 2)
     ppm_ws.append(base_row)
 
     for i, fp in enumerate(valid_pairs):
@@ -2724,7 +2871,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         g_row = ["売上収益対前年増加率", cur_p, "", cur_p]
         year_growth = {}
 
-        for c in range(3, max_col + 1):
+        for c in range(3, latest_max_col + 1):
             ppm_col = get_column_letter(c + SEG_OFFSET)
             if fp['prior'] is None:
                 g_row.append("")
@@ -2733,10 +2880,15 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                            f"{ppm_col}{cur_sales_row}=\"\"),"
                            f"\"\",{ppm_col}{cur_sales_row}/{ppm_col}{pri_sales_row}-1)")
                 g_row.append(formula)
-            pri_src = period_lookup.get((target_sales_label, fp['prior'])) if (target_sales_label and fp['prior']) else None
-            cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
-            pri_val = _get_val_for_filing(pri_src, c, fp, False)
-            cur_val = _get_val_for_filing(cur_src, c, fp, True)
+            # 実値（軸計算用）
+            if acq_ws_ref and _acq_sales_label:
+                pri_val = _read_from_acq(_acq_sales_label, cur_p, "前期", c)
+                cur_val = _read_from_acq(_acq_sales_label, cur_p, "当期", c)
+            else:
+                pri_src = period_lookup.get((target_sales_label, fp['prior'])) if (target_sales_label and fp['prior']) else None
+                cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
+                pri_val = _get_val_for_filing(pri_src, c, fp, False)
+                cur_val = _get_val_for_filing(cur_src, c, fp, True)
             if pri_val is not None and cur_val is not None and pri_val != 0:
                 year_growth[c] = cur_val / pri_val - 1
 
@@ -2759,16 +2911,23 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     base_margin_row_data = ["売上高利益率", base_prior if base_prior else "", "", base_prior if base_prior else ""]
     base_margin = {}
     _fp0 = valid_pairs[0]
-    for c in range(3, max_col + 1):
+    for c in range(3, latest_max_col + 1):
         ppm_col = get_column_letter(c + SEG_OFFSET)
         formula = (f"=IF(OR({ppm_col}{base_profit_ppm_row}=\"\","
                    f"{ppm_col}{base_sales_ppm_row}=\"\"),"
                    f"\"\",{ppm_col}{base_profit_ppm_row}/{ppm_col}{base_sales_ppm_row})")
         base_margin_row_data.append(formula)
-        pri_s_src = period_lookup.get((target_sales_label, base_prior)) if (target_sales_label and base_prior) else None
-        _, pri_p_src = _get_profit_src(base_prior) if base_prior else (None, None)
-        s_val = _get_val_for_filing(pri_s_src, c, _fp0, False)
-        p_val = _get_val_for_filing(pri_p_src, c, _fp0, False)
+        # 実値（最古のfiling pairの前期データでフィルタ）
+        if acq_ws_ref and _acq_sales_label and base_prior:
+            _base_profit_lbl, _ = _get_profit_src(base_prior)
+            _acq_base_profit_lbl = _ppm_label_to_acq(_base_profit_lbl)
+            s_val = _read_from_acq(_acq_sales_label, _fp0['current'], "前期", c)
+            p_val = _read_from_acq(_acq_base_profit_lbl, _fp0['current'], "前期", c) if _acq_base_profit_lbl else None
+        else:
+            pri_s_src = period_lookup.get((target_sales_label, base_prior)) if (target_sales_label and base_prior) else None
+            _, pri_p_src = _get_profit_src(base_prior) if base_prior else (None, None)
+            s_val = _get_val_for_filing(pri_s_src, c, _fp0, False)
+            p_val = _get_val_for_filing(pri_p_src, c, _fp0, False)
         if s_val is not None and p_val is not None and s_val != 0:
             base_margin[c] = p_val / s_val
     ppm_ws.append(base_margin_row_data)
@@ -2781,16 +2940,23 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
         m_row = ["売上高利益率", cur_p, "", cur_p]
         year_margin = {}
-        for c in range(3, max_col + 1):
+        for c in range(3, latest_max_col + 1):
             ppm_col = get_column_letter(c + SEG_OFFSET)
             formula = (f"=IF(OR({ppm_col}{cur_profit_ppm_row}=\"\","
                        f"{ppm_col}{cur_sales_ppm_row}=\"\"),"
                        f"\"\",{ppm_col}{cur_profit_ppm_row}/{ppm_col}{cur_sales_ppm_row})")
             m_row.append(formula)
-            cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
-            _, cur_p_src = _get_profit_src(cur_p)
-            s_val = _get_val_for_filing(cur_s_src, c, fp, True)
-            p_val = _get_val_for_filing(cur_p_src, c, fp, True)
+            # 実値（当期データでフィルタ）
+            if acq_ws_ref and _acq_sales_label:
+                _cur_profit_lbl_ref, _ = _get_profit_src(cur_p)
+                _acq_cur_profit_lbl = _ppm_label_to_acq(_cur_profit_lbl_ref)
+                s_val = _read_from_acq(_acq_sales_label, cur_p, "当期", c)
+                p_val = _read_from_acq(_acq_cur_profit_lbl, cur_p, "当期", c) if _acq_cur_profit_lbl else None
+            else:
+                cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
+                _, cur_p_src = _get_profit_src(cur_p)
+                s_val = _get_val_for_filing(cur_s_src, c, fp, True)
+                p_val = _get_val_for_filing(cur_p_src, c, fp, True)
             if s_val is not None and p_val is not None and s_val != 0:
                 year_margin[c] = p_val / s_val
         profit_margins.append(year_margin)
@@ -2801,10 +2967,13 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     sales_values = []
     for i, fp in enumerate(valid_pairs):
         cur_p = fp['current']
-        cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
         sv = {}
-        for c in range(3, max_col + 1):
-            v = _get_val_for_filing(cur_s_src, c, fp, True)
+        for c in range(3, latest_max_col + 1):
+            if acq_ws_ref and _acq_sales_label:
+                v = _read_from_acq(_acq_sales_label, cur_p, "当期", c)
+            else:
+                cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
+                v = _get_val_for_filing(cur_s_src, c, fp, True)
             if v is not None:
                 sv[c] = v
         sales_values.append(sv)
