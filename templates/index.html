@@ -890,7 +890,7 @@ XBRL to Excel Converter - Main UI Template
             }
         };
 
-        // 先読みダウンロード開始
+        // 先読みダウンロード開始（503サーバービジー時は自動リトライ）
         async function startPreloadDownload(docIds) {
             isDownloading = true;
             convertBtnText.textContent = `ダウンロード中 (0/${docIds.length})...`;
@@ -906,13 +906,57 @@ XBRL to Excel Converter - Main UI Template
                 progressBarFill.style.width = '0%';
             }
 
-            try {
-                const response = await fetch('/api/edinet/preload', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ doc_ids: docIds })
-                });
+            // 503 サーバービジー時のカウントダウン表示
+            let busyTimerInterval = null;
+            function showBusyCountdown(retryAttempt, maxRetries, waitSec) {
+                if (progressContainer) {
+                    let remaining = waitSec;
+                    progressText.textContent = `待機中... ${remaining}秒後に再試行 (${retryAttempt}/${maxRetries})`;
+                    clearInterval(busyTimerInterval);
+                    busyTimerInterval = setInterval(() => {
+                        remaining--;
+                        if (remaining > 0) {
+                            progressText.textContent = `待機中... ${remaining}秒後に再試行 (${retryAttempt}/${maxRetries})`;
+                        } else {
+                            clearInterval(busyTimerInterval);
+                        }
+                    }, 1000);
+                }
+                convertBtnText.textContent = `待機中... (${retryAttempt}/${maxRetries})`;
+            }
 
+            const MAX_BUSY_RETRIES = 24;  // 最大 24回 × 5秒 = 2分
+            const BUSY_WAIT_SEC = 5;
+
+            let response, data;
+            for (let busyAttempt = 1; busyAttempt <= MAX_BUSY_RETRIES; busyAttempt++) {
+                try {
+                    response = await fetch('/api/edinet/preload', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ doc_ids: docIds })
+                    });
+                } catch (networkError) {
+                    throw new Error('ネットワークエラー: ' + networkError.message);
+                }
+
+                if (response.status === 503) {
+                    if (busyAttempt >= MAX_BUSY_RETRIES) {
+                        throw new Error('サーバーが混雑しています。時間をおいてから再度お試しください。');
+                    }
+                    console.log(`サーバービジー: ${BUSY_WAIT_SEC}秒後にリトライ (${busyAttempt}/${MAX_BUSY_RETRIES})`);
+                    showBusyCountdown(busyAttempt, MAX_BUSY_RETRIES, BUSY_WAIT_SEC);
+                    await new Promise(resolve => setTimeout(resolve, BUSY_WAIT_SEC * 1000));
+                    convertBtnText.textContent = `ダウンロード中 (0/${docIds.length})...`;
+                    continue;
+                }
+
+                // 503 以外はループを抜ける
+                clearInterval(busyTimerInterval);
+                break;
+            }
+
+            try {
                 const contentType = response.headers.get('content-type');
                 if (!contentType || !contentType.includes('application/json')) {
                     const text = await response.text();
@@ -920,7 +964,7 @@ XBRL to Excel Converter - Main UI Template
                     throw new Error('サーバーから不正なレスポンスが返されました');
                 }
 
-                const data = await response.json();
+                data = await response.json();
 
                 if (!response.ok || data.error) {
                     throw new Error(data.error || 'ダウンロードに失敗しました');

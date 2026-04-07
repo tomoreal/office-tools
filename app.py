@@ -64,6 +64,57 @@ BASE_TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_u
 if not os.path.exists(BASE_TEMP_DIR):
     os.makedirs(BASE_TEMP_DIR, exist_ok=True)
 
+# 並行ダウンロードの排他制御用ロックファイル
+DOWNLOAD_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.lock_download')
+
+
+def acquire_download_lock(max_retries=2, wait_sec=3, stale_sec=60):
+    """ダウンロードロックを取得する。
+
+    複数ユーザーが同時にダウンロードすると6並列×N本になるのを防ぐため、
+    ファイルロックで排他制御する。CGI環境（マルチプロセス）でも機能する。
+
+    取得できない場合は False を即座に返す（最大 max_retries×wait_sec 秒だけ待機）。
+    呼び出し側は False の場合に 503 を返し、フロントエンドがリトライする設計。
+
+    Returns:
+        True: ロック取得成功
+        False: ロック取得失敗（サーバービジー）
+    """
+    for attempt in range(max_retries):
+        # タイムスタンプが古いロックは削除（前のプロセスが異常終了した場合）
+        if os.path.exists(DOWNLOAD_LOCK_FILE):
+            age = time.time() - os.path.getmtime(DOWNLOAD_LOCK_FILE)
+            if age > stale_sec:
+                try:
+                    os.remove(DOWNLOAD_LOCK_FILE)
+                    app.logger.warning(f"Removed stale download lock (age={age:.0f}s)")
+                except OSError:
+                    pass
+                continue
+
+        # O_CREAT | O_EXCL でアトミックにファイル作成（競合回避）
+        try:
+            fd = os.open(DOWNLOAD_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            pass  # 他のプロセスが保持中
+
+        app.logger.info(f"Download lock busy, waiting {wait_sec}s (attempt {attempt + 1}/{max_retries})")
+        time.sleep(wait_sec)
+
+    app.logger.info("Download lock busy: returning server_busy to client")
+    return False
+
+
+def release_download_lock():
+    """ダウンロードロックを解放する。"""
+    try:
+        os.remove(DOWNLOAD_LOCK_FILE)
+    except OSError:
+        pass
+
 # ========================================================================
 # HOUSEKEEPING - ログローテーション・一時ファイル定期削除
 # ========================================================================
@@ -298,16 +349,23 @@ def edinet_preload():
                 'retry_count': retry_count
             }
 
-        # 並行ダウンロード実行（最大6並列 - リトライ機能でカバー）
+        # 並行ダウンロード実行（最大6並列）
+        # 複数ユーザーの同時リクエストで6並列×N本にならないようロックで排他制御
         start_time = time.time()
         max_workers = min(6, len(doc_ids))  # 最大6並列、またはファイル数
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(download_single_xbrl, doc_id): doc_id for doc_id in doc_ids}
+        if not acquire_download_lock():
+            return jsonify({'error': 'server_busy', 'message': '他のユーザーがダウンロード中です。しばらくお待ちください。'}), 503
 
-            for future in as_completed(futures):
-                result = future.result()
-                downloaded_files.append(result)
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(download_single_xbrl, doc_id): doc_id for doc_id in doc_ids}
+
+                for future in as_completed(futures):
+                    result = future.result()
+                    downloaded_files.append(result)
+        finally:
+            release_download_lock()
 
         total_elapsed = time.time() - start_time
 
