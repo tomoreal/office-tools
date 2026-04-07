@@ -278,30 +278,44 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
     _non_rep_dims_for_total = []       # 差し引くdim群（共通 + その他）
     if synthetic_total_dim is None:
         _kyotsu_exists = any(str(d) == '共通' for d in unique_dims)
-        if _kyotsu_exists:
-            # 集計・調整系を識別するキーワード（これに該当しない個別dimは報告 or 非報告個別）
+        # 「報告セグメント以外の全てのセグメント」が存在するか
+        _IGAI_KW = ['報告セグメント以外']
+        _igai_exists = any(any(kw in str(d) for kw in _IGAI_KW) for d in unique_dims)
+        # 「その他」系の個別セグメントが存在するか（集計・調整系は除く）
+        _OTHER_KW = ['その他']
+        _PRE_AGG_KW = ['報告セグメント', '全社', '消去', '調整項目', '全体', '連結', '単体', '計', '合計']
+        _sonota_exists = any(
+            any(kw in str(d) for kw in _OTHER_KW)
+            and not any(kw in str(d) for kw in _PRE_AGG_KW)
+            for d in unique_dims
+        )
+        if _kyotsu_exists or _igai_exists or _sonota_exists:
+            # 集計・調整系を識別するキーワード（「報告セグメント以外」は個別扱いなので除外）
             _AGG_KW = ['報告セグメント', '全社', '消去', '調整項目', '全体', '連結', '単体', '計', '合計']
-            # 「その他」系は報告セグメントではなく共通と同グループに置く
-            _OTHER_KW = ['その他']
-            # 純粋な報告セグメント（集計・調整・共通・その他を除く個別セグメント）
+            # 「報告セグメント以外」系のdims（_AGG_KWに引っかかるが非報告個別として扱う）
+            _igai_individual = [d for d in unique_dims if any(kw in str(d) for kw in _IGAI_KW)]
+            # 純粋な報告セグメント（集計・調整・共通・その他・報告セグメント以外を除く個別セグメント）
             _report_segs = [
                 d for d in unique_dims
                 if str(d) != '共通'
                 and not any(kw in str(d) for kw in _AGG_KW)
                 and not any(kw in str(d) for kw in _OTHER_KW)
+                and not any(kw in str(d) for kw in _IGAI_KW)
             ]
-            # 「その他」等の非報告個別セグメント（共通を除く）
+            # 「その他」等の非報告個別セグメント（共通・報告セグメント以外を除く）
             _other_individual = [
                 d for d in unique_dims
                 if str(d) != '共通'
                 and not any(kw in str(d) for kw in _AGG_KW)
                 and any(kw in str(d) for kw in _OTHER_KW)
+                and not any(kw in str(d) for kw in _IGAI_KW)
             ]
-            # 集計・調整系（「報告セグメント及びその他の合計」含む）
+            # 集計・調整系（「報告セグメント及びその他の合計」含む。「報告セグメント以外」は除く）
             _agg_dims = [
                 d for d in unique_dims
                 if str(d) != '共通'
                 and any(kw in str(d) for kw in _AGG_KW)
+                and not any(kw in str(d) for kw in _IGAI_KW)
             ]
             # 「報告セグメント及びその他の合計」がXBRLに存在するか確認
             _goukei_existing = next(
@@ -310,12 +324,16 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             _agg_others = [d for d in _agg_dims if d != _goukei_existing]
 
             if _report_segs:
-                # 非報告個別dims（共通 + その他系）
-                _non_report_indiv = ['共通'] + _other_individual
+                # 非報告個別dims（共通 + その他系 + 報告セグメント以外）
+                _non_report_indiv = (
+                    ([d for d in unique_dims if str(d) == '共通'])
+                    + _other_individual
+                    + _igai_individual
+                )
                 if _goukei_existing:
                     # Case 1: XBRLに「報告セグメント及びその他の合計」がある場合
-                    # 「報告セグメント合計」= XBRL合計 - 共通 - その他
-                    # 列順: [報告セグメント群, 報告セグメント合計, 共通+その他, 報告セグメント及びその他の合計(XBRL), 残集計]
+                    # 「報告セグメント合計」= XBRL合計 - 共通 - その他 - 報告セグメント以外の全てのセグメント
+                    # 列順: [報告セグメント群, 報告セグメント合計, 共通+その他+報告セグメント以外, 報告セグメント及びその他の合計(XBRL), 残集計]
                     unique_dims = (_report_segs + ['報告セグメント合計']
                                    + _non_report_indiv + [_goukei_existing] + _agg_others)
                     synthetic_goukei_dim = None          # XBRL値をそのまま使う
