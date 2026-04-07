@@ -241,6 +241,9 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
     if _HAS_TOTAL_WITH_OTHER:
         unique_dims = [d for d in unique_dims if d != "報告セグメント"]
 
+    # 「全社」列は出力対象外（全シートで削除）
+    unique_dims = [d for d in unique_dims if str(d) != "全社"]
+
     # IFRS: 報告セグメント合計列が存在しない場合は合成列を追加
     synthetic_total_dim = None
     reporting_dims_for_total = []
@@ -270,6 +273,9 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
     # PPMグラフ対象は「報告セグメント合計」列以左のみ（_ADJUSTMENT_KEYWORDS の「合計」フィルタで除外）。
     synthetic_goukei_dim = None        # 合成「報告セグメント及びその他の合計」dim名
     goukei_source_dims   = []          # synthetic_goukei_dim の合計元dims
+    _goukei_based_total  = False       # True: 報告セグメント合計 = XBRL合計 - 非報告個別計
+    _goukei_dim_for_total = None       # 基準となるXBRL合計dim名
+    _non_rep_dims_for_total = []       # 差し引くdim群（共通 + その他）
     if synthetic_total_dim is None:
         _kyotsu_exists = any(str(d) == '共通' for d in unique_dims)
         if _kyotsu_exists:
@@ -306,18 +312,28 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             if _report_segs:
                 # 非報告個別dims（共通 + その他系）
                 _non_report_indiv = ['共通'] + _other_individual
-                # 「報告セグメント及びその他の合計」は常に合成値で計算する
-                # （XBRLの既存値は共通を含まないケースがあるため上書き）
                 if _goukei_existing:
-                    # XBRLの既存列を除外し、合成列として作り直す
-                    _agg_others = [d for d in _agg_others if d != _goukei_existing]
-                # 列順: [報告セグメント群, 報告セグメント合計, 共通+その他, 報告セグメント及びその他の合計, 残集計]
-                unique_dims = (_report_segs + ['報告セグメント合計']
-                               + _non_report_indiv + ['報告セグメント及びその他の合計'] + _agg_others)
-                synthetic_goukei_dim = '報告セグメント及びその他の合計'
-                goukei_source_dims   = _report_segs + _non_report_indiv
-                reporting_dims_for_total = _report_segs
-                synthetic_total_dim = "報告セグメント合計"
+                    # Case 1: XBRLに「報告セグメント及びその他の合計」がある場合
+                    # 「報告セグメント合計」= XBRL合計 - 共通 - その他
+                    # 列順: [報告セグメント群, 報告セグメント合計, 共通+その他, 報告セグメント及びその他の合計(XBRL), 残集計]
+                    unique_dims = (_report_segs + ['報告セグメント合計']
+                                   + _non_report_indiv + [_goukei_existing] + _agg_others)
+                    synthetic_goukei_dim = None          # XBRL値をそのまま使う
+                    goukei_source_dims   = []
+                    reporting_dims_for_total = _report_segs
+                    synthetic_total_dim = "報告セグメント合計"
+                    _goukei_based_total = True
+                    _goukei_dim_for_total = _goukei_existing
+                    _non_rep_dims_for_total = _non_report_indiv
+                else:
+                    # Case 2: フォールバック - 報告セグメントのSUM
+                    # 列順: [報告セグメント群, 報告セグメント合計, 共通+その他, 報告セグメント及びその他の合計(合成), 残集計]
+                    unique_dims = (_report_segs + ['報告セグメント合計']
+                                   + _non_report_indiv + ['報告セグメント及びその他の合計'] + _agg_others)
+                    synthetic_goukei_dim = '報告セグメント及びその他の合計'
+                    goukei_source_dims   = _report_segs + _non_report_indiv
+                    reporting_dims_for_total = _report_segs
+                    synthetic_total_dim = "報告セグメント合計"
 
     # 報告セグメント合計列のSUM式用: 列位置を事前計算
     # unique_dims 内の synthetic_total_dim の位置 → シート上の列番号 (A=1, B=2, C=3...)
@@ -462,21 +478,57 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
 
             for dim in unique_dims:
                 if dim == synthetic_total_dim or dim == synthetic_goukei_dim:
-                    # 合成合計列: 対象dims の合計を計算
-                    _src_dims = reporting_dims_for_total if dim == synthetic_total_dim else goukei_source_dims
-                    total_val = 0.0
-                    has_any_val = False
-                    for rd in _src_dims:
-                        rv = period_data.get(rd, "")
-                        if rv:
-                            rv_clean = unicodedata.normalize('NFKC', str(rv)).replace(',', '').strip()
+                    if dim == synthetic_total_dim and _goukei_based_total:
+                        # Case 1: XBRL合計 - 非報告個別計（共通+その他）
+                        gv_raw = period_data.get(_goukei_dim_for_total, "")
+                        gv_clean = unicodedata.normalize('NFKC', str(gv_raw)).replace(',', '').strip() if gv_raw else ""
+                        if gv_clean and not any(c.isalpha() for c in gv_clean):
                             try:
-                                if rv_clean and not any(c.isalpha() for c in rv_clean):
-                                    total_val += float(rv_clean)
-                                    has_any_val = True
+                                gv = float(gv_clean)
+                                non_rep = 0.0
+                                for nrd in _non_rep_dims_for_total:
+                                    nrv = period_data.get(nrd, "")
+                                    if nrv:
+                                        nrv_c = unicodedata.normalize('NFKC', str(nrv)).replace(',', '').strip()
+                                        try:
+                                            if nrv_c and not any(c.isalpha() for c in nrv_c):
+                                                non_rep += float(nrv_c)
+                                        except:
+                                            pass
+                                val = gv - non_rep
                             except:
-                                pass
-                    val = total_val if has_any_val else ""
+                                val = ""
+                        else:
+                            # XBRL合計なし: フォールバックSUM
+                            total_val = 0.0
+                            has_any_val = False
+                            for rd in reporting_dims_for_total:
+                                rv = period_data.get(rd, "")
+                                if rv:
+                                    rv_clean = unicodedata.normalize('NFKC', str(rv)).replace(',', '').strip()
+                                    try:
+                                        if rv_clean and not any(c.isalpha() for c in rv_clean):
+                                            total_val += float(rv_clean)
+                                            has_any_val = True
+                                    except:
+                                        pass
+                            val = total_val if has_any_val else ""
+                    else:
+                        # Case 2: 合成合計列 - 対象dimsのSUM
+                        _src_dims = reporting_dims_for_total if dim == synthetic_total_dim else goukei_source_dims
+                        total_val = 0.0
+                        has_any_val = False
+                        for rd in _src_dims:
+                            rv = period_data.get(rd, "")
+                            if rv:
+                                rv_clean = unicodedata.normalize('NFKC', str(rv)).replace(',', '').strip()
+                                try:
+                                    if rv_clean and not any(c.isalpha() for c in rv_clean):
+                                        total_val += float(rv_clean)
+                                        has_any_val = True
+                                except:
+                                    pass
+                        val = total_val if has_any_val else ""
                 else:
                     val = period_data.get(dim, "")
 
@@ -504,11 +556,13 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             from openpyxl.utils import get_column_letter as _gcl2
             next_row = aws.max_row + 1
 
-            # 報告セグメント合計列をSUM式で上書き
+            # 報告セグメント合計列をSUM式で上書き（Case 2フォールバックのみ）
+            # Case 1（_goukei_based_total）はPython計算済みの値をそのまま使う
             if synthetic_total_dim and synthetic_sum_first_col and synthetic_sum_last_col:
-                row_data_analysis[synthetic_total_col_idx - 1] = (
-                    f"=SUM({synthetic_sum_first_col}{next_row}:{synthetic_sum_last_col}{next_row})"
-                )
+                if not _goukei_based_total:
+                    row_data_analysis[synthetic_total_col_idx - 1] = (
+                        f"=SUM({synthetic_sum_first_col}{next_row}:{synthetic_sum_last_col}{next_row})"
+                    )
 
             # 報告セグメント及びその他の合計列をSUM式で上書き（合成列の場合）
             if synthetic_goukei_dim and synthetic_goukei_col_idx:
@@ -620,18 +674,49 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             dim_values = {}
             for dim in unique_dims:
                 if dim == synthetic_total_dim:
-                    total = 0.0
-                    has_any = False
-                    for rd in reporting_dims_for_total:
-                        v = extra_vals.get((fact_std, rd, period))
-                        if v is not None:
-                            vc = unicodedata.normalize('NFKC', str(v)).replace(',', '').strip()
+                    if _goukei_based_total:
+                        # Case 1: XBRL合計 - 非報告個別計
+                        gv_raw = extra_vals.get((fact_std, _goukei_dim_for_total, period))
+                        if gv_raw is not None:
                             try:
-                                total += float(vc)
-                                has_any = True
+                                gv = float(unicodedata.normalize('NFKC', str(gv_raw)).replace(',', '').strip())
+                                non_rep = 0.0
+                                for nrd in _non_rep_dims_for_total:
+                                    nrv = extra_vals.get((fact_std, nrd, period))
+                                    if nrv is not None:
+                                        try:
+                                            non_rep += float(unicodedata.normalize('NFKC', str(nrv)).replace(',', '').strip())
+                                        except ValueError:
+                                            pass
+                                dim_values[dim] = gv - non_rep
                             except ValueError:
-                                pass
-                    dim_values[dim] = total if has_any else ""
+                                dim_values[dim] = ""
+                        else:
+                            # フォールバック: SUM of reporting segs
+                            total = 0.0
+                            has_any = False
+                            for rd in reporting_dims_for_total:
+                                v = extra_vals.get((fact_std, rd, period))
+                                if v is not None:
+                                    try:
+                                        total += float(unicodedata.normalize('NFKC', str(v)).replace(',', '').strip())
+                                        has_any = True
+                                    except ValueError:
+                                        pass
+                            dim_values[dim] = total if has_any else ""
+                    else:
+                        total = 0.0
+                        has_any = False
+                        for rd in reporting_dims_for_total:
+                            v = extra_vals.get((fact_std, rd, period))
+                            if v is not None:
+                                vc = unicodedata.normalize('NFKC', str(v)).replace(',', '').strip()
+                                try:
+                                    total += float(vc)
+                                    has_any = True
+                                except ValueError:
+                                    pass
+                        dim_values[dim] = total if has_any else ""
                 else:
                     v = extra_vals.get((fact_std, dim, period))
                     if v is not None:
@@ -1006,10 +1091,10 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
         # 「(計算値)」が含まれる列は、プログラム側で別途計算して追加した列なので除外
         if "(計算値)" in h_str:
             return True
-        # 手動計算の残骸として「報告セグメント合計」と「全社」は除外
-        if h_str in ["報告セグメント合計", "全社"]:
+        # 「全社」列は全シートで非表示
+        if h_str == "全社":
             return True
-        # それ以外（XBRL固有の「報告セグメント及びその他の合計」など）は保持
+        # それ以外（XBRL固有の「報告セグメント及びその他の合計」「報告セグメント合計」など）は保持
         return False
 
     included_cols = []
@@ -1424,37 +1509,44 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     for col in [c for c in all_col_data if c["cat"] == "reporting"]:
         rep_indiv_indices.append(_append_col(col["header"], col["data"]))
     
-    # 2. 報告セグメント合計(計算値・XBRL優先)
-    hokoku_total_col = _append_col("報告セグメント合計(計算値)")
+    # 2. 報告セグメント合計
+    hokoku_total_col = _append_col("報告セグメント合計")
 
     # 3. その他事業（個別）
     other_indiv_indices = []
     for col in [c for c in all_col_data if c["cat"] == "other"]:
         other_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 4. 報告セグメント及びその他の合計(計算値・XBRL優先)
-    goukei_total_col = _append_col("報告セグメント及びその他の合計(計算値)")
+    # 4. 報告セグメント及びその他の合計
+    goukei_total_col = _append_col("報告セグメント及びその他の合計")
 
     # 5. 調整項目（個別）
     adj_indiv_indices = []
     for col in [c for c in all_col_data if c["cat"] == "adj"]:
         adj_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 6. 全社(計算値・XBRL優先)
-    grand_total_col = _append_col("全社(計算値)")
-
-    # ソースシートの「報告セグメント及びその他の合計」データを探す
+    # ソースシートの「報告セグメント及びその他の合計」「報告セグメント合計」データを探す
+    # 分析シートに既にXBRLベースの値が格納されているため、これを最優先で使用する
     source_total_data = None
+    source_hokoku_data = None
     for col in all_col_data:
-        if col["header"] == "報告セグメント及びその他の合計":
+        h = str(col["header"] or "")
+        if h == "報告セグメント及びその他の合計":
             source_total_data = col["data"]
-            break
+        elif h == "報告セグメント合計":
+            source_hokoku_data = col["data"]
 
     # --- 数値取得・計算ロジック ---
     def _safe_float(v):
         if v is None or v == "": return 0.0
         try: return float(v)
         except (ValueError, TypeError): return 0.0
+
+    def _raw_float(v):
+        """None/"" は None を返す（0との区別のため）"""
+        if v is None or v == "": return None
+        try: return float(str(v).replace(',', ''))
+        except (ValueError, TypeError): return None
 
     def _get_gepv_val(elems, dims, pstr, comparison_val=None):
         if not gepv: return None
@@ -1476,34 +1568,33 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     # 各行のデータを確定
     netsales_elems = ['jppfs_cor_NetSales', 'jpcrp_cor_NetSalesSummaryOfBusinessResults', 'jppfs_cor_NetRevenue', 'ifrs-full_Revenue']
-    
+
     for _ri_idx, _row in enumerate(range(2, total_rows + 1)):
         # 期間取得
         _period_cell = analysis_ws.cell(_row, 2).value
         _pstr = _to_period_str(_period_cell) if _period_cell else None
-        
-        # 個別列の合計を計算
+
+        # 個別列の合計を計算（フォールバック用）
         _rep_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "reporting")
         _oth_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "other")
-        _adj_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "adj")
 
         # ① 報告セグメント及びその他の合計 (Goukei)
-        # 1. ソースデータ(all_col_data)に既にある合計列を最優先
-        _gv_src = _safe_float(source_total_data[_ri_idx]) if source_total_data else None
-        
-        # 2. XBRL直接取得 (fallback 1)
+        # 分析シートのXBRL値を最優先、なければXBRL直接取得、なければSUM
+        _gv_src = _raw_float(source_total_data[_ri_idx]) if source_total_data else None
+
+        # XBRL直接取得 (fallback)
         _xbrl_goukei = None
-        if _gv_src is None or _gv_src == 0:
+        if _gv_src is None:
             _xbrl_goukei = _get_gepv_val(netsales_elems, [
-                '報告セグメント及びその他の合計', 
-                '報告セグメント及びその他合計', 
+                '報告セグメント及びその他の合計',
+                '報告セグメント及びその他合計',
                 'TotalOfReportableSegmentsAndOthersMember',
                 'TotalOfReportableSegmentsAndOthers',
                 'Total of reportable segments and others'
             ], _pstr, _rep_sum + _oth_sum)
 
         # 確定
-        if _gv_src:
+        if _gv_src is not None:
             _gv = _gv_src
             debug_log(f"[PPM] Goukei-Total from source data: {_gv} (row={_row})")
         elif _xbrl_goukei is not None:
@@ -1511,39 +1602,34 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             debug_log(f"[PPM] Goukei-Total override from XBRL: {_gv} (row={_row})")
         else:
             _gv = _rep_sum + _oth_sum
-        
+
         analysis_ws.cell(_row, goukei_total_col).value = round(_gv, 6)
 
         # ② 報告セグメント合計 (Hokoku)
-        # 1.1 のロジック: Goukei(XBRL)がある場合はそこからOthersを引く
-        if _xbrl_goukei is not None:
+        # 分析シートのXBRL基準値を最優先（XBRL合計 - 非報告個別計で計算済み）
+        _hv_src = _raw_float(source_hokoku_data[_ri_idx]) if source_hokoku_data else None
+        if _hv_src is not None:
+            _hv = _hv_src
+            debug_log(f"[PPM] Hokoku-Total from source data: {_hv} (row={_row})")
+        elif _gv_src is not None or _xbrl_goukei is not None:
             _hv = _gv - _oth_sum
         else:
             _hv = _rep_sum
-        
+
         analysis_ws.cell(_row, hokoku_total_col).value = round(_hv, 6)
 
-        # ③ 全社 (Grand Total / Consolidated)
-        # XBRL優先 ('全体'/'連結')
-        _xbrl_zen = _get_gepv_val(netsales_elems, ['全体', '連結'], _pstr, _gv + _adj_sum)
-        if _xbrl_zen is not None:
-            _zv = _xbrl_zen
-            debug_log(f"[PPM] Grand-Total override from XBRL: {_zv} (row={_row})")
-        else:
-            _zv = _gv + _adj_sum
-        
-        analysis_ws.cell(_row, grand_total_col).value = round(_zv, 6)
 
-
-    # 7. 既存の合計列（「報告セグメント」や「全体」など）
-    for col in [c for c in all_col_data if c["cat"] == "existing_total"]:
+    # 7. 既存の合計列（ステップ2・4で既に作成した列を除く、全社は除外）
+    _ppm_created_headers = {"報告セグメント合計", "報告セグメント及びその他の合計", "全社"}
+    for col in [c for c in all_col_data if c["cat"] == "existing_total"
+                and str(c["header"] or "") not in _ppm_created_headers]:
         _append_col(col["header"], col["data"])
 
     # PPMチャート用の重要列を固定
     hokoku_col = hokoku_total_col
     igai_col   = other_indiv_indices[-1] if other_indiv_indices else None
     goukei_col = goukei_total_col
-    debug_log(f"[PPM Analysis] Re-ordered columns: hokoku={hokoku_col}, goukei={goukei_col}, grand={grand_total_col}")
+    debug_log(f"[PPM Analysis] Re-ordered columns: hokoku={hokoku_col}, goukei={goukei_col}")
 
     chart_end_col = goukei_col
 
@@ -1610,9 +1696,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # すべての _append_col 完了後に現在の全列からヘッダーマップを取得
     header_map = {str(analysis_ws.cell(1, c).value): c for c in range(1, analysis_ws.max_column + 1)}
 
-    resolved_hokoku_col = header_map.get("報告セグメント合計(計算値)")
-    resolved_goukei_col = header_map.get("報告セグメント及びその他の合計(計算値)")
-    resolved_grand_col = header_map.get("全社(計算値)")
+    resolved_hokoku_col = header_map.get("報告セグメント合計")
+    resolved_goukei_col = header_map.get("報告セグメント及びその他の合計")
 
     # col_to_dim と is_synthesized フラグの構築
     latest_max_col = analysis_ws.max_column
@@ -1621,9 +1706,9 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                   if analysis_ws.cell(1, c).value is not None}
 
     hokoku_is_synthesized = (resolved_hokoku_col is not None and 
-                             col_to_dim.get(resolved_hokoku_col, '') == '報告セグメント合計(計算値)')
+                             col_to_dim.get(resolved_hokoku_col, '') == '報告セグメント合計')
     goukei_is_synthesized = (resolved_goukei_col is not None and
-                             col_to_dim.get(resolved_goukei_col, '') == '報告セグメント及びその他の合計(計算値)')
+                             col_to_dim.get(resolved_goukei_col, '') == '報告セグメント及びその他の合計')
 
     _get_val_for_filing = _make_get_val_for_filing(
         analysis_ws, col_to_dim, resolved_hokoku_col, igai_col, resolved_goukei_col,
@@ -1642,7 +1727,6 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # 以降は最新の latest_max_col と resolved_*_col を使用して処理
     hokoku_col = resolved_hokoku_col
     goukei_col = resolved_goukei_col
-    grand_total_col = resolved_grand_col
     ppm_max_col = latest_max_col + SEG_OFFSET
 
     # -----------------------------------------------------------------------
@@ -2219,37 +2303,45 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     for col in [c for c in all_col_data if c["cat"] == "reporting"]:
         rep_indiv_indices.append(_append_col(col["header"], col["data"]))
     
-    # 2. 報告セグメント合計(計算値・XBRL優先)
-    hokoku_total_col = _append_col("報告セグメント合計(計算値)")
+    # 2. 報告セグメント合計
+    hokoku_total_col = _append_col("報告セグメント合計")
 
     # 3. その他事業（個別）
     other_indiv_indices = []
     for col in [c for c in all_col_data if c["cat"] == "other"]:
         other_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 4. 報告セグメント及びその他の合計(計算値・XBRL優先)
-    goukei_total_col = _append_col("報告セグメント及びその他の合計(計算値)")
+    # 4. 報告セグメント及びその他の合計
+    goukei_total_col = _append_col("報告セグメント及びその他の合計")
 
     # 5. 調整項目（個別）
     adj_indiv_indices = []
     for col in [c for c in all_col_data if c["cat"] == "adj"]:
         adj_indiv_indices.append(_append_col(col["header"], col["data"]))
 
-    # 6. 全社(計算値・XBRL優先)
-    grand_total_col = _append_col("全社(計算値)")
+    # 6. 全社
+    grand_total_col = _append_col("全社")
 
     # ソースデータを探す
     source_total_data = None
+    source_hokoku_data = None
     for col in all_col_data:
-        if col["header"] == "報告セグメント及びその他の合計":
+        h = str(col["header"] or "")
+        if h == "報告セグメント及びその他の合計":
             source_total_data = col["data"]
-            break
+        elif h == "報告セグメント合計":
+            source_hokoku_data = col["data"]
 
     # --- 数値取得・計算ロジック ---
     def _safe_float(v):
         if v is None or v == "": return 0.0
         try: return float(v)
         except (ValueError, TypeError): return 0.0
+
+    def _raw_float(v):
+        if v is None or v == "": return None
+        try: return float(str(v).replace(',', ''))
+        except (ValueError, TypeError): return None
 
     def _get_gepv_val(elems, dims, pstr, comparison_val=None):
         if not gepv: return None
@@ -2270,32 +2362,40 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
     # 各行のデータを確定
     netsales_elems = ['ifrs-full_Revenue', 'jppfs_cor_NetSales', 'jppfs_cor_NetRevenue']
-    
+
     for _ri_idx, _row in enumerate(range(2, total_rows + 1)):
         _period_cell = analysis_ws.cell(_row, 2).value
         _pstr = _to_period_str(_period_cell) if _period_cell else None
-        
+
         _rep_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "reporting")
         _oth_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "other")
         _adj_sum = sum(_safe_float(c["data"][_ri_idx]) for c in all_col_data if c["cat"] == "adj")
 
         # ① 報告セグメント及びその他の合計
-        _gv_src = _safe_float(source_total_data[_ri_idx]) if source_total_data else None
+        _gv_src = _raw_float(source_total_data[_ri_idx]) if source_total_data else None
         _xbrl_goukei = None
-        if not _gv_src:
-             _xbrl_goukei = _get_gepv_val(netsales_elems, [
-                '報告セグメント及びその他の合計', 
-                '報告セグメント及びその他合計', 
+        if _gv_src is None:
+            _xbrl_goukei = _get_gepv_val(netsales_elems, [
+                '報告セグメント及びその他の合計',
+                '報告セグメント及びその他合計',
                 'TotalOfReportableSegmentsAndOthersMember',
                 'TotalOfReportableSegmentsAndOthers',
                 'Total of reportable segments and others'
             ], _pstr, _rep_sum + _oth_sum)
 
-        _gv = _gv_src if _gv_src else (_xbrl_goukei if _xbrl_goukei is not None else (_rep_sum + _oth_sum))
+        if _gv_src is not None:
+            _gv = _gv_src
+        elif _xbrl_goukei is not None:
+            _gv = _xbrl_goukei
+        else:
+            _gv = _rep_sum + _oth_sum
         analysis_ws.cell(_row, goukei_total_col).value = round(_gv, 6)
 
-        # ② 報告セグメント合計
-        if _xbrl_goukei is not None:
+        # ② 報告セグメント合計（分析シートの計算済み値を最優先）
+        _hv_src = _raw_float(source_hokoku_data[_ri_idx]) if source_hokoku_data else None
+        if _hv_src is not None:
+            _hv = _hv_src
+        elif _gv_src is not None or _xbrl_goukei is not None:
             _hv = _gv - _oth_sum
         else:
             _hv = _rep_sum
@@ -2307,8 +2407,10 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         analysis_ws.cell(_row, grand_total_col).value = round(_zv, 6)
 
 
-    # 7. 既存の合計列（「報告セグメント」や「全体」など）
-    for col in [c for c in all_col_data if c["cat"] == "existing_total"]:
+    # 7. 既存の合計列（ステップ2・4・6で既に作成した列を除く）
+    _ppm_created_headers = {"報告セグメント合計", "報告セグメント及びその他の合計", "全社"}
+    for col in [c for c in all_col_data if c["cat"] == "existing_total"
+                and str(col["header"] or "") not in _ppm_created_headers]:
         _append_col(col["header"], col["data"])
 
     # PPMチャート用の重要列を固定
@@ -2378,9 +2480,9 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # すべての _append_col 完了後に現在の全列からヘッダーマップを取得
     header_map = {str(analysis_ws.cell(1, c).value): c for c in range(1, analysis_ws.max_column + 1)}
 
-    resolved_hokoku_col = header_map.get("報告セグメント合計(計算値)")
-    resolved_goukei_col = header_map.get("報告セグメント及びその他の合計(計算値)")
-    resolved_grand_col = header_map.get("全社(計算値)")
+    resolved_hokoku_col = header_map.get("報告セグメント合計")
+    resolved_goukei_col = header_map.get("報告セグメント及びその他の合計")
+    resolved_grand_col = header_map.get("全社")
 
     # col_to_dim と is_synthesized フラグの構築
     latest_max_col = analysis_ws.max_column
@@ -2389,9 +2491,9 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                   if analysis_ws.cell(1, c).value is not None}
 
     hokoku_is_synthesized = (resolved_hokoku_col is not None and 
-                             col_to_dim.get(resolved_hokoku_col, '') == '報告セグメント合計(計算値)')
+                             col_to_dim.get(resolved_hokoku_col, '') == '報告セグメント合計')
     goukei_is_synthesized = (resolved_goukei_col is not None and
-                             col_to_dim.get(resolved_goukei_col, '') == '報告セグメント及びその他の合計(計算値)')
+                             col_to_dim.get(resolved_goukei_col, '') == '報告セグメント及びその他の合計')
 
     _get_val_for_filing = _make_get_val_for_filing(
         analysis_ws, col_to_dim, resolved_hokoku_col, igai_col, resolved_goukei_col,
