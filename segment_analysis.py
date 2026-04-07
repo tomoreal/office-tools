@@ -2265,14 +2265,16 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # 12. 軸範囲計算
     # -----------------------------------------------------------------------
     def _axis_values(metric_list, filing_indices):
-        """metric_list: list of dict (col->float), filing_indices: valid_pairs インデックス"""
+        """metric_list: list of dict (col->float), filing_indices: valid_pairs インデックス
+        軸範囲は「計」(hokoku_col) 以左のみ対象とし、その他・合計列は除外する。"""
+        _stop_col = hokoku_col or _COL_END
         vals = []
         for fi in filing_indices:
             mi = fi + 1
             if 0 <= mi < len(metric_list):
                 for c, v in metric_list[mi].items():
-                    if _COL_START <= c <= (goukei_col or _COL_END) and v is not None:
-                        if c not in (hokoku_col, goukei_col):
+                    if _COL_START <= c <= _stop_col and v is not None:
+                        if c != hokoku_col:
                             dim_name = _ppm_col_hdr_strs.get(c, col_to_dim.get(c, ''))
                             if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
                                 continue
@@ -3235,13 +3237,15 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # 12. 軸範囲計算
     # -----------------------------------------------------------------------
     def _axis_values(metric_list, filing_indices):
+        """軸範囲は「計」(hokoku_col) 以左のみ対象とし、その他・合計列は除外する。"""
+        _stop_col = hokoku_col or _COL_END
         vals = []
         for fi in filing_indices:
             mi = fi + 1
             if 0 <= mi < len(metric_list):
                 for c, v in metric_list[mi].items():
-                    if _COL_START <= c <= (goukei_col or _COL_END) and v is not None:
-                        if c not in (hokoku_col, goukei_col):
+                    if _COL_START <= c <= _stop_col and v is not None:
+                        if c != hokoku_col:
                             dim_name = _ppm_col_hdr_strs.get(c, col_to_dim.get(c, ''))
                             if any(s in dim_name for s in _ADJUSTMENT_KEYWORDS):
                                 continue
