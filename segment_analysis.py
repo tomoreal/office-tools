@@ -1704,7 +1704,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             return None
         col_letter = get_column_letter(acq_col)
         safe_name = acq_sheet_name_ref.replace("'", "''")
-        return f"='{safe_name}'!{col_letter}{acq_row}"
+        ref = f"'{safe_name}'!{col_letter}{acq_row}"
+        return f"=IF({ref}=\"\",\"\",{ref})"
 
     _acq_sales_label = _ppm_label_to_acq(target_sales_label) if acq_ws_ref else None
 
@@ -1867,7 +1868,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             _row = acq_row_lookup.get((acq_label, cur_p_str, flag))
             if _row is None:
                 return None
-            return f"='{_safe_acq}'!{get_column_letter(c)}{_row}"
+            ref = f"'{_safe_acq}'!{get_column_letter(c)}{_row}"
+            return f"=IF({ref}=\"\",\"\",{ref})"
 
         def _read_for_chart(acq_label, cur_p_str, flag, c):
             """acq col c から数値を直接読み取り（チャート軸計算用）"""
@@ -2735,7 +2737,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             return None
         col_letter = get_column_letter(acq_col)
         safe_name = acq_sheet_name_ref.replace("'", "''")
-        return f"='{safe_name}'!{col_letter}{acq_row}"
+        ref = f"'{safe_name}'!{col_letter}{acq_row}"
+        return f"=IF({ref}=\"\",\"\",{ref})"
 
     _acq_sales_label = _ppm_label_to_acq(target_sales_label) if acq_ws_ref else None
 
@@ -2865,7 +2868,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             _row = acq_row_lookup.get((acq_label, cur_p_str, flag))
             if _row is None:
                 return None
-            return f"='{_safe_acq}'!{get_column_letter(c)}{_row}"
+            ref = f"'{_safe_acq}'!{get_column_letter(c)}{_row}"
+            return f"=IF({ref}=\"\",\"\",{ref})"
 
         def _read_for_chart(acq_label, cur_p_str, flag, c):
             if acq_label is None:
