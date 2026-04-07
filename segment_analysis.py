@@ -2314,16 +2314,20 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             chart.bubbleScale = bubble_scale
         return chart
 
+    # *1% が付く合計列: hokoku_col があればそれ、なければ goukei_col
+    _scale_cutoff_col = hokoku_col if hokoku_col is not None else goukei_col
+
     def _max_sales(filing_idx):
-        """指定期の個別セグメント売上最大値を返す（hokoku_col以上を除く）"""
+        """指定期の個別セグメント売上最大値を返す（合計列以上を除く）
+        acqパスは sales_values と同じ _read_for_chart を使用して整合性を保つ"""
         fp = valid_pairs[filing_idx]
         cur_p = fp['current']
         max_val = 0
         for c in _valid_cols(filing_idx):
-            if hokoku_col is not None and c >= hokoku_col:
+            if _scale_cutoff_col is not None and c >= _scale_cutoff_col:
                 continue
             if acq_ws_ref and _acq_sales_label:
-                val = _read_from_acq(_acq_sales_label, cur_p, "当期", c)
+                val = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
             else:
                 cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
                 val = _get_val_for_filing(cur_src, c, fp, True)
