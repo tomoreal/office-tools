@@ -2202,13 +2202,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     def _append_data_section(filing_idx, sec_start):
         """集約データ4行を指定行・C列起点で ppm_ws.cell() 書き込み"""
         vcols = _valid_cols(filing_idx)
-        # チャート用列範囲:
-        #   igai_col がある場合: 個別セグメント + 計(hokoku) + その他(igai) + 合計(goukei)
-        #   igai_col がない場合: 個別セグメント + 計(hokoku)
-        if igai_col is not None and goukei_col is not None:
-            vcols_chart = [ci for ci in vcols if ci <= goukei_col]
-        else:
-            vcols_chart = [ci for ci in vcols if ci <= hokoku_col] if hokoku_col else vcols
+        # チャート用列範囲: 「計」(hokoku_col) 以左のみ（その他・合計は除外）
+        vcols_chart = [ci for ci in vcols if ci <= hokoku_col] if hokoku_col else vcols
 
         cur_p = valid_pairs[filing_idx]['current']
         cur_sales_ppm  = sales_start_row  + 2 * filing_idx + 1
@@ -3292,12 +3287,15 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         """指定期の個別セグメント売上最大値を返す（hokoku_col以上を除く）"""
         fp = valid_pairs[filing_idx]
         cur_p = fp['current']
-        cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
         max_val = 0
         for c in _valid_cols(filing_idx):
             if hokoku_col is not None and c >= hokoku_col:
                 continue
-            val = _get_val_for_filing(cur_src, c, fp, True)
+            if acq_ws_ref and _acq_sales_label:
+                val = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+            else:
+                cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
+                val = _get_val_for_filing(cur_src, c, fp, True)
             if val is not None and val > max_val:
                 max_val = val
         return max_val if max_val > 0 else None
