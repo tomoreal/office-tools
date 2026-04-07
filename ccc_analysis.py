@@ -125,17 +125,83 @@ def _perform_ccc_analysis(workbook, bs_sheet_name, pl_sheet_name, debug_log):
     ccc_sales_data_row = ccc_ws.max_row  # 売上高の行番号（2のはず）
 
     # 3. 棚卸資産、売上債権、仕入債務の抽出 (BS)
-    inventory_kws_jp = ['MerchandiseAndFinishedGoods', 'WorkInProcess', 'RawMaterials', 'Supplies', 'Inventories', 'Goods', 'SemiFinishedGoods', 'Merchandise', 'FinishedGoods' ,'FinishedWork' , 'RealEstateForSale','DevelopmentProjectsInProgress','CostsOnRealEstateBusiness','CostsOnUncompletedServices','LandAndBuildingsForSaleInLots','LandForSaleInLots','RealEstateForSale','CostsOnUncompletedConstructionContracts']
-    inventory_kws_ifrs = [] # InventoriesはJP側でもカバー
-    inventory_kws = inventory_kws_jp + inventory_kws_ifrs
+    # 業種別キーワード（EDINETタクソノミ 1f_AccountList.xlsx より）
 
-    receivable_kws_jp = ['NotesAndOperatingAccountsReceivable','AccountsReceivableTrade', 'NotesReceivableTrade', 'EElectronicallyRecordedMonetaryClaimsOperating', 'ContractAssets', 'OperatingAccountsReceivableCA','NotesReceivableAccountsReceivable','ElectronicallyRecordedMonetaryClaimsOperatingCA']
-    receivable_kws_ifrs = ['TradeAndOtherReceivables', 'TradeReceivables', 'OtherReceivables', 'ContractAssets']
-    receivable_kws = receivable_kws_jp + receivable_kws_ifrs
+    # 一般商工業（JP/IFRSを統合）
+    inventory_kws_general = [
+        'Inventories', 'Merchandise', 'MerchandiseAndFinishedGoods', 'FinishedGoods', 'GoodsInTransit',
+        'SemiFinishedGoods', 'WorkInProcess', 'PartlyFinishedWork', 'FinishedWork',
+        'RawMaterials', 'RawMaterialsAndSupplies', 'RawMaterialsInTransit', 'Supplies',
+        'OtherInventories', 'Goods',
+        'RealEstateForSale', 'RealEstateForSaleInProcess',
+        'DevelopmentProjectsInProgress', 'CostsOnRealEstateBusiness',
+        'LandAndBuildingsForSaleInLots', 'LandForSaleInLots',
+        'RealEstateForRent', 'RealEstateForRentNet',
+        'RealEstateForInvestment', 'RealEstateForInvestmentNet',
+        'BeneficiaryRightOfRealEstateInTrust',
+        'CostsOnUncompletedServices',
+    ]
+    receivable_kws_general = [
+        'NotesAndAccountsReceivableTradeAndContractAssets', 'NotesAndAccountsReceivableTradeAndContractAssetsNet',
+        'NotesAndAccountsReceivableTrade', 'NotesAndAccountsReceivableTradeNet',
+        'NotesAndOperatingAccountsReceivable',
+        'AccountsReceivableTradeAndContractAssets', 'AccountsReceivableTradeAndContractAssetsNet',
+        'AccountsReceivableTrade', 'AccountsReceivableTradeNet',
+        'NotesReceivableTrade', 'NotesReceivableTradeNet',
+        'ContractAssets', 'ContractAssetsNet',
+        'AccountsReceivableFromSubsidiariesAndAffiliatesTrade',
+        'AccountsReceivableInstallment',
+        'NotesReceivableAccountsReceivable',
+        'OperatingAccountsReceivableCA',
+        'NotesAndOperatingAccountsReceivableCA',
+        'ElectronicallyRecordedMonetaryClaimsOperatingCA',
+        'ElectronicallyRecordedMonetaryClaimsNonOperatingCA',
+        'AccountsReceivableInstallmentSalesCreditGuaranteeCA',
+        'EElectronicallyRecordedMonetaryClaimsOperating',
+        # IFRS
+        'TradeAndOtherReceivables', 'TradeReceivables', 'OtherReceivables',
+    ]
+    payable_kws_general = [
+        'NotesAndAccountsPayableTrade', 'NotesPayableTrade', 'AccountsPayableTrade',
+        'NotesAndOperatingAccountsPayableTrade',
+        'ElectronicallyRecordedObligationsOperating',
+        'ElectronicallyRecordedObligationsOperatingCL',
+        'NotesPayableAccountsPayable',
+        # IFRS
+        'TradeAndOtherPayables', 'TradePayables', 'OtherPayables',
+    ]
 
-    payable_kws_jp = ['NotesAndAccountsPayableTrade', 'AccountsPayableTrade', 'NotesPayableTrade', 'ElectronicallyRecordedObligationsOperating','NotesPayableAccountsPayable']
-    payable_kws_ifrs = ['TradeAndOtherPayables', 'TradePayables', 'OtherPayables']
-    payable_kws = payable_kws_jp + payable_kws_ifrs
+    # 建設業
+    inventory_kws_construction = [
+        'CostsOnUncompletedConstructionContracts',
+        'CostsOnUncompletedConstructionContractsCNS',
+        'CostsOnUncompletedConstructionContractsAndOtherCNS',
+        'RealEstateForSaleAndDevelopmentProjectsInProgressCNS',
+        'RealEstateForSaleCNS',
+        'RawMaterialsAndSuppliesCNS',
+    ]
+    receivable_kws_construction = [
+        'NotesReceivableAccountsReceivableFromCompletedConstructionContractsAndOtherCNS',
+        'NotesReceivableAccountsReceivableFromCompletedConstructionContractsCNS',
+        'AccountsReceivableFromCompletedConstructionContractsCNS',
+    ]
+    payable_kws_construction = [
+        'NotesPayableAccountsPayableForConstructionContractsAndOtherCNS',
+        'NotesPayableAccountsPayableForConstructionContractsCNS',
+        'AccountsPayableForConstructionContractsCNS',
+    ]
+
+    # 鉄道事業
+    inventory_kws_railway = []
+    receivable_kws_railway = [
+        'NotesAccountsReceivableTradeAndAccruedFreightRWY',
+    ]
+    payable_kws_railway = []
+
+    # 統合
+    inventory_kws = inventory_kws_general + inventory_kws_construction + inventory_kws_railway
+    receivable_kws = receivable_kws_general + receivable_kws_construction + receivable_kws_railway
+    payable_kws = payable_kws_general + payable_kws_construction + payable_kws_railway
 
     def get_category(eng_name):
         if 'Abstract' in eng_name:
