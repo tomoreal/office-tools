@@ -3553,7 +3553,7 @@ def _create_yoy_growth_sheet(workbook, analysis_sheet_name, used_sheet_names, de
                     f"=IF(OR('{escaped}'!{cl}{row - 1}=\"\","
                     f"'{escaped}'!{cl}{row}=\"\"),"
                     f"\"\","
-                    f"'{escaped}'!{cl}{row - 1}/'{escaped}'!{cl}{row}-1)"
+                    f"'{escaped}'!{cl}{row}/'{escaped}'!{cl}{row - 1}-1)"
                 )
                 row_data.append(formula)
         yoy_ws.append(row_data)
