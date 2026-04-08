@@ -186,6 +186,20 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
+            # _データ取得シート名
+            acq_sheet_name_ifrs = analysis_sheet_name.replace("_分析", "_データ取得")
+            if len(acq_sheet_name_ifrs) > 31:
+                acq_sheet_name_ifrs = analysis_sheet_name[:22] + "_データ取得"
+
+            # PPM分析用シート名
+            ppm_sheet_name_ifrs = analysis_sheet_name + "_PPM分析用"
+            if len(ppm_sheet_name_ifrs) > 31:
+                ppm_sheet_name_ifrs = analysis_sheet_name[:18] + "_PPM分析用"
+
+            # 内部作業用シート名（処理後に削除）
+            src_name_ifrs = "_分析_work_" + str(id(info))[:8]
+
+            # Step 1: 旧構造の内部作業用シートを作成
             _create_segment_analysis_sheet(
                 workbook=workbook,
                 sheet_name=info['sheet_name'],
@@ -200,61 +214,102 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 labels_map=info['labels_map'],
                 used_sheet_names=info['used_sheet_names'],
                 global_element_period_values=info.get('global_element_period_values', {}),
-                debug_log=debug_log
+                debug_log=debug_log,
+                override_name=src_name_ifrs
             )
 
-            # データ取得シートを先に作成（PPMがデータ取得シートをセル参照するため）
+            # Step 2: _データ取得シートを内部作業シートから生成
             _create_data_acquisition_sheet(
                 workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
-                used_sheet_names=info['used_sheet_names'],
-                filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
-            )
-
-            _create_ppm_analysis_sheet_ifrs(
-                workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
+                analysis_sheet_name=src_name_ifrs,
                 used_sheet_names=info['used_sheet_names'],
                 filing_pairs=info.get('filing_pairs', []),
                 debug_log=debug_log,
-                global_element_period_values=info.get('global_element_period_values', {})
+                override_acq_name=acq_sheet_name_ifrs
             )
 
+            # Step 3: PPM分析シートを内部作業シートから生成（_データ取得を参照）
+            _create_ppm_analysis_sheet_ifrs(
+                workbook=workbook,
+                analysis_sheet_name=src_name_ifrs,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log,
+                global_element_period_values=info.get('global_element_period_values', {}),
+                override_ppm_name=ppm_sheet_name_ifrs,
+                override_acq_ref_name=acq_sheet_name_ifrs
+            )
+
+            # Step 4: _分析シートを_データ取得のコピーとして生成（新構造）
+            _create_analysis_copy_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                acq_sheet_name=acq_sheet_name_ifrs,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
+            # Step 5: 派生シートを_分析（新構造）から生成（data_col_start=5）
             _create_ebitda_sheet_ifrs(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
 
             _create_sales_ratio_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
 
             _create_employee_ratio_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
 
             _create_composition_ratio_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
 
             _create_yoy_growth_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
+
+            # Step 6: 内部作業シートを削除
+            if src_name_ifrs in workbook.sheetnames:
+                workbook.remove(workbook[src_name_ifrs])
+            info['used_sheet_names'].discard(src_name_ifrs)
+
+            # Step 7: シート順序を調整: _データ取得 → _PPM分析用 → _分析
+            try:
+                if acq_sheet_name_ifrs in workbook.sheetnames and ppm_sheet_name_ifrs in workbook.sheetnames:
+                    idx_acq = workbook.sheetnames.index(acq_sheet_name_ifrs)
+                    idx_ppm = workbook.sheetnames.index(ppm_sheet_name_ifrs)
+                    if idx_ppm != idx_acq + 1:
+                        workbook.move_sheet(ppm_sheet_name_ifrs, offset=idx_acq - idx_ppm + 1)
+
+                if ppm_sheet_name_ifrs in workbook.sheetnames and analysis_sheet_name in workbook.sheetnames:
+                    idx_ppm = workbook.sheetnames.index(ppm_sheet_name_ifrs)
+                    idx_ana = workbook.sheetnames.index(analysis_sheet_name)
+                    if idx_ana != idx_ppm + 1:
+                        workbook.move_sheet(analysis_sheet_name, offset=idx_ppm - idx_ana + 1)
+            except Exception as _e:
+                debug_log(f"[Segment Analysis IFRS] Sheet reorder failed: {_e}")
 
         else:
             # 日本基準・IFRS以外: 通常の分析シートのみ生成
@@ -2579,7 +2634,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
 
 def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
-                               global_element_period_values=None):
+                               global_element_period_values=None,
+                               override_ppm_name=None, override_acq_ref_name=None):
     """
     IFRS用PPM分析シートを作成（内部関数）
 
@@ -2595,9 +2651,12 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     gepv = global_element_period_values or {}
 
     # --- PPM分析シート名を生成 ---
-    ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
-    if len(ppm_sheet_name) > 31:
-        ppm_sheet_name = analysis_sheet_name[:18] + "_PPM分析用"
+    if override_ppm_name:
+        ppm_sheet_name = override_ppm_name
+    else:
+        ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
+        if len(ppm_sheet_name) > 31:
+            ppm_sheet_name = analysis_sheet_name[:18] + "_PPM分析用"
 
     debug_log(f"[PPM IFRS] Creating PPM analysis sheet: {ppm_sheet_name}")
 
@@ -2856,9 +2915,12 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     # -----------------------------------------------------------------------
     # 3c. データ取得シートからの参照準備
     # -----------------------------------------------------------------------
-    acq_sheet_name_ref = analysis_sheet_name.replace("_分析", "_データ取得")
-    if len(acq_sheet_name_ref) > 31:
-        acq_sheet_name_ref = analysis_sheet_name[:22] + "_データ取得"
+    if override_acq_ref_name:
+        acq_sheet_name_ref = override_acq_ref_name
+    else:
+        acq_sheet_name_ref = analysis_sheet_name.replace("_分析", "_データ取得")
+        if len(acq_sheet_name_ref) > 31:
+            acq_sheet_name_ref = analysis_sheet_name[:22] + "_データ取得"
     acq_ws_ref = workbook[acq_sheet_name_ref] if acq_sheet_name_ref in workbook.sheetnames else None
 
     # acq_row_lookup: (canonical_label, cur_p, "前期"/"当期") -> row_num
@@ -4050,7 +4112,8 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
     debug_log(f"[EBITDA] Completed EBITDA sheet: {ebitda_sheet_name}")
 
 
-def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, debug_log,
+                              data_col_start=3):
     """
     IFRS用EBITDA分析シートを作成（内部関数）
 
@@ -4112,6 +4175,11 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
         norm_label = str(label_val).strip()
         if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
             unique_labels_ordered.append(norm_label)
+        # 新構造(data_col_start=5)の場合: col3="前期・当期" の 当期行のみ lookup に登録
+        if data_col_start > 3:
+            flag_val = analysis_ws.cell(r, 3).value
+            if flag_val and str(flag_val).strip() != "当期":
+                continue
         year = _extract_year(period_val)
         if year:
             lookup[(norm_label, year)] = r
@@ -4182,10 +4250,10 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
         return None
 
     def _row_has_data(row):
-        """analysis_ws の指定行（列3以降）に数値データが1つ以上あるか確認する。"""
+        """analysis_ws の指定行（セグメント列以降）に数値データが1つ以上あるか確認する。"""
         if row is None:
             return False
-        for c in range(3, max_col + 1):
+        for c in range(data_col_start, max_col + 1):
             v = analysis_ws.cell(row, c).value
             if isinstance(v, (int, float)):
                 return True
@@ -4199,7 +4267,8 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
         for idx, src_row in enumerate(src_rows_list):
             label_formula = f"='{escaped}'!A{label_row}" if label_row is not None else label
             row_data = [label_formula]
-            for col_idx in range(2, max_col + 1):
+            # 固定列 2..data_col_start-1
+            for col_idx in range(2, data_col_start):
                 cl = get_column_letter(col_idx)
                 if col_idx == 2:
                     if src_row:
@@ -4209,10 +4278,15 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
                     else:
                         formula = ""
                 else:
-                    formula = (
-                        f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
-                        if src_row else ""
-                    )
+                    formula = f"='{escaped}'!{cl}{src_row}" if src_row else ""
+                row_data.append(formula)
+            # セグメント列
+            for col_idx in range(data_col_start, max_col + 1):
+                cl = get_column_letter(col_idx)
+                formula = (
+                    f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
+                    if src_row else ""
+                )
                 row_data.append(formula)
             ebitda_ws.append(row_data)
         return block_start
@@ -4286,8 +4360,9 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
     ebitda_block_start = ebitda_ws.max_row + 1
     for idx in range(NUM_YEARS):
         row_data = ["EBITDA"]
-        row_data.append(f"=B{sales_block_start + idx}")
-        for col_idx in range(3, max_col + 1):
+        for i in range(2, data_col_start):
+            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
+        for col_idx in range(data_col_start, max_col + 1):
             cl = get_column_letter(col_idx)
             profit_cells = [f"{cl}{bs + idx}" for bs in profit_block_starts]
             refs_cells = [f"{cl}{bs + idx}" for bs in refs_block_starts]
@@ -4333,8 +4408,9 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
     ratio_block_start = ebitda_ws.max_row + 1
     for idx in range(NUM_YEARS):
         row_data = ["EBITDA/売上高"]
-        row_data.append(f"=B{sales_block_start + idx}")
-        for col_idx in range(3, max_col + 1):
+        for i in range(2, data_col_start):
+            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
+        for col_idx in range(data_col_start, max_col + 1):
             cl = get_column_letter(col_idx)
             ebitda_row = ebitda_block_start + idx
             sales_row = sales_block_start + idx
@@ -4351,11 +4427,12 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
     # --- EBITDA対前年増加率ブロック ---
     for idx in range(NUM_YEARS):
         row_data = ["EBITDA対前年増加率"]
-        row_data.append(f"=B{sales_block_start + idx}")
+        for i in range(2, data_col_start):
+            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
         if idx == 0:
-            row_data += [""] * (max_col - 2)
+            row_data += [""] * (max_col - data_col_start + 1)
         else:
-            for col_idx in range(3, max_col + 1):
+            for col_idx in range(data_col_start, max_col + 1):
                 cl = get_column_letter(col_idx)
                 cur_row = ebitda_block_start + idx
                 prev_row = ebitda_block_start + idx - 1
@@ -4369,15 +4446,16 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
     # -----------------------------------------------------------------------
     # 5. 書式設定
     # -----------------------------------------------------------------------
-    for row in ebitda_ws.iter_rows(min_row=2, max_row=ebitda_block_end, min_col=3, max_col=max_col):
+    for row in ebitda_ws.iter_rows(min_row=2, max_row=ebitda_block_end, min_col=data_col_start, max_col=max_col):
         for cell in row:
             cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
 
-    for row in ebitda_ws.iter_rows(min_row=ratio_block_start, max_row=ebitda_ws.max_row, min_col=3, max_col=max_col):
+    for row in ebitda_ws.iter_rows(min_row=ratio_block_start, max_row=ebitda_ws.max_row, min_col=data_col_start, max_col=max_col):
         for cell in row:
             cell.number_format = '0%'
 
-    ebitda_ws.freeze_panes = 'B2'
+    freeze_col = get_column_letter(data_col_start)
+    ebitda_ws.freeze_panes = f'{freeze_col}2'
     ebitda_ws.column_dimensions['A'].width = 31
     for col_idx in range(2, max_col + 1):
         ebitda_ws.column_dimensions[get_column_letter(col_idx)].width = 12
