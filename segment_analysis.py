@@ -2096,13 +2096,42 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             return f"=IF({ref}=\"\",\"\",{ref})"
 
         def _read_for_chart(acq_label, cur_p_str, flag, c):
-            """acq col c から数値を直接読み取り（チャート軸計算用）"""
+            """acq col c から数値を直接読み取り（チャート軸計算用）
+            (計算値) 列はセルがExcel数式文字列のため、構成列を合算してフォールバック"""
             if acq_label is None:
                 return None
             _row = acq_row_lookup.get((acq_label, cur_p_str, flag))
             if _row is None:
                 return None
-            return _raw_float(acq_ws_ref.cell(_row, c).value)
+            v = _raw_float(acq_ws_ref.cell(_row, c).value)
+            if v is not None:
+                return v
+            # --- formula/None フォールバック: 集計列を構成列から計算 ---
+            _adj_kws = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+            if c == hokoku_col and hokoku_col is not None:
+                # 個別セグメント列を合算
+                _skip = {x for x in (igai_col, goukei_col) if x is not None}
+                total, has = 0.0, False
+                for _cc in range(_COL_START, hokoku_col):
+                    if _cc in _skip:
+                        continue
+                    _hdr = str(acq_ws_ref.cell(1, _cc).value or '')
+                    if any(kw in _hdr for kw in _adj_kws):
+                        continue
+                    _v = _raw_float(acq_ws_ref.cell(_row, _cc).value)
+                    if _v is not None:
+                        total += _v; has = True
+                return total if has else None
+            if c == goukei_col and goukei_col is not None:
+                # 報告セグメント合計 + その他
+                v_h = _raw_float(acq_ws_ref.cell(_row, hokoku_col).value) if hokoku_col else None
+                if v_h is None and hokoku_col:
+                    # hokoku_col も数式の場合は再帰的に計算
+                    v_h = _read_for_chart(acq_label, cur_p_str, flag, hokoku_col)
+                v_i = _raw_float(acq_ws_ref.cell(_row, igai_col).value) if igai_col else None
+                if v_h is not None or v_i is not None:
+                    return (v_h or 0.0) + (v_i or 0.0)
+            return None
 
         # ヘッダー行: acq_ws の列構造をそのまま参照
         header = ["勘定科目", "報告年度", "前期・当期", "会計年度"]
@@ -3130,12 +3159,39 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             return f"=IF({ref}=\"\",\"\",{ref})"
 
         def _read_for_chart(acq_label, cur_p_str, flag, c):
+            """acq col c から数値を直接読み取り（チャート軸計算用）
+            (計算値) 列はセルがExcel数式文字列のため、構成列を合算してフォールバック"""
             if acq_label is None:
                 return None
             _row = acq_row_lookup.get((acq_label, cur_p_str, flag))
             if _row is None:
                 return None
-            return _raw_float(acq_ws_ref.cell(_row, c).value)
+            v = _raw_float(acq_ws_ref.cell(_row, c).value)
+            if v is not None:
+                return v
+            # --- formula/None フォールバック: 集計列を構成列から計算 ---
+            _adj_kws = ('合計', '全体', '全社', '消去', '調整', '連結財務諸表')
+            if c == hokoku_col and hokoku_col is not None:
+                _skip = {x for x in (igai_col, goukei_col) if x is not None}
+                total, has = 0.0, False
+                for _cc in range(_COL_START, hokoku_col):
+                    if _cc in _skip:
+                        continue
+                    _hdr = str(acq_ws_ref.cell(1, _cc).value or '')
+                    if any(kw in _hdr for kw in _adj_kws):
+                        continue
+                    _v = _raw_float(acq_ws_ref.cell(_row, _cc).value)
+                    if _v is not None:
+                        total += _v; has = True
+                return total if has else None
+            if c == goukei_col and goukei_col is not None:
+                v_h = _raw_float(acq_ws_ref.cell(_row, hokoku_col).value) if hokoku_col else None
+                if v_h is None and hokoku_col:
+                    v_h = _read_for_chart(acq_label, cur_p_str, flag, hokoku_col)
+                v_i = _raw_float(acq_ws_ref.cell(_row, igai_col).value) if igai_col else None
+                if v_h is not None or v_i is not None:
+                    return (v_h or 0.0) + (v_i or 0.0)
+            return None
 
         # ヘッダー行: acq_ws の列構造をそのまま参照
         header = ["勘定科目", "報告年度", "前期・当期", "会計年度"]
