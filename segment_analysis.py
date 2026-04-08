@@ -36,23 +36,6 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
     debug_log(f"[Segment Analysis] Starting segment analysis sheet generation for {len(segment_sheets_info)} sheets")
 
     for info in segment_sheets_info:
-        _create_segment_analysis_sheet(
-            workbook=workbook,
-            sheet_name=info['sheet_name'],
-            ordered_keys=info['ordered_keys'],
-            all_years_data=info['all_years_data'],
-            role=info['role'],
-            sorted_role_cols=info['sorted_role_cols'],
-            role_columns=info['role_columns'],
-            current_standard=info['current_standard'],
-            segment_dict=info['segment_dict'],
-            common_dict=info['common_dict'],
-            labels_map=info['labels_map'],
-            used_sheet_names=info['used_sheet_names'],
-            global_element_period_values=info.get('global_element_period_values', {}),
-            debug_log=debug_log
-        )
-
         # 元の注記シートの末尾にセグメント別研究開発費を追加
         _append_rd_to_notes_sheet(
             workbook=workbook,
@@ -62,73 +45,163 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             debug_log=debug_log
         )
 
-        # Create PPM analysis sheet for Japanese GAAP only
+        # 日本基準: _分析 = _データ取得のコピー（新構造）
         if '日本基準' in info['sheet_name']:
-            # Use the same sheet name transformation as _create_segment_analysis_sheet
-            # (replacing "注記" with "連結")
             base_name = info['sheet_name'].replace("注記", "連結")
             analysis_sheet_name = base_name + "_分析"
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
 
-            # データ取得シートを先に作成（PPMがデータ取得シートを参照するため）
-            _create_data_acquisition_sheet(
+            # _データ取得シート名
+            acq_sheet_name = analysis_sheet_name.replace("_分析", "_データ取得")
+            if len(acq_sheet_name) > 31:
+                acq_sheet_name = analysis_sheet_name[:22] + "_データ取得"
+
+            # PPM分析用シート名
+            ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
+            if len(ppm_sheet_name) > 31:
+                ppm_sheet_name = analysis_sheet_name[:18] + "_PPM分析用"
+
+            # 内部作業用シート名（PPM列再構成の元データ用、処理後に削除）
+            src_name = "_分析_work_" + str(id(info))[:8]
+
+            # Step 1: 旧構造の内部作業用シートを作成
+            _create_segment_analysis_sheet(
                 workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
+                sheet_name=info['sheet_name'],
+                ordered_keys=info['ordered_keys'],
+                all_years_data=info['all_years_data'],
+                role=info['role'],
+                sorted_role_cols=info['sorted_role_cols'],
+                role_columns=info['role_columns'],
+                current_standard=info['current_standard'],
+                segment_dict=info['segment_dict'],
+                common_dict=info['common_dict'],
+                labels_map=info['labels_map'],
                 used_sheet_names=info['used_sheet_names'],
-                filing_pairs=info.get('filing_pairs', []),
-                debug_log=debug_log
+                global_element_period_values=info.get('global_element_period_values', {}),
+                debug_log=debug_log,
+                override_name=src_name
             )
 
-            _create_ppm_analysis_sheet(
+            # Step 2: _データ取得シートを内部作業シートから生成
+            _create_data_acquisition_sheet(
                 workbook=workbook,
-                analysis_sheet_name=analysis_sheet_name,
+                analysis_sheet_name=src_name,
                 used_sheet_names=info['used_sheet_names'],
                 filing_pairs=info.get('filing_pairs', []),
                 debug_log=debug_log,
-                global_element_period_values=info.get('global_element_period_values', {})
+                override_acq_name=acq_sheet_name
             )
 
+            # Step 3: PPM分析シートを内部作業シートから生成（_データ取得を参照）
+            _create_ppm_analysis_sheet(
+                workbook=workbook,
+                analysis_sheet_name=src_name,
+                used_sheet_names=info['used_sheet_names'],
+                filing_pairs=info.get('filing_pairs', []),
+                debug_log=debug_log,
+                global_element_period_values=info.get('global_element_period_values', {}),
+                override_ppm_name=ppm_sheet_name,
+                override_acq_ref_name=acq_sheet_name
+            )
+
+            # Step 4: _分析シートを_データ取得のコピーとして生成（新構造）
+            _create_analysis_copy_sheet(
+                workbook=workbook,
+                analysis_sheet_name=analysis_sheet_name,
+                acq_sheet_name=acq_sheet_name,
+                used_sheet_names=info['used_sheet_names'],
+                debug_log=debug_log
+            )
+
+            # Step 5: 派生シートを_分析（新構造）から生成（data_col_start=5）
             _create_composition_ratio_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
 
             _create_yoy_growth_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
 
             _create_ebitda_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
 
             _create_sales_ratio_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
 
             _create_employee_ratio_sheet(
                 workbook=workbook,
                 analysis_sheet_name=analysis_sheet_name,
                 used_sheet_names=info['used_sheet_names'],
-                debug_log=debug_log
+                debug_log=debug_log,
+                data_col_start=5
             )
+
+            # Step 6: 内部作業シートを削除
+            if src_name in workbook.sheetnames:
+                workbook.remove(workbook[src_name])
+            info['used_sheet_names'].discard(src_name)
+
+            # Step 7: シート順序を調整: _データ取得 → _PPM分析用 → _分析
+            try:
+                sheet_names = workbook.sheetnames
+                if acq_sheet_name in sheet_names and ppm_sheet_name in sheet_names:
+                    # _PPM分析用 を _データ取得 の直後に移動
+                    idx_acq = workbook.sheetnames.index(acq_sheet_name)
+                    idx_ppm = workbook.sheetnames.index(ppm_sheet_name)
+                    if idx_ppm != idx_acq + 1:
+                        workbook.move_sheet(ppm_sheet_name, offset=idx_acq - idx_ppm + 1)
+
+                if ppm_sheet_name in workbook.sheetnames and analysis_sheet_name in workbook.sheetnames:
+                    # _分析 を _PPM分析用 の直後に移動
+                    idx_ppm = workbook.sheetnames.index(ppm_sheet_name)
+                    idx_ana = workbook.sheetnames.index(analysis_sheet_name)
+                    if idx_ana != idx_ppm + 1:
+                        workbook.move_sheet(analysis_sheet_name, offset=idx_ppm - idx_ana + 1)
+            except Exception as _e:
+                debug_log(f"[Segment Analysis] Sheet reorder failed: {_e}")
 
         elif 'IFRS' in info['sheet_name']:
             base_name = info['sheet_name'].replace("注記", "連結")
             analysis_sheet_name = base_name + "_分析"
             if len(analysis_sheet_name) > 31:
                 analysis_sheet_name = base_name[:28] + "_分析"
+
+            _create_segment_analysis_sheet(
+                workbook=workbook,
+                sheet_name=info['sheet_name'],
+                ordered_keys=info['ordered_keys'],
+                all_years_data=info['all_years_data'],
+                role=info['role'],
+                sorted_role_cols=info['sorted_role_cols'],
+                role_columns=info['role_columns'],
+                current_standard=info['current_standard'],
+                segment_dict=info['segment_dict'],
+                common_dict=info['common_dict'],
+                labels_map=info['labels_map'],
+                used_sheet_names=info['used_sheet_names'],
+                global_element_period_values=info.get('global_element_period_values', {}),
+                debug_log=debug_log
+            )
 
             # データ取得シートを先に作成（PPMがデータ取得シートをセル参照するため）
             _create_data_acquisition_sheet(
@@ -183,11 +256,31 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 debug_log=debug_log
             )
 
+        else:
+            # 日本基準・IFRS以外: 通常の分析シートのみ生成
+            _create_segment_analysis_sheet(
+                workbook=workbook,
+                sheet_name=info['sheet_name'],
+                ordered_keys=info['ordered_keys'],
+                all_years_data=info['all_years_data'],
+                role=info['role'],
+                sorted_role_cols=info['sorted_role_cols'],
+                role_columns=info['role_columns'],
+                current_standard=info['current_standard'],
+                segment_dict=info['segment_dict'],
+                common_dict=info['common_dict'],
+                labels_map=info['labels_map'],
+                used_sheet_names=info['used_sheet_names'],
+                global_element_period_values=info.get('global_element_period_values', {}),
+                debug_log=debug_log
+            )
+
 
 def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years_data,
                                    role, sorted_role_cols, role_columns, current_standard,
                                    segment_dict, common_dict, labels_map, used_sheet_names,
-                                   global_element_period_values, debug_log):
+                                   global_element_period_values, debug_log,
+                                   override_name=None):
     """
     セグメント分析シートを作成（内部関数）
 
@@ -210,13 +303,15 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
     base_name = sheet_name.replace("注記", "連結")
 
     # 2. 分析シート名を生成
-    analysis_sheet_name = base_name + "_分析"
-
-    # 3. Excelのシート名制限（31文字）をチェック
-    if len(analysis_sheet_name) > 31:
-        # 31文字を超える場合は、置換後の名前をカットして "_分析" を結合
-        # (31 - 3 = 28文字分を本体から取得)
-        analysis_sheet_name = base_name[:28] + "_分析"
+    if override_name:
+        analysis_sheet_name = override_name
+    else:
+        analysis_sheet_name = base_name + "_分析"
+        # 3. Excelのシート名制限（31文字）をチェック
+        if len(analysis_sheet_name) > 31:
+            # 31文字を超える場合は、置換後の名前をカットして "_分析" を結合
+            # (31 - 3 = 28文字分を本体から取得)
+            analysis_sheet_name = base_name[:28] + "_分析"
 
     debug_log(f"[Segment Analysis] Creating analysis sheet: {analysis_sheet_name}")
 
@@ -1059,7 +1154,7 @@ def _make_get_val_for_filing(analysis_ws, col_to_dim,
 
 
 def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_names,
-                                   filing_pairs, debug_log):
+                                   filing_pairs, debug_log, override_acq_name=None):
     """
     「データ取得」シートを作成（内部関数）
 
@@ -1080,9 +1175,12 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
     from openpyxl.utils import get_column_letter
 
     # --- シート名を生成 ---
-    acq_sheet_name = analysis_sheet_name.replace("_分析", "_データ取得")
-    if len(acq_sheet_name) > 31:
-        acq_sheet_name = analysis_sheet_name[:22] + "_データ取得"
+    if override_acq_name:
+        acq_sheet_name = override_acq_name
+    else:
+        acq_sheet_name = analysis_sheet_name.replace("_分析", "_データ取得")
+        if len(acq_sheet_name) > 31:
+            acq_sheet_name = analysis_sheet_name[:22] + "_データ取得"
 
     if acq_sheet_name in workbook.sheetnames:
         debug_log(f"[Data Acquisition] Sheet '{acq_sheet_name}' already exists, skipping")
@@ -1343,8 +1441,55 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
             pass
 
 
+def _create_analysis_copy_sheet(workbook, analysis_sheet_name, acq_sheet_name, used_sheet_names, debug_log):
+    """
+    _データ取得シートの内容をコピーして_分析シートを作成する（内部関数）
+
+    _データ取得シートと全く同じ列構造・データを持つ_分析シートを生成する。
+
+    Args:
+        workbook: openpyxlワークブック
+        analysis_sheet_name: 作成する分析シート名
+        acq_sheet_name: コピー元のデータ取得シート名
+        used_sheet_names: 使用済みシート名のセット
+        debug_log: デバッグログ関数
+    """
+    from openpyxl.utils import get_column_letter
+
+    if acq_sheet_name not in workbook.sheetnames:
+        debug_log(f"[Analysis Copy] Source sheet '{acq_sheet_name}' not found, skipping")
+        return
+
+    if analysis_sheet_name in workbook.sheetnames:
+        debug_log(f"[Analysis Copy] Sheet '{analysis_sheet_name}' already exists, skipping")
+        return
+
+    acq_ws = workbook[acq_sheet_name]
+    analysis_ws = workbook.create_sheet(title=analysis_sheet_name)
+    used_sheet_names.add(analysis_sheet_name)
+
+    # セル値・書式をコピー
+    for row in acq_ws.iter_rows():
+        for cell in row:
+            new_cell = analysis_ws.cell(row=cell.row, column=cell.column)
+            new_cell.value = cell.value
+            if cell.number_format and cell.number_format != 'General':
+                new_cell.number_format = cell.number_format
+
+    # 列幅をコピー
+    for col_letter, col_dim in acq_ws.column_dimensions.items():
+        analysis_ws.column_dimensions[col_letter].width = col_dim.width
+
+    # ウィンドウ枠をコピー
+    if acq_ws.freeze_panes:
+        analysis_ws.freeze_panes = acq_ws.freeze_panes
+
+    debug_log(f"[Analysis Copy] Created '{analysis_sheet_name}' as copy of '{acq_sheet_name}'")
+
+
 def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
-                               global_element_period_values=None):
+                               global_element_period_values=None,
+                               override_ppm_name=None, override_acq_ref_name=None):
     """
     PPM分析シートを作成（内部関数）
 
@@ -1366,9 +1511,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     from openpyxl.chart import BubbleChart, Reference, Series
 
     # --- PPM分析シート名を生成 ---
-    ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
-    if len(ppm_sheet_name) > 31:
-        ppm_sheet_name = analysis_sheet_name[:18] + "_PPM分析用"
+    if override_ppm_name:
+        ppm_sheet_name = override_ppm_name
+    else:
+        ppm_sheet_name = analysis_sheet_name + "_PPM分析用"
+        if len(ppm_sheet_name) > 31:
+            ppm_sheet_name = analysis_sheet_name[:18] + "_PPM分析用"
 
     debug_log(f"[PPM Analysis] Creating PPM analysis sheet: {ppm_sheet_name}")
 
@@ -1648,9 +1796,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     # 3c. データ取得シートからの参照準備
     #     データ取得シートが既に作成されている場合、そこからExcel参照式でデータを取得する
     # -----------------------------------------------------------------------
-    acq_sheet_name_ref = analysis_sheet_name.replace("_分析", "_データ取得")
-    if len(acq_sheet_name_ref) > 31:
-        acq_sheet_name_ref = analysis_sheet_name[:22] + "_データ取得"
+    if override_acq_ref_name:
+        acq_sheet_name_ref = override_acq_ref_name
+    else:
+        acq_sheet_name_ref = analysis_sheet_name.replace("_分析", "_データ取得")
+        if len(acq_sheet_name_ref) > 31:
+            acq_sheet_name_ref = analysis_sheet_name[:22] + "_データ取得"
     acq_ws_ref = workbook[acq_sheet_name_ref] if acq_sheet_name_ref in workbook.sheetnames else None
 
     # acq_row_lookup: (canonical_label, cur_p, "前期"/"当期") -> row_num
@@ -3428,7 +3579,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     debug_log(f"[PPM IFRS] Completed PPM analysis sheet: {ppm_sheet_name}")
 
 
-def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log,
+                                    data_col_start=3):
     """
     構成比シートを作成（内部関数）
 
@@ -3440,6 +3592,7 @@ def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_na
         analysis_sheet_name: 参照元の分析シート名
         used_sheet_names: 使用済みシート名のセット
         debug_log: デバッグログ関数
+        data_col_start: セグメントデータが始まる列番号（旧構造=3, 新構造=5）
     """
     from openpyxl.utils import get_column_letter
 
@@ -3461,9 +3614,9 @@ def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_na
     max_col = analysis_ws.max_column
     max_row = analysis_ws.max_row
 
-    # 「報告セグメント」列を動的に検出
+    # 「報告セグメント」列を動的に検出（data_col_start以降から検索）
     denom_col = max_col
-    for col_idx in range(3, max_col + 1):
+    for col_idx in range(data_col_start, max_col + 1):
         hv = analysis_ws.cell(1, col_idx).value
         if hv and "報告セグメント" in str(hv) and "以外" not in str(hv):
             denom_col = col_idx
@@ -3471,9 +3624,12 @@ def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_na
 
     denom_cl = get_column_letter(denom_col)
 
-    # ヘッダ行（行1）: 勘定科目・年度・各セグメント列をそのままコピー参照（報告セグメントまで）
-    header = ["勘定科目", "年度"]
-    for col_idx in range(3, denom_col + 1):
+    # ヘッダ行（行1）: 固定列(1..data_col_start-1)をコピー、その後セグメント列（報告セグメントまで）
+    header = []
+    for i in range(1, data_col_start):
+        cl = get_column_letter(i)
+        header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    for col_idx in range(data_col_start, denom_col + 1):
         cl = get_column_letter(col_idx)
         header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
     comp_ws.append(header)
@@ -3481,12 +3637,11 @@ def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_na
     # データ行（行2以降）
     for row in range(2, max_row + 1):
         row_data = []
-        # A列: 勘定科目
-        row_data.append(f"='{escaped}'!A{row}")
-        # B列: 年度
-        row_data.append(f"='{escaped}'!B{row}")
-        # C列以降: 構成比（報告セグメント列まで）
-        for col_idx in range(3, denom_col + 1):
+        # 固定列をコピー参照
+        for i in range(1, data_col_start):
+            row_data.append(f"='{escaped}'!{get_column_letter(i)}{row}")
+        # セグメント列: 構成比（報告セグメント列まで）
+        for col_idx in range(data_col_start, denom_col + 1):
             cl = get_column_letter(col_idx)
             formula = (
                 f"=IF(OR('{escaped}'!{cl}{row}=\"\","
@@ -3498,32 +3653,37 @@ def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_na
         comp_ws.append(row_data)
 
     # 書式設定
-    comp_ws.freeze_panes = 'B2'
+    freeze_col = get_column_letter(data_col_start)
+    comp_ws.freeze_panes = f'{freeze_col}2'
     comp_ws.column_dimensions['A'].width = 31
-    for col_idx in range(2, denom_col + 1):
+    for col_idx in range(2, data_col_start):
+        comp_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+    for col_idx in range(data_col_start, denom_col + 1):
         comp_ws.column_dimensions[get_column_letter(col_idx)].width = 12
 
-    # 数値セル（C列以降、2行目以降）に % 書式を設定
-    for row in comp_ws.iter_rows(min_row=2, min_col=3, max_col=denom_col):
+    # 数値セル（セグメント列以降、2行目以降）に % 書式を設定
+    for row in comp_ws.iter_rows(min_row=2, min_col=data_col_start, max_col=denom_col):
         for cell in row:
             cell.number_format = '0%'
 
     debug_log(f"[Composition] Completed composition ratio sheet: {comp_sheet_name}")
 
 
-def _create_yoy_growth_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+def _create_yoy_growth_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log,
+                             data_col_start=3):
     """
     対前年増加率シートを作成（内部関数）
 
     分析シートの各セルについて、当年/前年 - 1 の対前年増加率を表示するシートを生成する。
-    数式: =IF(OR('分析'!C2="", '分析'!C3=""), "", '分析'!C2/'分析'!C3-1)
-    全カラム（max_col まで）を出力する。
+    data_col_start=3 (旧構造): 連続行を比較
+    data_col_start=5 (新構造): 前期・当期フラグを考慮し当期行同士を2行差で比較
 
     Args:
         workbook: openpyxlワークブック
         analysis_sheet_name: 参照元の分析シート名
         used_sheet_names: 使用済みシート名のセット
         debug_log: デバッグログ関数
+        data_col_start: セグメントデータが始まる列番号（旧構造=3, 新構造=5）
     """
     from openpyxl.utils import get_column_letter
 
@@ -3555,46 +3715,77 @@ def _create_yoy_growth_sheet(workbook, analysis_sheet_name, used_sheet_names, de
             first_rows_of_group.add(row)
             prev_label = label
 
-    # ヘッダ行（行1）
-    header = ["勘定科目", "年度"]
-    for col_idx in range(3, max_col + 1):
+    # ヘッダ行（行1）: 固定列 + セグメント列
+    header = []
+    for i in range(1, data_col_start):
+        cl = get_column_letter(i)
+        header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    for col_idx in range(data_col_start, max_col + 1):
         cl = get_column_letter(col_idx)
         header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
     yoy_ws.append(header)
 
-    # 行2以降: 各勘定の先頭行はデータ列を空白、それ以外は対前年増加率
-    for row in range(2, max_row + 1):
-        row_data = [f"='{escaped}'!A{row}", f"='{escaped}'!B{row}"]
-        if row in first_rows_of_group:
-            # 一番古い年度: 前年データなしのため空白
-            row_data += [""] * (max_col - 2)
-        else:
-            for col_idx in range(3, max_col + 1):
+    # 行2以降: 対前年増加率
+    if data_col_start == 3:
+        # 旧構造: 連続行を比較（各勘定科目グループ先頭行は空白）
+        for row in range(2, max_row + 1):
+            row_data = [f"='{escaped}'!A{row}", f"='{escaped}'!B{row}"]
+            if row in first_rows_of_group:
+                row_data += [""] * (max_col - 2)
+            else:
+                for col_idx in range(3, max_col + 1):
+                    cl = get_column_letter(col_idx)
+                    formula = (
+                        f"=IF(OR('{escaped}'!{cl}{row - 1}=\"\","
+                        f"'{escaped}'!{cl}{row}=\"\"),"
+                        f"\"\","
+                        f"'{escaped}'!{cl}{row}/'{escaped}'!{cl}{row - 1}-1)"
+                    )
+                    row_data.append(formula)
+            yoy_ws.append(row_data)
+    else:
+        # 新構造 (data_col_start=5): 前期・当期フラグ(col3)を確認し当期行同士を2行差で比較
+        flag_col = get_column_letter(3)   # col3 = "前期・当期"
+        label_col = get_column_letter(1)  # col1 = 勘定科目
+        for row in range(2, max_row + 1):
+            row_data = [f"='{escaped}'!{get_column_letter(i)}{row}" for i in range(1, data_col_start)]
+            for col_idx in range(data_col_start, max_col + 1):
                 cl = get_column_letter(col_idx)
-                formula = (
-                    f"=IF(OR('{escaped}'!{cl}{row - 1}=\"\","
-                    f"'{escaped}'!{cl}{row}=\"\"),"
-                    f"\"\","
-                    f"'{escaped}'!{cl}{row}/'{escaped}'!{cl}{row - 1}-1)"
-                )
+                prior_row = row - 2
+                if prior_row >= 2:
+                    # 当期行かつ2行前も同ラベルの当期行なら成長率を計算
+                    formula = (
+                        f"=IF(AND('{escaped}'!${flag_col}{row}=\"当期\","
+                        f"'{escaped}'!${label_col}{prior_row}='{escaped}'!${label_col}{row},"
+                        f"'{escaped}'!${flag_col}{prior_row}=\"当期\"),"
+                        f"IF(OR('{escaped}'!{cl}{row}=\"\","
+                        f"'{escaped}'!{cl}{prior_row}=\"\"),"
+                        f"\"\",'{escaped}'!{cl}{row}/'{escaped}'!{cl}{prior_row}-1),\"\")"
+                    )
+                else:
+                    formula = ""
                 row_data.append(formula)
-        yoy_ws.append(row_data)
+            yoy_ws.append(row_data)
 
     # 書式設定
-    yoy_ws.freeze_panes = 'B2'
+    freeze_col = get_column_letter(data_col_start)
+    yoy_ws.freeze_panes = f'{freeze_col}2'
     yoy_ws.column_dimensions['A'].width = 31
-    for col_idx in range(2, max_col + 1):
+    for col_idx in range(2, data_col_start):
+        yoy_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+    for col_idx in range(data_col_start, max_col + 1):
         yoy_ws.column_dimensions[get_column_letter(col_idx)].width = 12
 
-    # 数値セル（C列以降、3行目以降）に % 書式を設定
-    for row in yoy_ws.iter_rows(min_row=3, min_col=3, max_col=max_col):
+    # 数値セル（セグメント列以降、3行目以降）に % 書式を設定
+    for row in yoy_ws.iter_rows(min_row=3, min_col=data_col_start, max_col=max_col):
         for cell in row:
             cell.number_format = '0%'
 
     debug_log(f"[YoY] Completed YoY growth sheet: {yoy_sheet_name}")
 
 
-def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log,
+                         data_col_start=3):
     """
     EBITDA分析シートを作成（内部関数）
 
@@ -3606,6 +3797,7 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
         analysis_sheet_name: 参照元の分析シート名
         used_sheet_names: 使用済みシート名のセット
         debug_log: デバッグログ関数
+        data_col_start: セグメントデータが始まる列番号（旧構造=3, 新構造=5）
     """
     import re
     from openpyxl.utils import get_column_letter
@@ -3656,6 +3848,11 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
         norm_label = str(label_val).strip()
         if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
             unique_labels_ordered.append(norm_label)
+        # 新構造(data_col_start=5)の場合: col3="前期・当期" の 当期行のみ lookup に登録
+        if data_col_start > 3:
+            flag_val = analysis_ws.cell(r, 3).value
+            if flag_val and str(flag_val).strip() != "当期":
+                continue
         year = _extract_year(period_val)
         if year:
             lookup[(norm_label, year)] = r
@@ -3754,10 +3951,13 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
 
     # --- EBITDAブロック ---
     ebitda_block_start = ebitda_ws.max_row + 1
+    _fixed_cols_count = data_col_start - 1  # 固定列数（勘定科目含む）
     for idx in range(NUM_YEARS):
         row_data = ["　EBITDA"]
-        row_data.append(f"=B{sales_block_start + idx}")
-        for col_idx in range(3, max_col + 1):
+        # 固定列2..data_col_start-1 は sales_block から参照
+        for i in range(2, data_col_start):
+            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
+        for col_idx in range(data_col_start, max_col + 1):
             cl = get_column_letter(col_idx)
             if item_block_starts:
                 refs = ",".join(
@@ -3789,8 +3989,9 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
     ratio_block_start = ebitda_ws.max_row + 1
     for idx in range(NUM_YEARS):
         row_data = ["EBITDA/売上高"]
-        row_data.append(f"=B{sales_block_start + idx}")
-        for col_idx in range(3, max_col + 1):
+        for i in range(2, data_col_start):
+            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
+        for col_idx in range(data_col_start, max_col + 1):
             cl = get_column_letter(col_idx)
             ebitda_row = ebitda_block_start + idx
             sales_row = sales_block_start + idx
@@ -3807,12 +4008,13 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
     # --- EBITDA対前年増加率ブロック ---
     for idx in range(NUM_YEARS):
         row_data = ["EBITDA対前年増加率"]
-        row_data.append(f"=B{sales_block_start + idx}")
+        for i in range(2, data_col_start):
+            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
         if idx == 0:
             # 最古年度は前年データなしのため空白
-            row_data += [""] * (max_col - 2)
+            row_data += [""] * (max_col - _fixed_cols_count)
         else:
-            for col_idx in range(3, max_col + 1):
+            for col_idx in range(data_col_start, max_col + 1):
                 cl = get_column_letter(col_idx)
                 cur_row = ebitda_block_start + idx
                 prev_row = ebitda_block_start + idx - 1
@@ -3826,18 +4028,19 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
     # -----------------------------------------------------------------------
     # 5. 書式設定
     # -----------------------------------------------------------------------
-    # 数値書式（ヘッダー以降〜EBITDAブロック末: 金額）
-    for row in ebitda_ws.iter_rows(min_row=2, max_row=ebitda_block_end, min_col=3, max_col=max_col):
+    # 数値書式（ヘッダー以降〜EBITDAブロック末: セグメント列のみ）
+    for row in ebitda_ws.iter_rows(min_row=2, max_row=ebitda_block_end, min_col=data_col_start, max_col=max_col):
         for cell in row:
             cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
 
     # % 書式（EBITDA/売上高、EBITDA対前年増加率）
-    for row in ebitda_ws.iter_rows(min_row=ratio_block_start, max_row=ebitda_ws.max_row, min_col=3, max_col=max_col):
+    for row in ebitda_ws.iter_rows(min_row=ratio_block_start, max_row=ebitda_ws.max_row, min_col=data_col_start, max_col=max_col):
         for cell in row:
             cell.number_format = '0%'
 
     # ウィンドウ枠固定
-    ebitda_ws.freeze_panes = 'B2'
+    freeze_col = get_column_letter(data_col_start)
+    ebitda_ws.freeze_panes = f'{freeze_col}2'
 
     # 列幅
     ebitda_ws.column_dimensions['A'].width = 31
@@ -4182,7 +4385,8 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
     debug_log(f"[EBITDA IFRS] Completed EBITDA sheet: {ebitda_sheet_name}")
 
 
-def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log,
+                              data_col_start=3):
     """
     売上高比率シートを作成（内部関数）
 
@@ -4308,9 +4512,12 @@ def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, d
 
     escaped = analysis_sheet_name.replace("'", "''")
 
-    # ヘッダー行: 勘定科目・年度・各セグメント列をそのままコピー参照
-    header = ["勘定科目", "年度"]
-    for col_idx in range(3, max_col + 1):
+    # ヘッダー行: 固定列 + セグメント列をコピー参照
+    header = []
+    for i in range(1, data_col_start):
+        cl = get_column_letter(i)
+        header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    for col_idx in range(data_col_start, max_col + 1):
         cl = get_column_letter(col_idx)
         header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
     ratio_ws.append(header)
@@ -4323,11 +4530,8 @@ def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, d
         ps = _to_period_str(pv)
         sales_row = period_sales_row.get(ps) if ps else None
 
-        row_data = [
-            f"='{escaped}'!A{row}",
-            f"='{escaped}'!B{row}",
-        ]
-        for col_idx in range(3, max_col + 1):
+        row_data = [f"='{escaped}'!{get_column_letter(i)}{row}" for i in range(1, data_col_start)]
+        for col_idx in range(data_col_start, max_col + 1):
             cl = get_column_letter(col_idx)
             if sales_row is None:
                 row_data.append("")
@@ -4344,11 +4548,12 @@ def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, d
     # -----------------------------------------------------------------------
     # 6. 書式設定・列幅・ウィンドウ枠
     # -----------------------------------------------------------------------
-    for row in ratio_ws.iter_rows(min_row=2, max_row=ratio_ws.max_row, min_col=3, max_col=max_col):
+    for row in ratio_ws.iter_rows(min_row=2, max_row=ratio_ws.max_row, min_col=data_col_start, max_col=max_col):
         for cell in row:
             cell.number_format = '0.0%'
 
-    ratio_ws.freeze_panes = 'B2'
+    freeze_col = get_column_letter(data_col_start)
+    ratio_ws.freeze_panes = f'{freeze_col}2'
     ratio_ws.column_dimensions['A'].width = 31
     for col_idx in range(2, max_col + 1):
         ratio_ws.column_dimensions[get_column_letter(col_idx)].width = 12
@@ -4356,7 +4561,8 @@ def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, d
     debug_log(f"[SalesRatio] Completed sales ratio sheet: {ratio_sheet_name}")
 
 
-def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log):
+def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log,
+                                 data_col_start=3):
     """
     従業員比率シートを作成（内部関数）
 
@@ -4452,8 +4658,11 @@ def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names
 
     escaped = analysis_sheet_name.replace("'", "''")
 
-    header = ["勘定科目", "年度"]
-    for col_idx in range(3, max_col + 1):
+    header = []
+    for i in range(1, data_col_start):
+        cl = get_column_letter(i)
+        header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
+    for col_idx in range(data_col_start, max_col + 1):
         cl = get_column_letter(col_idx)
         header.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
     ratio_ws.append(header)
@@ -4466,11 +4675,8 @@ def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names
         ps = _to_period_str(pv)
         emp_row = period_employee_row.get(ps) if ps else None
 
-        row_data = [
-            f"='{escaped}'!A{row}",
-            f"='{escaped}'!B{row}",
-        ]
-        for col_idx in range(3, max_col + 1):
+        row_data = [f"='{escaped}'!{get_column_letter(i)}{row}" for i in range(1, data_col_start)]
+        for col_idx in range(data_col_start, max_col + 1):
             cl = get_column_letter(col_idx)
             if emp_row is None:
                 row_data.append("")
@@ -4487,11 +4693,12 @@ def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names
     # -----------------------------------------------------------------------
     # 6. 書式設定・列幅・ウィンドウ枠
     # -----------------------------------------------------------------------
-    for row in ratio_ws.iter_rows(min_row=2, max_row=ratio_ws.max_row, min_col=3, max_col=max_col):
+    for row in ratio_ws.iter_rows(min_row=2, max_row=ratio_ws.max_row, min_col=data_col_start, max_col=max_col):
         for cell in row:
             cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
 
-    ratio_ws.freeze_panes = 'B2'
+    freeze_col = get_column_letter(data_col_start)
+    ratio_ws.freeze_panes = f'{freeze_col}2'
     ratio_ws.column_dimensions['A'].width = 31
     for col_idx in range(2, max_col + 1):
         ratio_ws.column_dimensions[get_column_letter(col_idx)].width = 12
