@@ -3699,9 +3699,10 @@ def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_na
     # データ行（行2以降）
     for row in range(2, max_row + 1):
         row_data = []
-        # 固定列をコピー参照
+        # 固定列をコピー参照（空白時は空白を返す）
         for i in range(1, data_col_start):
-            row_data.append(f"='{escaped}'!{get_column_letter(i)}{row}")
+            cl = get_column_letter(i)
+            row_data.append(f"=IF('{escaped}'!{cl}{row}=\"\",\"\",'{escaped}'!{cl}{row})")
         # セグメント列: 構成比（報告セグメント列まで）
         for col_idx in range(data_col_start, denom_col + 1):
             cl = get_column_letter(col_idx)
@@ -3810,19 +3811,20 @@ def _create_yoy_growth_sheet(workbook, analysis_sheet_name, used_sheet_names, de
         flag_col = get_column_letter(3)   # col3 = "前期・当期"
         label_col = get_column_letter(1)  # col1 = 勘定科目
         for row in range(2, max_row + 1):
-            row_data = [f"='{escaped}'!{get_column_letter(i)}{row}" for i in range(1, data_col_start)]
+            row_data = [f"=IF('{escaped}'!{get_column_letter(i)}{row}=\"\",\"\",'{escaped}'!{get_column_letter(i)}{row})" for i in range(1, data_col_start)]
             for col_idx in range(data_col_start, max_col + 1):
                 cl = get_column_letter(col_idx)
-                prior_row = row - 2
-                if prior_row >= 2:
-                    # 当期行かつ2行前も同ラベルの当期行なら成長率を計算
+                prior_check_row = row - 2   # _分析での当期確認用（2行前が前の当期）
+                prior_value_row = row - 1   # 実際の分母（1行前の前期）
+                if prior_check_row >= 2:
+                    # 当期行かつ2行前も同ラベルの当期行なら、1行前（前期）との成長率を計算
                     formula = (
                         f"=IF(AND('{escaped}'!${flag_col}{row}=\"当期\","
-                        f"'{escaped}'!${label_col}{prior_row}='{escaped}'!${label_col}{row},"
-                        f"'{escaped}'!${flag_col}{prior_row}=\"当期\"),"
+                        f"'{escaped}'!${label_col}{prior_check_row}='{escaped}'!${label_col}{row},"
+                        f"'{escaped}'!${flag_col}{prior_check_row}=\"当期\"),"
                         f"IF(OR('{escaped}'!{cl}{row}=\"\","
-                        f"'{escaped}'!{cl}{prior_row}=\"\"),"
-                        f"\"\",'{escaped}'!{cl}{row}/'{escaped}'!{cl}{prior_row}-1),\"\")"
+                        f"'{escaped}'!{cl}{prior_value_row}=\"\"),"
+                        f"\"\",'{escaped}'!{cl}{row}/'{escaped}'!{cl}{prior_value_row}-1),\"\")"
                     )
                 else:
                     formula = ""
@@ -3882,51 +3884,41 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
     max_col = analysis_ws.max_column
 
     # -----------------------------------------------------------------------
-    # 1. analysis_ws を走査してラベルと年度のルックアップを構築
+    # 1. analysis_ws を走査してラベルリストと行コレクションを構築
     # -----------------------------------------------------------------------
     unique_labels_ordered = []
-    lookup = {}
-    max_year = -1
 
-    def _extract_year(period_val):
-        if period_val is None:
-            return None
-        if hasattr(period_val, 'year'):
-            return period_val.year
-        s = str(period_val)
-        if '-' in s:
-            try:
-                return int(s.split('-')[0])
-            except ValueError:
-                pass
-        m = re.search(r'(\d{4})', s)
-        return int(m.group(1)) if m else None
+    def _collect_label_rows(label):
+        """指定ラベルの全行インデックスを順番通りに返す（空行=None含む）。
+        新構造では空行セパレータも含めて返し、ブロック間の位置が揃うようにする。"""
+        rows = []
+        in_label = False
+        for r in range(2, analysis_ws.max_row + 1):
+            lv = analysis_ws.cell(r, 1).value
+            if lv and str(lv).strip() == label:
+                in_label = True
+                rows.append(r)
+            elif in_label:
+                if not lv:
+                    rows.append(None)  # 空行セパレータ
+                else:
+                    break  # 次のラベルに切り替わった
+        return rows
 
     for r in range(2, analysis_ws.max_row + 1):
-        label_val = analysis_ws.cell(r, 1).value
-        period_val = analysis_ws.cell(r, 2).value
-        if not label_val:
+        lv = analysis_ws.cell(r, 1).value
+        if not lv:
             continue
-        norm_label = str(label_val).strip()
-        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
-            unique_labels_ordered.append(norm_label)
-        # 新構造(data_col_start=5)の場合: col3="前期・当期" の 当期行のみ lookup に登録
-        if data_col_start > 3:
-            flag_val = analysis_ws.cell(r, 3).value
-            if flag_val and str(flag_val).strip() != "当期":
-                continue
-        year = _extract_year(period_val)
-        if year:
-            lookup[(norm_label, year)] = r
-            if year > max_year:
-                max_year = year
+        norm = str(lv).strip()
+        if not unique_labels_ordered or unique_labels_ordered[-1] != norm:
+            unique_labels_ordered.append(norm)
 
-    if max_year == -1:
-        debug_log("[EBITDA] No years found in analysis sheet, skipping")
+    if not unique_labels_ordered:
+        debug_log("[EBITDA] No labels found in analysis sheet, skipping")
         return
 
     # -----------------------------------------------------------------------
-    # 2. 対象ラベルを検索
+    # 2. 対象ラベルを検索（旧構造・新構造共通）
     # -----------------------------------------------------------------------
     target_sales_label = None
     target_profit_label = None
@@ -3951,14 +3943,47 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
     if impairment_label and impairment_label not in ebitda_items:
         ebitda_items.append(impairment_label)
 
-    debug_log(f"[EBITDA] max_year={max_year}, Sales='{target_sales_label}', "
-              f"EBITDA items={ebitda_items}")
+    debug_log(f"[EBITDA] Sales='{target_sales_label}', EBITDA items={ebitda_items}")
 
     # -----------------------------------------------------------------------
-    # 3. 11年分の年度リスト（昇順）
+    # 3. 旧構造(data_col_start=3)のみ: 年度ベースlookupを構築
     # -----------------------------------------------------------------------
+    lookup = {}
+    max_year = -1
     NUM_YEARS = 11
-    target_years = list(range(max_year - 10, max_year + 1))
+    target_years = []
+
+    if data_col_start == 3:
+        def _extract_year(period_val):
+            if period_val is None:
+                return None
+            if hasattr(period_val, 'year'):
+                return period_val.year
+            s = str(period_val)
+            if '-' in s:
+                try:
+                    return int(s.split('-')[0])
+                except ValueError:
+                    pass
+            m = re.search(r'(\d{4})', s)
+            return int(m.group(1)) if m else None
+
+        for r in range(2, analysis_ws.max_row + 1):
+            lv = analysis_ws.cell(r, 1).value
+            if not lv:
+                continue
+            norm = str(lv).strip()
+            period_val = analysis_ws.cell(r, 2).value
+            year = _extract_year(period_val)
+            if year:
+                lookup[(norm, year)] = r
+                if year > max_year:
+                    max_year = year
+
+        if max_year == -1:
+            debug_log("[EBITDA] No years found in analysis sheet, skipping")
+            return
+        target_years = list(range(max_year - 10, max_year + 1))
 
     # -----------------------------------------------------------------------
     # 4. シートを構築
@@ -3971,121 +3996,255 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
         header_row.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
     ebitda_ws.append(header_row)
 
-    def _write_data_block(label, src_rows_list, display_label=None):
-        """11年分データブロックを書き込み、ブロック開始行を返す"""
-        block_start = ebitda_ws.max_row + 1
-        lbl = display_label if display_label is not None else label
-        for idx, src_row in enumerate(src_rows_list):
-            row_data = [lbl]
-            for col_idx in range(2, max_col + 1):
-                cl = get_column_letter(col_idx)
-                if col_idx == 2:
-                    formula = f"='{escaped}'!B{src_row}" if src_row else ""
+    if data_col_start > 3:
+        # ===================================================================
+        # 新構造: _分析シートの行をそのまま参照（他の派生シートと同じ方式）
+        # ===================================================================
+
+        def _write_block_new(label, display_label=None):
+            """ラベルの全行を _分析 から直接参照してブロック出力。行インデックスリストを返す。"""
+            src_rows = _collect_label_rows(label) if label else []
+            block_start = ebitda_ws.max_row + 1
+            lbl = display_label if display_label is not None else (label or "")
+            output_rows = []
+            for src_row in src_rows:
+                if src_row is None:
+                    ebitda_ws.append([""] * max_col)
+                    output_rows.append(None)
                 else:
+                    row_data = [lbl]
+                    for i in range(2, data_col_start):
+                        row_data.append(f"='{escaped}'!{get_column_letter(i)}{src_row}")
+                    for col_idx in range(data_col_start, max_col + 1):
+                        cl = get_column_letter(col_idx)
+                        row_data.append(
+                            f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
+                        )
+                    ebitda_ws.append(row_data)
+                    output_rows.append(ebitda_ws.max_row)
+            return block_start, output_rows
+
+        sales_block_start, sales_output_rows = _write_block_new(
+            target_sales_label, "　" + (target_sales_label or "売上高")
+        )
+        item_output_rows_list = []
+        item_is_negative = []
+        for item_label in ebitda_items:
+            _, out_rows = _write_block_new(item_label)
+            item_output_rows_list.append(out_rows)
+            item_is_negative.append("負ののれん" in item_label)
+
+        # 全ブロックの行数を揃える（sales を基準）
+        n_rows = len(sales_output_rows)
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        # --- EBITDAブロック ---
+        ebitda_block_output_rows = []
+        ebitda_block_start = ebitda_ws.max_row + 1
+        for idx in range(n_rows):
+            sales_r = sales_output_rows[idx]
+            if sales_r is None:
+                # 空行セパレータ
+                ebitda_ws.append([""] * max_col)
+                ebitda_block_output_rows.append(None)
+                continue
+            row_data = ["　EBITDA"]
+            for i in range(2, data_col_start):
+                row_data.append(f"='{escaped}'!{get_column_letter(i)}{sales_r}")
+            for col_idx in range(data_col_start, max_col + 1):
+                cl = get_column_letter(col_idx)
+                item_refs = []
+                item_refs_minus = []
+                for out_rows, is_neg in zip(item_output_rows_list, item_is_negative):
+                    item_r = out_rows[idx] if idx < len(out_rows) else None
+                    if item_r is not None:
+                        (item_refs_minus if is_neg else item_refs).append(f"{cl}{item_r}")
+                if not item_refs and not item_refs_minus:
+                    formula = ""
+                elif not item_refs_minus:
+                    refs_str = ",".join(item_refs)
+                    formula = f"=IF(COUNT({refs_str})=0,\"\",SUM({refs_str}))"
+                else:
+                    count_str = ",".join(item_refs + item_refs_minus)
+                    sum_str = ("SUM(" + ",".join(item_refs) + ")" if item_refs else "0") + \
+                              "-SUM(" + ",".join(item_refs_minus) + ")"
+                    formula = f"=IF(COUNT({count_str})=0,\"\",{sum_str})"
+                row_data.append(formula)
+            ebitda_ws.append(row_data)
+            ebitda_block_output_rows.append(ebitda_ws.max_row)
+
+        ebitda_block_end = ebitda_ws.max_row
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        # --- EBITDA/売上高ブロック ---
+        ratio_block_start = ebitda_ws.max_row + 1
+        for idx in range(n_rows):
+            sales_r = sales_output_rows[idx]
+            ebitda_r = ebitda_block_output_rows[idx]
+            if sales_r is None or ebitda_r is None:
+                ebitda_ws.append([""] * max_col)
+                continue
+            row_data = ["EBITDA/売上高"]
+            for i in range(2, data_col_start):
+                row_data.append(f"='{escaped}'!{get_column_letter(i)}{sales_r}")
+            for col_idx in range(data_col_start, max_col + 1):
+                cl = get_column_letter(col_idx)
+                formula = (
+                    f"=IF(OR({cl}{ebitda_r}=\"\",{cl}{sales_r}=\"\"),"
+                    f"\"\",{cl}{ebitda_r}/{cl}{sales_r})"
+                )
+                row_data.append(formula)
+            ebitda_ws.append(row_data)
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        # --- EBITDA対前年増加率ブロック ---
+        # 当期行を1行前（前期）と比較。_分析の2行前チェックで当期行であることを確認。
+        flag_col = get_column_letter(3)
+        label_col = get_column_letter(1)
+        for idx in range(n_rows):
+            ebitda_r = ebitda_block_output_rows[idx]
+            sales_r = sales_output_rows[idx]
+            if ebitda_r is None:
+                ebitda_ws.append([""] * max_col)
+                continue
+            row_data = ["EBITDA対前年増加率"]
+            for i in range(2, data_col_start):
+                row_data.append(f"='{escaped}'!{get_column_letter(i)}{sales_r}" if sales_r else "")
+            prior_ebitda_r = ebitda_block_output_rows[idx - 1] if idx >= 1 else None
+            for col_idx in range(data_col_start, max_col + 1):
+                cl = get_column_letter(col_idx)
+                if prior_ebitda_r is None or idx < 2 or sales_output_rows[idx - 2] is None:
+                    row_data.append("")
+                else:
+                    # 当期行かつ2行前も同ラベルの当期行なら、1行前（前期）EBITDAとの成長率を計算
                     formula = (
+                        f"=IF(AND('{escaped}'!${flag_col}{sales_r}=\"当期\","
+                        f"'{escaped}'!${label_col}{sales_output_rows[idx - 2]}='{escaped}'!${label_col}{sales_r},"
+                        f"'{escaped}'!${flag_col}{sales_output_rows[idx - 2]}=\"当期\"),"
+                        f"IF(OR({cl}{ebitda_r}=\"\",{cl}{prior_ebitda_r}=\"\"),"
+                        f"\"\",{cl}{ebitda_r}/{cl}{prior_ebitda_r}-1),\"\")"
+                    )
+                    row_data.append(formula)
+            ebitda_ws.append(row_data)
+
+    else:
+        # ===================================================================
+        # 旧構造(data_col_start=3): 年度ベース（従来通り）
+        # ===================================================================
+        def _write_data_block(label, src_rows_list, display_label=None):
+            """11年分データブロックを書き込み、ブロック開始行を返す"""
+            block_start = ebitda_ws.max_row + 1
+            lbl = display_label if display_label is not None else label
+            for src_row in src_rows_list:
+                row_data = [lbl]
+                for i in range(2, data_col_start):
+                    row_data.append(f"='{escaped}'!{get_column_letter(i)}{src_row}" if src_row else "")
+                for col_idx in range(data_col_start, max_col + 1):
+                    cl = get_column_letter(col_idx)
+                    row_data.append(
                         f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
                         if src_row else ""
                     )
-                row_data.append(formula)
-            ebitda_ws.append(row_data)
-        return block_start
+                ebitda_ws.append(row_data)
+            return block_start
 
-    # 売上高ブロック
-    sales_src_rows = [
-        lookup.get((target_sales_label, y)) if target_sales_label else None
-        for y in target_years
-    ]
-    sales_block_start = _write_data_block(
-        target_sales_label or "売上高", sales_src_rows, "　売上高"
-    )
+        sales_src_rows = [
+            lookup.get((target_sales_label, y)) if target_sales_label else None
+            for y in target_years
+        ]
+        sales_block_start = _write_data_block(
+            target_sales_label or "売上高", sales_src_rows, "　売上高"
+        )
 
-    # EBITDAアイテムのブロック
-    item_block_starts = []
-    item_is_negative = []  # 負ののれんを含む場合はTrue
-    for item_label in ebitda_items:
-        item_src_rows = [lookup.get((item_label, y)) for y in target_years]
-        block_start = _write_data_block(item_label, item_src_rows)
-        item_block_starts.append(block_start)
-        item_is_negative.append("負ののれん" in item_label)
+        item_block_starts = []
+        item_is_negative = []
+        for item_label in ebitda_items:
+            item_src_rows = [lookup.get((item_label, y)) for y in target_years]
+            item_block_starts.append(_write_data_block(item_label, item_src_rows))
+            item_is_negative.append("負ののれん" in item_label)
 
-    # --- 空行 ---
-    ebitda_ws.append([""] * max_col)
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
 
-    # --- EBITDAブロック ---
-    ebitda_block_start = ebitda_ws.max_row + 1
-    _fixed_cols_count = data_col_start - 1  # 固定列数（勘定科目含む）
-    for idx in range(NUM_YEARS):
-        row_data = ["　EBITDA"]
-        # 固定列2..data_col_start-1 は sales_block から参照
-        for i in range(2, data_col_start):
-            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
-        for col_idx in range(data_col_start, max_col + 1):
-            cl = get_column_letter(col_idx)
-            if item_block_starts:
-                refs = ",".join(
-                    f"{cl}{start + idx}"
-                    for start, is_neg in zip(item_block_starts, item_is_negative)
-                    if not is_neg
-                )
-                refs_minus = ",".join(
-                    f"{cl}{start + idx}"
-                    for start, is_neg in zip(item_block_starts, item_is_negative)
-                    if is_neg
-                )
-                if not refs_minus:
-                    formula = f"=IF(COUNT({refs})=0,\"\",SUM({refs}))" if refs else ""
-                else:
-                    count_refs = refs if refs else refs_minus
-                    sum_part = f"SUM({refs})-SUM({refs_minus})" if refs else f"-SUM({refs_minus})"
-                    formula = f"=IF(COUNT({count_refs})=0,\"\",{sum_part})"
-            else:
-                formula = ""
-            row_data.append(formula)
-        ebitda_ws.append(row_data)
-    ebitda_block_end = ebitda_ws.max_row
-
-    # --- 空行 ---
-    ebitda_ws.append([""] * max_col)
-
-    # --- EBITDA/売上高ブロック ---
-    ratio_block_start = ebitda_ws.max_row + 1
-    for idx in range(NUM_YEARS):
-        row_data = ["EBITDA/売上高"]
-        for i in range(2, data_col_start):
-            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
-        for col_idx in range(data_col_start, max_col + 1):
-            cl = get_column_letter(col_idx)
-            ebitda_row = ebitda_block_start + idx
-            sales_row = sales_block_start + idx
-            formula = (
-                f"=IF(OR({cl}{ebitda_row}=\"\",{cl}{sales_row}=\"\"),"
-                f"\"\",{cl}{ebitda_row}/{cl}{sales_row})"
-            )
-            row_data.append(formula)
-        ebitda_ws.append(row_data)
-
-    # --- 空行 ---
-    ebitda_ws.append([""] * max_col)
-
-    # --- EBITDA対前年増加率ブロック ---
-    for idx in range(NUM_YEARS):
-        row_data = ["EBITDA対前年増加率"]
-        for i in range(2, data_col_start):
-            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
-        if idx == 0:
-            # 最古年度は前年データなしのため空白
-            row_data += [""] * (max_col - _fixed_cols_count)
-        else:
+        # --- EBITDAブロック ---
+        ebitda_block_start = ebitda_ws.max_row + 1
+        for idx in range(NUM_YEARS):
+            row_data = ["　EBITDA"]
+            for i in range(2, data_col_start):
+                row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
             for col_idx in range(data_col_start, max_col + 1):
                 cl = get_column_letter(col_idx)
-                cur_row = ebitda_block_start + idx
-                prev_row = ebitda_block_start + idx - 1
+                if item_block_starts:
+                    refs = ",".join(
+                        f"{cl}{start + idx}"
+                        for start, is_neg in zip(item_block_starts, item_is_negative)
+                        if not is_neg
+                    )
+                    refs_minus = ",".join(
+                        f"{cl}{start + idx}"
+                        for start, is_neg in zip(item_block_starts, item_is_negative)
+                        if is_neg
+                    )
+                    if not refs_minus:
+                        formula = f"=IF(COUNT({refs})=0,\"\",SUM({refs}))" if refs else ""
+                    else:
+                        count_refs = refs if refs else refs_minus
+                        sum_part = f"SUM({refs})-SUM({refs_minus})" if refs else f"-SUM({refs_minus})"
+                        formula = f"=IF(COUNT({count_refs})=0,\"\",{sum_part})"
+                else:
+                    formula = ""
+                row_data.append(formula)
+            ebitda_ws.append(row_data)
+        ebitda_block_end = ebitda_ws.max_row
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        # --- EBITDA/売上高ブロック ---
+        ratio_block_start = ebitda_ws.max_row + 1
+        for idx in range(NUM_YEARS):
+            row_data = ["EBITDA/売上高"]
+            for i in range(2, data_col_start):
+                row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
+            for col_idx in range(data_col_start, max_col + 1):
+                cl = get_column_letter(col_idx)
+                ebitda_row = ebitda_block_start + idx
+                sales_row = sales_block_start + idx
                 formula = (
-                    f"=IF(OR({cl}{cur_row}=\"\",{cl}{prev_row}=\"\"),"
-                    f"\"\",{cl}{cur_row}/{cl}{prev_row}-1)"
+                    f"=IF(OR({cl}{ebitda_row}=\"\",{cl}{sales_row}=\"\"),"
+                    f"\"\",{cl}{ebitda_row}/{cl}{sales_row})"
                 )
                 row_data.append(formula)
-        ebitda_ws.append(row_data)
+            ebitda_ws.append(row_data)
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        # --- EBITDA対前年増加率ブロック ---
+        for idx in range(NUM_YEARS):
+            row_data = ["EBITDA対前年増加率"]
+            for i in range(2, data_col_start):
+                row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
+            if idx == 0:
+                row_data += [""] * (max_col - data_col_start + 1)
+            else:
+                for col_idx in range(data_col_start, max_col + 1):
+                    cl = get_column_letter(col_idx)
+                    cur_row = ebitda_block_start + idx
+                    prev_row = ebitda_block_start + idx - 1
+                    formula = (
+                        f"=IF(OR({cl}{cur_row}=\"\",{cl}{prev_row}=\"\"),"
+                        f"\"\",{cl}{cur_row}/{cl}{prev_row}-1)"
+                    )
+                    row_data.append(formula)
+            ebitda_ws.append(row_data)
+        ratio_block_start = ebitda_ws.max_row - NUM_YEARS + 1
 
     # -----------------------------------------------------------------------
     # 5. 書式設定
@@ -4093,12 +4252,14 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
     # 数値書式（ヘッダー以降〜EBITDAブロック末: セグメント列のみ）
     for row in ebitda_ws.iter_rows(min_row=2, max_row=ebitda_block_end, min_col=data_col_start, max_col=max_col):
         for cell in row:
-            cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+            if cell.value not in (None, ""):
+                cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
 
     # % 書式（EBITDA/売上高、EBITDA対前年増加率）
     for row in ebitda_ws.iter_rows(min_row=ratio_block_start, max_row=ebitda_ws.max_row, min_col=data_col_start, max_col=max_col):
         for cell in row:
-            cell.number_format = '0%'
+            if cell.value not in (None, ""):
+                cell.number_format = '0%'
 
     # ウィンドウ枠固定
     freeze_col = get_column_letter(data_col_start)
@@ -4147,88 +4308,105 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
     max_col = analysis_ws.max_column
 
     # -----------------------------------------------------------------------
-    # 1. analysis_ws を走査してラベルと年度のルックアップを構築
+    # 1. analysis_ws を走査してラベルリストを構築
     # -----------------------------------------------------------------------
     unique_labels_ordered = []
-    lookup = {}
-    max_year = -1
 
-    def _extract_year(period_val):
-        if period_val is None:
-            return None
-        if hasattr(period_val, 'year'):
-            return period_val.year
-        s = str(period_val)
-        if '-' in s:
-            try:
-                return int(s.split('-')[0])
-            except ValueError:
-                pass
-        m = re.search(r'(\d{4})', s)
-        return int(m.group(1)) if m else None
+    def _collect_label_rows_ifrs(label):
+        """指定ラベルの全行インデックスを順番通りに返す（空行=None含む）。"""
+        rows = []
+        in_label = False
+        for r in range(2, analysis_ws.max_row + 1):
+            lv = analysis_ws.cell(r, 1).value
+            if lv and str(lv).strip() == label:
+                in_label = True
+                rows.append(r)
+            elif in_label:
+                if not lv:
+                    rows.append(None)
+                else:
+                    break
+        return rows
 
     for r in range(2, analysis_ws.max_row + 1):
-        label_val = analysis_ws.cell(r, 1).value
-        period_val = analysis_ws.cell(r, 2).value
-        if not label_val:
+        lv = analysis_ws.cell(r, 1).value
+        if not lv:
             continue
-        norm_label = str(label_val).strip()
-        if not unique_labels_ordered or unique_labels_ordered[-1] != norm_label:
-            unique_labels_ordered.append(norm_label)
-        # 新構造(data_col_start=5)の場合: col3="前期・当期" の 当期行のみ lookup に登録
-        if data_col_start > 3:
-            flag_val = analysis_ws.cell(r, 3).value
-            if flag_val and str(flag_val).strip() != "当期":
-                continue
-        year = _extract_year(period_val)
-        if year:
-            lookup[(norm_label, year)] = r
-            if year > max_year:
-                max_year = year
+        norm = str(lv).strip()
+        if not unique_labels_ordered or unique_labels_ordered[-1] != norm:
+            unique_labels_ordered.append(norm)
 
-    if max_year == -1:
-        debug_log("[EBITDA IFRS] No years found in analysis sheet, skipping")
+    if not unique_labels_ordered:
+        debug_log("[EBITDA IFRS] No labels found in analysis sheet, skipping")
         return
 
     # -----------------------------------------------------------------------
     # 2. 対象ラベルを検索
     # -----------------------------------------------------------------------
-    target_sales_label = None    # 売上収益・営業収益・収益・売上高
-    profit_label_candidates = [] # 全「利益」ヒット（複数年度でラベル変更に対応）
-    refs_labels = []             # 償却費・償却額・減損損失（戻入除く）
-    refs_minus_labels = []       # 減損の戻入・負ののれん
+    target_sales_label = None
+    profit_label_candidates = []
+    refs_labels = []
+    refs_minus_labels = []
 
     for label in unique_labels_ordered:
-        # 売上高: 「収益」or「売上」を含み、「外部顧客」「セグメント間」を除く
         if target_sales_label is None:
             if (("収益" in label or "売上" in label)
                     and "外部顧客" not in label
                     and "セグメント間" not in label):
                 target_sales_label = label
-
-        # セグメント利益: 「利益」を含む全候補を収集
         if "利益" in label:
             profit_label_candidates.append(label)
-
-        # 減損の戻入（「戻入」or「戻し入」を含む）・負ののれん → refs_minus
         if (("減損" in label and ("戻入" in label or "戻し入" in label))
                 or "負ののれん" in label):
             if label not in refs_minus_labels:
                 refs_minus_labels.append(label)
-        # 償却費・償却額・減損損失（戻入なし）→ refs
         elif (("償却費" in label or "償却額" in label or "減損損失" in label)
               and "戻入" not in label and "戻し入" not in label):
             if label not in refs_labels:
                 refs_labels.append(label)
 
-    debug_log(f"[EBITDA IFRS] max_year={max_year}, Sales='{target_sales_label}', "
+    debug_log(f"[EBITDA IFRS] Sales='{target_sales_label}', "
               f"Profit candidates={profit_label_candidates}, refs={refs_labels}, refs_minus={refs_minus_labels}")
 
     # -----------------------------------------------------------------------
-    # 3. 11年分の年度リスト（昇順）
+    # 3. 旧構造(data_col_start=3)のみ: 年度ベースlookupを構築
     # -----------------------------------------------------------------------
+    lookup = {}
+    max_year = -1
     NUM_YEARS = 11
-    target_years = list(range(max_year - 10, max_year + 1))
+    target_years = []
+
+    if data_col_start == 3:
+        def _extract_year(period_val):
+            if period_val is None:
+                return None
+            if hasattr(period_val, 'year'):
+                return period_val.year
+            s = str(period_val)
+            if '-' in s:
+                try:
+                    return int(s.split('-')[0])
+                except ValueError:
+                    pass
+            m = re.search(r'(\d{4})', s)
+            return int(m.group(1)) if m else None
+
+        for r in range(2, analysis_ws.max_row + 1):
+            lv = analysis_ws.cell(r, 1).value
+            if not lv:
+                continue
+            norm = str(lv).strip()
+            period_val = analysis_ws.cell(r, 2).value
+            year = _extract_year(period_val)
+            if year:
+                lookup[(norm, year)] = r
+                if year > max_year:
+                    max_year = year
+
+        if max_year == -1:
+            debug_log("[EBITDA IFRS] No years found in analysis sheet, skipping")
+            return
+        target_years = list(range(max_year - 10, max_year + 1))
 
     # -----------------------------------------------------------------------
     # 4. シートを構築
@@ -4241,218 +4419,359 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
         header_row.append(f"=IF('{escaped}'!{cl}1=\"\",\"\",'{escaped}'!{cl}1)")
     ebitda_ws.append(header_row)
 
-    def _first_valid_row(label):
-        """ラベル表示用に最新年から最初の有効な行番号を返す"""
-        for y in reversed(target_years):
-            r = lookup.get((label, y))
-            if r is not None:
-                return r
-        return None
+    if data_col_start > 3:
+        # ===================================================================
+        # 新構造: _分析シートの行をそのまま参照
+        # ===================================================================
 
-    def _row_has_data(row):
-        """analysis_ws の指定行（セグメント列以降）に数値データが1つ以上あるか確認する。"""
-        if row is None:
+        def _row_has_data_ifrs(row):
+            if row is None:
+                return False
+            for c in range(data_col_start, max_col + 1):
+                v = analysis_ws.cell(row, c).value
+                if isinstance(v, (int, float)):
+                    return True
             return False
-        for c in range(data_col_start, max_col + 1):
-            v = analysis_ws.cell(row, c).value
-            if isinstance(v, (int, float)):
-                return True
-        return False
 
-    def _write_data_block_ifrs(label, src_rows_list, year_fallbacks=None):
-        """セル参照ラベルでデータブロックを書き込み、ブロック開始行を返す。
-        year_fallbacks: src_rowがNoneのとき年度列に表示するリテラル値のリスト（Noneなら空欄）"""
-        block_start = ebitda_ws.max_row + 1
-        label_row = _first_valid_row(label)
-        for idx, src_row in enumerate(src_rows_list):
-            label_formula = f"='{escaped}'!A{label_row}" if label_row is not None else label
-            row_data = [label_formula]
-            # 固定列 2..data_col_start-1
-            for col_idx in range(2, data_col_start):
+        def _write_block_ifrs_new(label, display_label=None):
+            """ラベルの全行を直接参照してブロック出力。出力行インデックスリストを返す。"""
+            src_rows = _collect_label_rows_ifrs(label) if label else []
+            lbl = display_label if display_label is not None else (label or "")
+            output_rows = []
+            for src_row in src_rows:
+                if src_row is None:
+                    ebitda_ws.append([""] * max_col)
+                    output_rows.append(None)
+                else:
+                    row_data = [lbl]
+                    for i in range(2, data_col_start):
+                        row_data.append(f"='{escaped}'!{get_column_letter(i)}{src_row}")
+                    for col_idx in range(data_col_start, max_col + 1):
+                        cl = get_column_letter(col_idx)
+                        row_data.append(
+                            f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
+                        )
+                    ebitda_ws.append(row_data)
+                    output_rows.append(ebitda_ws.max_row)
+            return output_rows
+
+        sales_output_rows = _write_block_ifrs_new(
+            target_sales_label, "　" + (target_sales_label or "売上高")
+        )
+
+        # 複数利益ラベル: 実データがある候補のみブロック化
+        profit_output_rows_list = []
+        for candidate in profit_label_candidates:
+            cand_src = _collect_label_rows_ifrs(candidate)
+            if any(r is not None and _row_has_data_ifrs(r) for r in cand_src):
+                profit_output_rows_list.append(_write_block_ifrs_new(candidate))
+
+        if not profit_output_rows_list:
+            # 利益ラベルなし: ダミーブロック（sales と同数の空行）
+            dummy_out = []
+            for src_row in (sales_output_rows or []):
+                ebitda_ws.append([""] * max_col)
+                dummy_out.append(None)
+            profit_output_rows_list.append(dummy_out)
+
+        refs_output_rows_list = [_write_block_ifrs_new(lbl) for lbl in refs_labels]
+        refs_minus_output_rows_list = [_write_block_ifrs_new(lbl) for lbl in refs_minus_labels]
+
+        n_rows = len(sales_output_rows)
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        # --- EBITDAブロック ---
+        ebitda_block_output_rows = []
+        ebitda_block_start = ebitda_ws.max_row + 1
+        for idx in range(n_rows):
+            sales_r = sales_output_rows[idx]
+            if sales_r is None:
+                ebitda_ws.append([""] * max_col)
+                ebitda_block_output_rows.append(None)
+                continue
+            row_data = ["EBITDA"]
+            for i in range(2, data_col_start):
+                row_data.append(f"='{escaped}'!{get_column_letter(i)}{sales_r}")
+            for col_idx in range(data_col_start, max_col + 1):
                 cl = get_column_letter(col_idx)
-                if col_idx == 2:
+                profit_cells = [
+                    f"{cl}{out_rows[idx]}"
+                    for out_rows in profit_output_rows_list
+                    if idx < len(out_rows) and out_rows[idx] is not None
+                ]
+                refs_cells = [
+                    f"{cl}{out_rows[idx]}"
+                    for out_rows in refs_output_rows_list
+                    if idx < len(out_rows) and out_rows[idx] is not None
+                ]
+                refs_minus_cells = [
+                    f"{cl}{out_rows[idx]}"
+                    for out_rows in refs_minus_output_rows_list
+                    if idx < len(out_rows) and out_rows[idx] is not None
+                ]
+                if not profit_cells:
+                    formula = ""
+                else:
+                    if len(profit_cells) == 1:
+                        profit_sum = profit_cells[0]
+                        any_profit_cond = f"{profit_cells[0]}<>\"\""
+                    else:
+                        profit_sum = "+".join(f"IF({p}=\"\",0,{p})" for p in profit_cells)
+                        any_profit_cond = "OR(" + ",".join(f"{p}<>\"\"" for p in profit_cells) + ")"
+                    if not refs_cells and not refs_minus_cells:
+                        formula = f"=IF(NOT({any_profit_cond}),\"\",{profit_sum})"
+                    elif not refs_minus_cells:
+                        refs_str = ",".join(refs_cells)
+                        formula = f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_str})=0),\"\",{profit_sum}+SUM({refs_str}))"
+                    elif not refs_cells:
+                        refs_minus_str = ",".join(refs_minus_cells)
+                        formula = f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_minus_str})=0),\"\",{profit_sum}-SUM({refs_minus_str}))"
+                    else:
+                        refs_str = ",".join(refs_cells)
+                        refs_minus_str = ",".join(refs_minus_cells)
+                        formula = f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_str})=0),\"\",{profit_sum}+SUM({refs_str})-SUM({refs_minus_str}))"
+                row_data.append(formula)
+            ebitda_ws.append(row_data)
+            ebitda_block_output_rows.append(ebitda_ws.max_row)
+
+        ebitda_block_end = ebitda_ws.max_row
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        # --- EBITDA/売上高ブロック ---
+        ratio_block_start = ebitda_ws.max_row + 1
+        for idx in range(n_rows):
+            sales_r = sales_output_rows[idx]
+            ebitda_r = ebitda_block_output_rows[idx]
+            if sales_r is None or ebitda_r is None:
+                ebitda_ws.append([""] * max_col)
+                continue
+            row_data = ["EBITDA/売上高"]
+            for i in range(2, data_col_start):
+                row_data.append(f"='{escaped}'!{get_column_letter(i)}{sales_r}")
+            for col_idx in range(data_col_start, max_col + 1):
+                cl = get_column_letter(col_idx)
+                row_data.append(
+                    f"=IF(OR({cl}{ebitda_r}=\"\",{cl}{sales_r}=\"\"),\"\",{cl}{ebitda_r}/{cl}{sales_r})"
+                )
+            ebitda_ws.append(row_data)
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        # --- EBITDA対前年増加率ブロック ---
+        # 当期行を1行前（前期）と比較。_分析の2行前チェックで当期行であることを確認。
+        flag_col = get_column_letter(3)
+        label_col = get_column_letter(1)
+        for idx in range(n_rows):
+            ebitda_r = ebitda_block_output_rows[idx]
+            sales_r = sales_output_rows[idx]
+            if ebitda_r is None:
+                ebitda_ws.append([""] * max_col)
+                continue
+            row_data = ["EBITDA対前年増加率"]
+            for i in range(2, data_col_start):
+                row_data.append(f"='{escaped}'!{get_column_letter(i)}{sales_r}" if sales_r else "")
+            prior_ebitda_r = ebitda_block_output_rows[idx - 1] if idx >= 1 else None
+            for col_idx in range(data_col_start, max_col + 1):
+                cl = get_column_letter(col_idx)
+                if prior_ebitda_r is None or idx < 2 or sales_output_rows[idx - 2] is None:
+                    row_data.append("")
+                else:
+                    prior_sales_r = sales_output_rows[idx - 2]
+                    # 当期行かつ2行前も同ラベルの当期行なら、1行前（前期）EBITDAとの成長率を計算
+                    formula = (
+                        f"=IF(AND('{escaped}'!${flag_col}{sales_r}=\"当期\","
+                        f"'{escaped}'!${label_col}{prior_sales_r}='{escaped}'!${label_col}{sales_r},"
+                        f"'{escaped}'!${flag_col}{prior_sales_r}=\"当期\"),"
+                        f"IF(OR({cl}{ebitda_r}=\"\",{cl}{prior_ebitda_r}=\"\"),"
+                        f"\"\",{cl}{ebitda_r}/{cl}{prior_ebitda_r}-1),\"\")"
+                    )
+                    row_data.append(formula)
+            ebitda_ws.append(row_data)
+
+    else:
+        # ===================================================================
+        # 旧構造(data_col_start=3): 年度ベース（従来通り）
+        # ===================================================================
+        def _row_has_data_old(row):
+            if row is None:
+                return False
+            for c in range(3, max_col + 1):
+                v = analysis_ws.cell(row, c).value
+                if isinstance(v, (int, float)):
+                    return True
+            return False
+
+        def _first_valid_row(label):
+            for y in reversed(target_years):
+                r = lookup.get((label, y))
+                if r is not None:
+                    return r
+            return None
+
+        def _write_data_block_ifrs_old(label, src_rows_list, year_fallbacks=None):
+            block_start = ebitda_ws.max_row + 1
+            label_row = _first_valid_row(label)
+            for idx, src_row in enumerate(src_rows_list):
+                label_formula = f"='{escaped}'!A{label_row}" if label_row is not None else label
+                row_data = [label_formula]
+                for col_idx in range(2, data_col_start):
+                    cl = get_column_letter(col_idx)
                     if src_row:
-                        formula = f"='{escaped}'!B{src_row}"
-                    elif year_fallbacks is not None:
+                        formula = f"='{escaped}'!{cl}{src_row}"
+                    elif col_idx == 2 and year_fallbacks is not None:
                         formula = year_fallbacks[idx]
                     else:
                         formula = ""
-                else:
-                    formula = f"='{escaped}'!{cl}{src_row}" if src_row else ""
-                row_data.append(formula)
-            # セグメント列
-            for col_idx in range(data_col_start, max_col + 1):
-                cl = get_column_letter(col_idx)
-                formula = (
-                    f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
-                    if src_row else ""
-                )
-                row_data.append(formula)
-            ebitda_ws.append(row_data)
-        return block_start
+                    row_data.append(formula)
+                for col_idx in range(data_col_start, max_col + 1):
+                    cl = get_column_letter(col_idx)
+                    row_data.append(
+                        f"=IF('{escaped}'!{cl}{src_row}=\"\",\"\",'{escaped}'!{cl}{src_row})"
+                        if src_row else ""
+                    )
+                ebitda_ws.append(row_data)
+            return block_start
 
-    # 売上高ブロック
-    sales_src_rows = [
-        lookup.get((target_sales_label, y)) if target_sales_label else None
-        for y in target_years
-    ]
-    sales_block_start = _write_data_block_ifrs(
-        target_sales_label or "売上高", sales_src_rows, year_fallbacks=target_years
-    )
-
-    # -----------------------------------------------------------------------
-    # セグメント利益ブロック（複数ラベル対応）
-    # 年度ごとに最初にデータがある候補が担当する。
-    # 各候補を別ブロックとして出力し、担当外の年はデータ空（年度は表示）。
-    # -----------------------------------------------------------------------
-    # 年度ごとの担当ラベルと行番号を決定
-    profit_assignment = {}  # year -> (label, row)
-    for y in target_years:
-        for candidate in profit_label_candidates:
-            row = lookup.get((candidate, y))
-            if row is not None and _row_has_data(row):
-                profit_assignment[y] = (candidate, row)
-                break
-
-    # 利益候補ごとにブロックを作成（担当年のみ実データ行を渡す）
-    profit_block_starts = []
-    for candidate in profit_label_candidates:
-        candidate_src_rows = []
-        has_any = False
-        for y in target_years:
-            assignment = profit_assignment.get(y)
-            if assignment is not None and assignment[0] == candidate:
-                candidate_src_rows.append(assignment[1])
-                has_any = True
-            else:
-                candidate_src_rows.append(None)
-        if has_any:
-            profit_block_starts.append(
-                _write_data_block_ifrs(candidate, candidate_src_rows, year_fallbacks=target_years)
-            )
-
-    if not profit_block_starts:
-        # 利益ラベルが全くない場合はダミー行を1ブロック追加
-        dummy_rows = [None] * NUM_YEARS
-        profit_block_starts.append(
-            _write_data_block_ifrs("セグメント利益", dummy_rows, year_fallbacks=target_years)
+        sales_src_rows = [
+            lookup.get((target_sales_label, y)) if target_sales_label else None
+            for y in target_years
+        ]
+        sales_block_start = _write_data_block_ifrs_old(
+            target_sales_label or "売上高", sales_src_rows, year_fallbacks=target_years
         )
 
-    # refsブロック
-    refs_block_starts = []
-    for lbl in refs_labels:
-        src_rows = [lookup.get((lbl, y)) for y in target_years]
-        refs_block_starts.append(_write_data_block_ifrs(lbl, src_rows, year_fallbacks=target_years))
+        profit_assignment = {}
+        for y in target_years:
+            for candidate in profit_label_candidates:
+                row = lookup.get((candidate, y))
+                if row is not None and _row_has_data_old(row):
+                    profit_assignment[y] = (candidate, row)
+                    break
 
-    # refs_minusブロック
-    refs_minus_block_starts = []
-    for lbl in refs_minus_labels:
-        src_rows = [lookup.get((lbl, y)) for y in target_years]
-        refs_minus_block_starts.append(_write_data_block_ifrs(lbl, src_rows, year_fallbacks=target_years))
-
-    # --- 空行 ---
-    ebitda_ws.append([""] * max_col)
-
-    # --- EBITDAブロック ---
-    # 複数利益ブロックは年度ごとに排他的（担当年のみデータ）なので合算してよい。
-    # profit_sum = IF(p1="",0,p1)+IF(p2="",0,p2)+...
-    # any_profit_cond = OR(p1<>"", p2<>"", ...)
-    ebitda_block_start = ebitda_ws.max_row + 1
-    for idx in range(NUM_YEARS):
-        row_data = ["EBITDA"]
-        for i in range(2, data_col_start):
-            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
-        for col_idx in range(data_col_start, max_col + 1):
-            cl = get_column_letter(col_idx)
-            profit_cells = [f"{cl}{bs + idx}" for bs in profit_block_starts]
-            refs_cells = [f"{cl}{bs + idx}" for bs in refs_block_starts]
-            refs_minus_cells = [f"{cl}{bs + idx}" for bs in refs_minus_block_starts]
-
-            # 利益の合計式（空白を0として加算）
-            if len(profit_cells) == 1:
-                profit_sum = profit_cells[0]
-                any_profit_cond = f"{profit_cells[0]}<>\"\""
-            else:
-                profit_sum = "+".join(f"IF({p}=\"\",0,{p})" for p in profit_cells)
-                any_profit_cond = "OR(" + ",".join(f"{p}<>\"\"" for p in profit_cells) + ")"
-
-            if not refs_cells and not refs_minus_cells:
-                formula = f"=IF(NOT({any_profit_cond}),\"\",{profit_sum})"
-            elif not refs_minus_cells:
-                refs_str = ",".join(refs_cells)
-                formula = (
-                    f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_str})=0),"
-                    f"\"\",{profit_sum}+SUM({refs_str}))"
+        profit_block_starts = []
+        for candidate in profit_label_candidates:
+            candidate_src_rows = []
+            has_any = False
+            for y in target_years:
+                assignment = profit_assignment.get(y)
+                if assignment is not None and assignment[0] == candidate:
+                    candidate_src_rows.append(assignment[1])
+                    has_any = True
+                else:
+                    candidate_src_rows.append(None)
+            if has_any:
+                profit_block_starts.append(
+                    _write_data_block_ifrs_old(candidate, candidate_src_rows, year_fallbacks=target_years)
                 )
-            elif not refs_cells:
-                refs_minus_str = ",".join(refs_minus_cells)
-                formula = (
-                    f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_minus_str})=0),"
-                    f"\"\",{profit_sum}-SUM({refs_minus_str}))"
-                )
-            else:
-                refs_str = ",".join(refs_cells)
-                refs_minus_str = ",".join(refs_minus_cells)
-                formula = (
-                    f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_str})=0),"
-                    f"\"\",{profit_sum}+SUM({refs_str})-SUM({refs_minus_str}))"
-                )
-            row_data.append(formula)
-        ebitda_ws.append(row_data)
-    ebitda_block_end = ebitda_ws.max_row
 
-    # --- 空行 ---
-    ebitda_ws.append([""] * max_col)
-
-    # --- EBITDA/売上高ブロック ---
-    ratio_block_start = ebitda_ws.max_row + 1
-    for idx in range(NUM_YEARS):
-        row_data = ["EBITDA/売上高"]
-        for i in range(2, data_col_start):
-            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
-        for col_idx in range(data_col_start, max_col + 1):
-            cl = get_column_letter(col_idx)
-            ebitda_row = ebitda_block_start + idx
-            sales_row = sales_block_start + idx
-            formula = (
-                f"=IF(OR({cl}{ebitda_row}=\"\",{cl}{sales_row}=\"\"),"
-                f"\"\",{cl}{ebitda_row}/{cl}{sales_row})"
+        if not profit_block_starts:
+            dummy_rows = [None] * NUM_YEARS
+            profit_block_starts.append(
+                _write_data_block_ifrs_old("セグメント利益", dummy_rows, year_fallbacks=target_years)
             )
-            row_data.append(formula)
-        ebitda_ws.append(row_data)
 
-    # --- 空行 ---
-    ebitda_ws.append([""] * max_col)
+        refs_block_starts = []
+        for lbl in refs_labels:
+            src_rows = [lookup.get((lbl, y)) for y in target_years]
+            refs_block_starts.append(_write_data_block_ifrs_old(lbl, src_rows, year_fallbacks=target_years))
 
-    # --- EBITDA対前年増加率ブロック ---
-    for idx in range(NUM_YEARS):
-        row_data = ["EBITDA対前年増加率"]
-        for i in range(2, data_col_start):
-            row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
-        if idx == 0:
-            row_data += [""] * (max_col - data_col_start + 1)
-        else:
+        refs_minus_block_starts = []
+        for lbl in refs_minus_labels:
+            src_rows = [lookup.get((lbl, y)) for y in target_years]
+            refs_minus_block_starts.append(_write_data_block_ifrs_old(lbl, src_rows, year_fallbacks=target_years))
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        ebitda_block_start = ebitda_ws.max_row + 1
+        for idx in range(NUM_YEARS):
+            row_data = ["EBITDA"]
+            for i in range(2, data_col_start):
+                row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
             for col_idx in range(data_col_start, max_col + 1):
                 cl = get_column_letter(col_idx)
-                cur_row = ebitda_block_start + idx
-                prev_row = ebitda_block_start + idx - 1
-                formula = (
-                    f"=IF(OR({cl}{cur_row}=\"\",{cl}{prev_row}=\"\"),"
-                    f"\"\",{cl}{cur_row}/{cl}{prev_row}-1)"
-                )
+                profit_cells = [f"{cl}{bs + idx}" for bs in profit_block_starts]
+                refs_cells = [f"{cl}{bs + idx}" for bs in refs_block_starts]
+                refs_minus_cells = [f"{cl}{bs + idx}" for bs in refs_minus_block_starts]
+                if len(profit_cells) == 1:
+                    profit_sum = profit_cells[0]
+                    any_profit_cond = f"{profit_cells[0]}<>\"\""
+                else:
+                    profit_sum = "+".join(f"IF({p}=\"\",0,{p})" for p in profit_cells)
+                    any_profit_cond = "OR(" + ",".join(f"{p}<>\"\"" for p in profit_cells) + ")"
+                if not refs_cells and not refs_minus_cells:
+                    formula = f"=IF(NOT({any_profit_cond}),\"\",{profit_sum})"
+                elif not refs_minus_cells:
+                    refs_str = ",".join(refs_cells)
+                    formula = f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_str})=0),\"\",{profit_sum}+SUM({refs_str}))"
+                elif not refs_cells:
+                    refs_minus_str = ",".join(refs_minus_cells)
+                    formula = f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_minus_str})=0),\"\",{profit_sum}-SUM({refs_minus_str}))"
+                else:
+                    refs_str = ",".join(refs_cells)
+                    refs_minus_str = ",".join(refs_minus_cells)
+                    formula = f"=IF(OR(NOT({any_profit_cond}),COUNT({refs_str})=0),\"\",{profit_sum}+SUM({refs_str})-SUM({refs_minus_str}))"
                 row_data.append(formula)
-        ebitda_ws.append(row_data)
+            ebitda_ws.append(row_data)
+        ebitda_block_end = ebitda_ws.max_row
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        ratio_block_start = ebitda_ws.max_row + 1
+        for idx in range(NUM_YEARS):
+            row_data = ["EBITDA/売上高"]
+            for i in range(2, data_col_start):
+                row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
+            for col_idx in range(data_col_start, max_col + 1):
+                cl = get_column_letter(col_idx)
+                ebitda_row = ebitda_block_start + idx
+                sales_row = sales_block_start + idx
+                row_data.append(
+                    f"=IF(OR({cl}{ebitda_row}=\"\",{cl}{sales_row}=\"\"),\"\",{cl}{ebitda_row}/{cl}{sales_row})"
+                )
+            ebitda_ws.append(row_data)
+
+        # --- 空行 ---
+        ebitda_ws.append([""] * max_col)
+
+        for idx in range(NUM_YEARS):
+            row_data = ["EBITDA対前年増加率"]
+            for i in range(2, data_col_start):
+                row_data.append(f"={get_column_letter(i)}{sales_block_start + idx}")
+            if idx == 0:
+                row_data += [""] * (max_col - data_col_start + 1)
+            else:
+                for col_idx in range(data_col_start, max_col + 1):
+                    cl = get_column_letter(col_idx)
+                    cur_row = ebitda_block_start + idx
+                    prev_row = ebitda_block_start + idx - 1
+                    row_data.append(
+                        f"=IF(OR({cl}{cur_row}=\"\",{cl}{prev_row}=\"\"),\"\",{cl}{cur_row}/{cl}{prev_row}-1)"
+                    )
+            ebitda_ws.append(row_data)
+
+    if data_col_start == 3:
+        ratio_block_start = ebitda_ws.max_row - (NUM_YEARS - 1)
+    # else: ratio_block_start was set before EBITDA/売上高 block (covers both ratio and growth rows)
 
     # -----------------------------------------------------------------------
     # 5. 書式設定
     # -----------------------------------------------------------------------
     for row in ebitda_ws.iter_rows(min_row=2, max_row=ebitda_block_end, min_col=data_col_start, max_col=max_col):
         for cell in row:
-            cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
+            if cell.value not in (None, ""):
+                cell.number_format = r'#,##0_ ;[Red]\-#,##0 '
 
     for row in ebitda_ws.iter_rows(min_row=ratio_block_start, max_row=ebitda_ws.max_row, min_col=data_col_start, max_col=max_col):
         for cell in row:
-            cell.number_format = '0%'
+            if cell.value not in (None, ""):
+                cell.number_format = '0%'
 
     freeze_col = get_column_letter(data_col_start)
     ebitda_ws.freeze_panes = f'{freeze_col}2'
@@ -4608,7 +4927,7 @@ def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, d
         ps = _to_period_str(pv)
         sales_row = period_sales_row.get(ps) if ps else None
 
-        row_data = [f"='{escaped}'!{get_column_letter(i)}{row}" for i in range(1, data_col_start)]
+        row_data = [f"=IF('{escaped}'!{get_column_letter(i)}{row}=\"\",\"\",'{escaped}'!{get_column_letter(i)}{row})" for i in range(1, data_col_start)]
         for col_idx in range(data_col_start, max_col + 1):
             cl = get_column_letter(col_idx)
             if sales_row is None:
@@ -4753,7 +5072,7 @@ def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names
         ps = _to_period_str(pv)
         emp_row = period_employee_row.get(ps) if ps else None
 
-        row_data = [f"='{escaped}'!{get_column_letter(i)}{row}" for i in range(1, data_col_start)]
+        row_data = [f"=IF('{escaped}'!{get_column_letter(i)}{row}=\"\",\"\",'{escaped}'!{get_column_letter(i)}{row})" for i in range(1, data_col_start)]
         for col_idx in range(data_col_start, max_col + 1):
             cl = get_column_letter(col_idx)
             if emp_row is None:
