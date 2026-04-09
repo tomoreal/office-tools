@@ -2682,7 +2682,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     def _rounded_range(vals):
         if not vals:
             return -0.05, 0.40
-        mn, mx = min(vals), max(vals)
+        # ±100%超の外れ値を除外（次に大きな値を最大/最小値として使う）
+        OUTLIER_THRESHOLD = 1.0
+        filtered = [v for v in vals if -OUTLIER_THRESHOLD <= v <= OUTLIER_THRESHOLD]
+        if not filtered:
+            filtered = vals  # 全て外れ値なら除外しない
+        mn, mx = min(filtered), max(filtered)
         return math.floor(mn / 0.05) * 0.05, math.ceil(mx / 0.05) * 0.05
 
     rel_filings = [LATEST_IDX]
@@ -2862,16 +2867,47 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     #    売上収益: 「収益」or「売上」を含み「外部顧客」「セグメント間」を除く
     #    利益: 「利益」を含むラベルの全候補
     # -----------------------------------------------------------------------
-    target_sales_label = None
     profit_label_candidates = []
+    _sales_candidates = []
     for label in unique_labels_ordered:
-        if target_sales_label is None:
-            if (("収益" in label or "売上" in label)
-                    and "外部顧客" not in label
-                    and "セグメント間" not in label):
-                target_sales_label = label
+        if (("収益" in label or "売上" in label)
+                and "外部顧客" not in label
+                and "セグメント間" not in label):
+            _sales_candidates.append(label)
         if "利益" in label:
             profit_label_candidates.append(label)
+
+    # 複数の売上候補がある場合、最新年度の行合計が最大のものを採用
+    if len(_sales_candidates) == 1:
+        target_sales_label = _sales_candidates[0]
+    elif len(_sales_candidates) > 1:
+        # 最新期を特定
+        _latest_period = None
+        for (_lbl, _pstr) in period_lookup:
+            if _lbl in _sales_candidates:
+                if _latest_period is None or _pstr > _latest_period:
+                    _latest_period = _pstr
+        if _latest_period:
+            _best_label = None
+            _best_value = None
+            for _lbl in _sales_candidates:
+                _row = period_lookup.get((_lbl, _latest_period))
+                if _row is None:
+                    continue
+                _total = sum(
+                    v for c in range(3, max_col + 1)
+                    if isinstance((v := analysis_ws.cell(_row, c).value), (int, float))
+                )
+                debug_log(f"[PPM IFRS] Sales candidate '{_lbl}' period={_latest_period} total={_total}")
+                if _best_value is None or _total > _best_value:
+                    _best_value = _total
+                    _best_label = _lbl
+            target_sales_label = _best_label or _sales_candidates[0]
+            debug_log(f"[PPM IFRS] Selected sales label by max value: '{target_sales_label}'")
+        else:
+            target_sales_label = _sales_candidates[0]
+    else:
+        target_sales_label = None
 
     # Fallback: if no sales label found (e.g. no aggregate row), try "外部顧客への売上収益" etc.
     if target_sales_label is None:
@@ -3740,7 +3776,12 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
     def _rounded_range(vals):
         if not vals:
             return -0.05, 0.40
-        mn, mx = min(vals), max(vals)
+        # ±100%超の外れ値を除外（次に大きな値を最大/最小値として使う）
+        OUTLIER_THRESHOLD = 1.0
+        filtered = [v for v in vals if -OUTLIER_THRESHOLD <= v <= OUTLIER_THRESHOLD]
+        if not filtered:
+            filtered = vals  # 全て外れ値なら除外しない
+        mn, mx = min(filtered), max(filtered)
         return math.floor(mn / 0.05) * 0.05, math.ceil(mx / 0.05) * 0.05
 
     rel_filings = [LATEST_IDX]
