@@ -1433,7 +1433,29 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
                             formula = f'=IF(COUNT({first_col}{current_row_num}:{last_col}{current_row_num})=0,"",SUM({first_col}{current_row_num}:{last_col}{current_row_num}))'
                             row_data.append(formula)
                         else:
-                            row_data.append("")
+                            # goukei_total列なし: XBRLの「全体」値を優先して使用
+                            v_xbrl = None
+                            if src_row is not None and c >= 0:
+                                v_xbrl = _read_numeric(analysis_ws, src_row, c)
+                            if v_xbrl is not None:
+                                row_data.append(v_xbrl)
+                            else:
+                                # XBRLになければ「報告セグメント合計」+「調整項目」でフォールバック計算
+                                _hokoku_fb = next((j for j, h in enumerate(seg_headers)
+                                                   if "報告セグメント" in str(h) and "以外" not in str(h)
+                                                   and j < zentai_idx), None)
+                                _adj_fb = next((j for j, h in enumerate(seg_headers)
+                                                if "調整" in str(h) and j < zentai_idx), None)
+                                if _hokoku_fb is not None and _adj_fb is not None:
+                                    h_col = get_column_letter(5 + _hokoku_fb)
+                                    a_col = get_column_letter(5 + _adj_fb)
+                                    formula = (f'=IF(AND({h_col}{current_row_num}="",'
+                                               f'{a_col}{current_row_num}=""),"",SUM('
+                                               f'{h_col}{current_row_num},'
+                                               f'IF({a_col}{current_row_num}="",0,{a_col}{current_row_num})))')
+                                    row_data.append(formula)
+                                else:
+                                    row_data.append("")
                     elif goukei_total_idx is not None and i == goukei_total_idx:
                         # 報告セグメント及びその他の合計: XBRL優先、なければ SUM(報告セグメント合計:以外の全ての...)
                         # _get_val_for_filing を経由すると goukei_is_synthesized=True の場合に再計算されてしまうため、
