@@ -416,6 +416,10 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
     # IFRS: 報告セグメント合計列が存在しない場合は合成列を追加
     synthetic_total_dim = None
     reporting_dims_for_total = []
+    # 以下は日本基準・IFRSで共用
+    _goukei_based_total  = False       # True: 報告セグメント合計 = XBRL合計 - 非報告個別計
+    _goukei_dim_for_total = None       # 基準となるXBRL合計dim名
+    _non_rep_dims_for_total = []       # 差し引くdim群
 
     if 'IFRS' in sheet_name:
         has_total = any(
@@ -423,6 +427,7 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             for d in unique_dims
         )
         if not has_total:
+            # Case A: 「以外」dimがある（例: 報告セグメント以外の全てのセグメント）
             ikai_idx = next(
                 (i for i, d in enumerate(unique_dims) if "以外" in str(d)),
                 None
@@ -431,10 +436,38 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
                 reporting_dims_for_total = unique_dims[:ikai_idx]
                 unique_dims.insert(ikai_idx, "報告セグメント合計")
                 synthetic_total_dim = "報告セグメント合計"
-            elif ikai_idx is None and unique_dims:
-                reporting_dims_for_total = list(unique_dims)
-                unique_dims.append("報告セグメント合計")
-                synthetic_total_dim = "報告セグメント合計"
+            else:
+                # Case B: その他及び修正消去 / 調整項目 パターン（例: 伊藤忠商事）
+                # 非報告集計dimキーワード
+                _IFRS_NOTREP_KW = ['その他及び', '修正消去', '調整項目']
+                sonota_idx = next(
+                    (i for i, d in enumerate(unique_dims)
+                     if any(kw in str(d) for kw in _IFRS_NOTREP_KW)),
+                    None
+                )
+                # 全体/連結 dimを特定（引き算の基準）
+                _zentai_dim = next(
+                    (d for d in unique_dims if str(d) in ('全体', '連結')),
+                    None
+                )
+                if sonota_idx is not None and sonota_idx > 0 and _zentai_dim:
+                    # その他及び修正消去の前に報告セグメント合計を挿入
+                    # 計算: 全体 - 調整項目 - その他及び修正消去
+                    _ifrs_subtract_dims = [
+                        d for d in unique_dims[sonota_idx:]
+                        if d != _zentai_dim
+                    ]
+                    reporting_dims_for_total = unique_dims[:sonota_idx]
+                    unique_dims.insert(sonota_idx, "報告セグメント合計")
+                    synthetic_total_dim = "報告セグメント合計"
+                    _goukei_based_total = True
+                    _goukei_dim_for_total = _zentai_dim
+                    _non_rep_dims_for_total = _ifrs_subtract_dims
+                elif unique_dims:
+                    # フォールバック: 末尾に追加
+                    reporting_dims_for_total = list(unique_dims)
+                    unique_dims.append("報告セグメント合計")
+                    synthetic_total_dim = "報告セグメント合計"
 
     # 日本基準: 「共通」ラベルのdimが存在する場合、列を再構成
     # 列順: [全報告セグメント, 報告セグメント合計, 共通+その他個別, 報告セグメント及びその他の合計, 全社・消去等]
@@ -442,9 +475,6 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
     # PPMグラフ対象は「報告セグメント合計」列以左のみ（_ADJUSTMENT_KEYWORDS の「合計」フィルタで除外）。
     synthetic_goukei_dim = None        # 合成「報告セグメント及びその他の合計」dim名
     goukei_source_dims   = []          # synthetic_goukei_dim の合計元dims
-    _goukei_based_total  = False       # True: 報告セグメント合計 = XBRL合計 - 非報告個別計
-    _goukei_dim_for_total = None       # 基準となるXBRL合計dim名
-    _non_rep_dims_for_total = []       # 差し引くdim群（共通 + その他）
     if synthetic_total_dim is None:
         _kyotsu_exists = any(str(d) == '共通' for d in unique_dims)
         # 「報告セグメント以外の全てのセグメント」が存在するか
