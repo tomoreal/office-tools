@@ -12,9 +12,10 @@ from lxml import etree
 from openpyxl.chart.label import DataLabel, DataLabelList
 
 # OOXML 名前空間
-_C = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
-_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-_NS = {'c': _C, 'a': _A}
+_C   = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+_A   = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+_C15 = 'http://schemas.microsoft.com/office/drawing/2012/chart'
+_NS  = {'c': _C, 'a': _A, 'c15': _C15}
 
 
 def make_datalabel_list(n_points):
@@ -97,6 +98,26 @@ def inject_bubble_labels(xlsx_path, segment_names_per_series, chart_filename):
 
             # OOXML 仕様: <c:tx> は <c:idx> の直後に配置する
             idx_el.addnext(tx)
+
+        # dLbls レベルにリーダー線を有効化する要素を追加
+        # <c:showLeaderLines val="1"/> — 旧形式（openpyxl が書いた既存要素があれば上書き）
+        show_ll = dLbls.find('c:showLeaderLines', _NS)
+        if show_ll is None:
+            show_ll = etree.SubElement(dLbls, f'{{{_C}}}showLeaderLines')
+        show_ll.set('val', '1')
+
+        # dLbls の extLst に <c15:showLeaderLines val="1"/> を追加（Excel 2013+ 形式）
+        extlst = dLbls.find('c:extLst', _NS)
+        if extlst is None:
+            extlst = etree.SubElement(dLbls, f'{{{_C}}}extLst')
+        ext = extlst.find(f'c:ext[@uri="{{CE6537A1-D6FC-4f65-9D91-7224C49458BB}}"]', _NS)
+        if ext is None:
+            ext = etree.SubElement(extlst, f'{{{_C}}}ext')
+            ext.set('uri', '{CE6537A1-D6FC-4f65-9D91-7224C49458BB}')
+        c15_ll = ext.find('c15:showLeaderLines', _NS)
+        if c15_ll is None:
+            c15_ll = etree.SubElement(ext, f'{{{_C15}}}showLeaderLines')
+        c15_ll.set('val', '1')
 
     # ZIP に書き戻し（tmp 経由でアトミックに置換）
     tmp_path = xlsx_path + '.tmp'
