@@ -128,7 +128,7 @@ def _run_housekeeping():
     CHECK_INTERVAL_HOURS 未満なら即リターンするため、毎リクエスト呼んでもコストは低い。
     """
     CHECK_INTERVAL_HOURS = 1   # センチネルが新しければスキップ（最小チェック間隔）
-    TEMP_MAX_AGE_HOURS    = 2   # この時間より古い temp_uploads サブディレクトリを削除
+    TEMP_MAX_AGE_HOURS    = 12   # この時間より古い temp_uploads サブディレクトリを削除
 
     sentinel = os.path.join(BASE_TEMP_DIR, '.last_cleanup')
     now = time.time()
