@@ -6,6 +6,8 @@ Segment Analysis Module for XBRL to Excel Conversion
 
 import unicodedata
 
+from ppm_bubble_labels import make_datalabel_list
+
 
 def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
     """
@@ -34,6 +36,9 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             pass
 
     debug_log(f"[Segment Analysis] Starting segment analysis sheet generation for {len(segment_sheets_info)} sheets")
+
+    # バブルチャートのラベル注入用: [[seg_names_chart1], [seg_names_chart2], ...]
+    bubble_label_info = []
 
     for info in segment_sheets_info:
         # 元の注記シートの末尾にセグメント別研究開発費を追加
@@ -95,7 +100,7 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             )
 
             # Step 3: PPM分析シートを内部作業シートから生成（_データ取得を参照）
-            _create_ppm_analysis_sheet(
+            ppm_label = _create_ppm_analysis_sheet(
                 workbook=workbook,
                 analysis_sheet_name=src_name,
                 used_sheet_names=info['used_sheet_names'],
@@ -105,6 +110,8 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 override_ppm_name=ppm_sheet_name,
                 override_acq_ref_name=acq_sheet_name
             )
+            if ppm_label:
+                bubble_label_info.extend(ppm_label)
 
             # Step 4: _分析シートを_データ取得のコピーとして生成（新構造）
             _create_analysis_copy_sheet(
@@ -229,7 +236,7 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
             )
 
             # Step 3: PPM分析シートを内部作業シートから生成（_データ取得を参照）
-            _create_ppm_analysis_sheet_ifrs(
+            ppm_label_ifrs = _create_ppm_analysis_sheet_ifrs(
                 workbook=workbook,
                 analysis_sheet_name=src_name_ifrs,
                 used_sheet_names=info['used_sheet_names'],
@@ -239,6 +246,8 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 override_ppm_name=ppm_sheet_name_ifrs,
                 override_acq_ref_name=acq_sheet_name_ifrs
             )
+            if ppm_label_ifrs:
+                bubble_label_info.extend(ppm_label_ifrs)
 
             # Step 4: _分析シートを_データ取得のコピーとして生成（新構造）
             _create_analysis_copy_sheet(
@@ -329,6 +338,8 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 global_element_period_values=info.get('global_element_period_values', {}),
                 debug_log=debug_log
             )
+
+    return bubble_label_info
 
 
 def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years_data,
@@ -2604,10 +2615,12 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         yv = Reference(ws, min_col=COL_DATA, min_row=sec_start + 2, max_col=sec_max_col, max_row=sec_start + 2)
         sz = Reference(ws, min_col=COL_DATA, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
         chart.series.append(Series(values=yv, xvalues=xv, zvalues=sz, title=""))
+        n_points = sec_max_col - COL_DATA + 1
+        chart.series[-1].dLbls = make_datalabel_list(n_points)
 
     # 最新期セクション: margin_end_row の直下に1行空けてから開始
     lat_sec_start = margin_end_row + 2
-    lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
+    lat_start, lat_end, lat_max_col, lat_vcols, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
 
     # -----------------------------------------------------------------------
     # 14. 5年前データセクション（N >= 6 の場合）
@@ -2617,7 +2630,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
     if N > FIVE_AGO_OFFSET:
         # 最新期セクション末尾から1行空けて5年前セクション開始
         five_sec_start = lat_end + 2
-        five_start, five_end, _, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
+        five_start, five_end, _, five_vcols, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
         debug_log("[PPM Analysis] Added 5-year comparison section")
 
     # bubbleScale: 2セクションある場合、売上最大値の比からスケールを計算
@@ -2660,6 +2673,16 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         ppm_ws.add_chart(chart_5y, f'I{chart_row}')
 
     debug_log(f"[PPM Analysis] Completed PPM analysis sheet: {ppm_sheet_name}")
+
+    # バブルラベル注入用のセグメント名を返す（チャート列範囲のみ）
+    lat_n_chart = lat_chart_max_col - COL_DATA + 1
+    lat_seg_names = [str(ppm_ws.cell(lat_start, COL_DATA + k).value or '') for k in range(lat_n_chart)]
+    result = [lat_seg_names]
+    if chart_5y:
+        five_n_chart = five_chart_max_col - COL_DATA + 1
+        five_seg_names = [str(ppm_ws.cell(five_start, COL_DATA + k).value or '') for k in range(five_n_chart)]
+        result.append(five_seg_names)
+    return result
 
 
 def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, filing_pairs, debug_log,
@@ -3559,7 +3582,15 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             ppm_ws[f'{cl}{sec_start + 2}'].number_format = '0%'
             ppm_ws[f'{cl}{sec_start + 3}'].number_format = r'#,##0_);[Red](#,##0)'
 
-        return sec_start, sec_end, sec_max_col, vcols, chart_sec_max_col
+        # チャート列のセグメント名（数式ではなく実際の名称）
+        chart_seg_names = []
+        for ci in vcols_chart:
+            if ci == eff_total_col:
+                chart_seg_names.append('計')
+            else:
+                chart_seg_names.append(str(_ppm_col_hdr_strs.get(ci, '') or ''))
+
+        return sec_start, sec_end, sec_max_col, vcols, chart_sec_max_col, chart_seg_names
 
     # -----------------------------------------------------------------------
     # 12. 軸範囲計算
@@ -3638,20 +3669,23 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         yv = Reference(ws, min_col=COL_DATA, min_row=sec_start + 2, max_col=sec_max_col, max_row=sec_start + 2)
         sz = Reference(ws, min_col=COL_DATA, min_row=sec_start + 3, max_col=sec_max_col, max_row=sec_start + 3)
         chart.series.append(Series(values=yv, xvalues=xv, zvalues=sz, title=""))
+        n_points = sec_max_col - COL_DATA + 1
+        chart.series[-1].dLbls = make_datalabel_list(n_points)
 
     # 最新期セクション: margin_end_row の直下に1行空けてから開始
     lat_sec_start = margin_end_row + 2
-    lat_start, lat_end, lat_max_col, _, lat_chart_max_col = _append_data_section(LATEST_IDX, lat_sec_start)
+    lat_start, lat_end, lat_max_col, lat_vcols, lat_chart_max_col, lat_seg_names = _append_data_section(LATEST_IDX, lat_sec_start)
 
     # -----------------------------------------------------------------------
     # 14. 5年前データセクション（N >= 6 の場合）
     # -----------------------------------------------------------------------
     chart_5y = None
     five_start = five_end = five_chart_max_col = None
+    five_seg_names = None
     if N > FIVE_AGO_OFFSET:
         # 最新期セクション末尾から1行空けて5年前セクション開始
         five_sec_start = lat_end + 2
-        five_start, five_end, _, _, five_chart_max_col = _append_data_section(FIVE_AGO_IDX, five_sec_start)
+        five_start, five_end, _, five_vcols, five_chart_max_col, five_seg_names = _append_data_section(FIVE_AGO_IDX, five_sec_start)
         debug_log("[PPM IFRS] Added 5-year comparison section")
 
     # bubbleScale: 2セクションある場合、売上最大値の比からスケールを計算
@@ -3695,6 +3729,12 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         ppm_ws.add_chart(chart_5y, f'I{chart_row}')
 
     debug_log(f"[PPM IFRS] Completed PPM analysis sheet: {ppm_sheet_name}")
+
+    # バブルラベル注入用のセグメント名を返す（_append_data_section が返した実名称を使用）
+    result = [lat_seg_names]
+    if chart_5y and five_seg_names:
+        result.append(five_seg_names)
+    return result
 
 
 def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_log,

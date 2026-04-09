@@ -47,7 +47,8 @@ def make_datalabel_list(n_points):
 
 def inject_bubble_labels(xlsx_path, segment_names_per_series, chart_filename):
     """
-    保存済み xlsx のチャート XML に <c:tx> カスタムテキストを注入する。
+    保存済み xlsx のチャート XML に <c:tx><c:rich>...<a:t>セグメント名</a:t>
+    を注入する（直接テキスト埋め込み方式）。
 
     Parameters
     ----------

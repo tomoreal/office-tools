@@ -4243,7 +4243,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     # SEGMENT ANALYSIS SHEETS (セグメント分析)
     # ============================================================================
     # セグメント分析シートを追加（segment_analysis.pyモジュールを使用）
-    add_segment_analysis_sheets(wb, segment_sheets_info, debug_log)
+    bubble_label_info = add_segment_analysis_sheets(wb, segment_sheets_info, debug_log)
 
     # ============================================================================
     # DIVERSITY SHEET (ダイバーシティ)
@@ -4290,6 +4290,26 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     t_save = time.time()
     wb.save(out_file)
     debug_log(f"Excel file write (wb.save) completed in {time.time() - t_save:.2f}s")
+
+    # PPMバブルチャートにセグメント名ラベルを注入
+    if bubble_label_info:
+        try:
+            import zipfile as _zipfile
+            import re as _re
+            from ppm_bubble_labels import inject_bubble_labels
+            with _zipfile.ZipFile(out_file, 'r') as _z:
+                all_chart_files = sorted(
+                    [f for f in _z.namelist() if _re.match(r'xl/charts/chart\d+\.xml$', f)],
+                    key=lambda x: int(_re.search(r'\d+', x).group())
+                )
+                bubble_chart_files = [f for f in all_chart_files if b'bubbleChart' in _z.read(f)]
+            for _i, _seg_names in enumerate(bubble_label_info):
+                if _i < len(bubble_chart_files):
+                    inject_bubble_labels(out_file, [_seg_names], bubble_chart_files[_i])
+                    debug_log(f"[PPM] Injected bubble labels into {bubble_chart_files[_i]}")
+        except Exception as _e:
+            debug_log(f"[PPM] bubble label injection failed: {_e}")
+
     debug_log(f"SUCCESS: Excel saved to {out_file} in {time.time() - t_excel_start:.2f}s")
     debug_log(f"TOTAL: process_xbrl_zips completed in {time.time() - overall_start:.2f}s")
     return out_file
