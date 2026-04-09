@@ -729,6 +729,8 @@ XBRL to Excel Converter - Main UI Template
             }
 
             // 前回の検索結果をリセット
+            document.querySelector('#searchResults h3').textContent =
+                '検索結果:企業名をクリックするとダウンロードが始まります。';
             document.getElementById('downloadProgress').style.display = 'none';
             document.getElementById('downloadCompleteInfo').style.display = 'none';
             document.getElementById('conversionProgress').style.display = 'none';
