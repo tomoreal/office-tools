@@ -409,7 +409,7 @@ XBRL to Excel Converter - Main UI Template
                     <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
                         <span style="font-size: 0.9rem;">
                             <i class="fas fa-download" style="margin-right: 5px; color: var(--primary-color);"></i>
-                            XBRLダウンロード進捗
+                            XBRLダウンロード進捗(5～20秒程度)
                         </span>
                         <span id="progressText" style="font-size: 0.9rem; color: var(--primary-color);">0 / 0</span>
                     </div>
@@ -437,10 +437,16 @@ XBRL to Excel Converter - Main UI Template
                     <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
                         <span style="font-size: 0.9rem;">
                             <i class="fas fa-file-excel" style="margin-right: 5px; color: var(--primary-color);"></i>
-                            Excel変換進捗
+                            Excel変換進捗(10～30秒程度)
                         </span>
                         <span id="conversionStatusText"
                             style="font-size: 0.9rem; color: var(--primary-color);">変換中...</span>
+                    </div>
+                    <div
+                        style="width: 100%; height: 8px; background: var(--border-color); border-radius: 4px; overflow: hidden; margin-bottom: 0.5rem;">
+                        <div id="conversionBarFill"
+                            style="height: 100%; width: 0%; background: var(--primary-color); transition: width 0.2s ease;">
+                        </div>
                     </div>
                     <div id="conversionCompleteInfo"
                         style="display: none; margin-top: 0.5rem; padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-radius: 6px; border: 1px solid rgba(16, 185, 129, 0.3);">
@@ -890,6 +896,38 @@ XBRL to Excel Converter - Main UI Template
             }
         };
 
+        /**
+         * タイマー駆動プログレスバー
+         * @param {HTMLElement} barEl  - バー要素 (progressBarFill 等)
+         * @param {number} maxSeconds  - 最大秒数（この時間で 95% まで進む）
+         * @returns {function} complete(success) — 早期終了用コールバック。
+         *          success=true で 100%、false でバーを非表示レベルの 0% に戻す。
+         */
+        function startTimedProgress(barEl, maxSeconds) {
+            const maxMs = maxSeconds * 1000;
+            const tickMs = 100;
+            const startTime = Date.now();
+
+            barEl.style.width = '0%';
+
+            const timer = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                const t = Math.min(elapsed / maxMs, 1);
+                // ease-out quad: 最初は速く、後半ゆっくり → 最大 95% まで
+                const pct = t * (2 - t) * 95;
+                barEl.style.width = pct.toFixed(1) + '%';
+                if (t >= 1) clearInterval(timer);
+            }, tickMs);
+
+            return function complete(success) {
+                clearInterval(timer);
+                if (success !== false) {
+                    barEl.style.transition = 'width 0.4s ease';
+                    barEl.style.width = '100%';
+                }
+            };
+        }
+
         // 先読みダウンロード開始（503サーバービジー時は自動リトライ）
         async function startPreloadDownload(docIds) {
             isDownloading = true;
@@ -900,10 +938,12 @@ XBRL to Excel Converter - Main UI Template
             const progressText = document.getElementById('progressText');
             const progressBarFill = document.getElementById('progressBarFill');
 
+            let completeDownloadBar = null;
             if (progressContainer) {
                 progressContainer.style.display = 'block';
                 progressText.textContent = `0 / ${docIds.length}`;
-                progressBarFill.style.width = '0%';
+                // タイマー駆動（最大20秒）でバーを進める
+                completeDownloadBar = startTimedProgress(progressBarFill, 20);
             }
 
             // 503 サーバービジー時のカウントダウン表示
@@ -986,14 +1026,13 @@ XBRL to Excel Converter - Main UI Template
                             statusEl.innerHTML = '<i class="fas fa-exclamation-circle" style="color: #ef4444;"></i> ダウンロード失敗';
                         }
                     }
-
-                    // 進捗バー更新
-                    if (progressContainer) {
-                        const progress = Math.round(((index + 1) / docIds.length) * 100);
-                        progressText.textContent = `${index + 1} / ${docIds.length}`;
-                        progressBarFill.style.width = `${progress}%`;
-                    }
                 });
+
+                // 進捗バーを100%に（早期完了）
+                if (completeDownloadBar) {
+                    completeDownloadBar(true);
+                    progressText.textContent = `${downloadedFiles.length} / ${docIds.length}`;
+                }
 
                 // ボタンテキスト更新
                 if (data.failed_count > 0) {
@@ -1029,6 +1068,7 @@ XBRL to Excel Converter - Main UI Template
 
             } catch (error) {
                 console.error('Preload error:', error);
+                if (completeDownloadBar) completeDownloadBar(false);
                 alert('ダウンロードエラー: ' + error.message);
                 convertBtnText.textContent = '選択した報告書をダウンロード＆変換';
                 convertBtn.disabled = false;
@@ -1074,11 +1114,15 @@ XBRL to Excel Converter - Main UI Template
             const conversionStatusText = document.getElementById('conversionStatusText');
             const conversionCompleteInfo = document.getElementById('conversionCompleteInfo');
             const conversionCompleteTime = document.getElementById('conversionCompleteTime');
+            const conversionBarFill = document.getElementById('conversionBarFill');
 
+            let completeConversionBar = null;
             if (conversionProgressDiv) {
                 conversionProgressDiv.style.display = 'block';
                 conversionStatusText.textContent = '変換中...';
                 conversionCompleteInfo.style.display = 'none';
+                // タイマー駆動（最大30秒）でバーを進める
+                completeConversionBar = startTimedProgress(conversionBarFill, 30);
             }
 
             const startTime = Date.now();
@@ -1111,6 +1155,7 @@ XBRL to Excel Converter - Main UI Template
                 const timeString = now.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
                 if (conversionProgressDiv) {
+                    if (completeConversionBar) completeConversionBar(true);
                     conversionStatusText.textContent = `完了 (${elapsedSeconds}秒)`;
                     conversionCompleteInfo.style.display = 'block';
                     conversionCompleteTime.textContent = `完了時刻: ${timeString} (変換時間: ${elapsedSeconds}秒)`;
@@ -1136,6 +1181,7 @@ XBRL to Excel Converter - Main UI Template
                 window.location.href = `/api/edinet/download?file=${encodeURIComponent(data.file)}`;
 
             } catch (error) {
+                if (completeConversionBar) completeConversionBar(false);
                 alert('エラーが発生しました: ' + error.message);
                 if (conversionProgressDiv) {
                     conversionProgressDiv.style.display = 'none';
