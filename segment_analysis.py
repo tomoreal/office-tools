@@ -163,6 +163,10 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 data_col_start=5
             )
 
+            # Step 5b: 派生シート生成完了後に_分析シートへ当期行セクションを追加
+            if analysis_sheet_name in workbook.sheetnames:
+                _append_filter_section(workbook[analysis_sheet_name], workbook[analysis_sheet_name].max_row)
+
             # Step 6: 内部作業シートを削除
             if src_name in workbook.sheetnames:
                 workbook.remove(workbook[src_name])
@@ -298,6 +302,10 @@ def add_segment_analysis_sheets(workbook, segment_sheets_info, debug_log=None):
                 debug_log=debug_log,
                 data_col_start=5
             )
+
+            # Step 5b: 派生シート生成完了後に_分析シートへ当期行セクションを追加
+            if analysis_sheet_name in workbook.sheetnames:
+                _append_filter_section(workbook[analysis_sheet_name], workbook[analysis_sheet_name].max_row)
 
             # Step 6: 内部作業シートを削除
             if src_name_ifrs in workbook.sheetnames:
@@ -1096,6 +1104,72 @@ def _read_numeric(ws, row, col):
         return total if has_val else None
 
     return None
+
+
+def _append_filter_section(ws, data_end_row, flag_ws=None):
+    """
+    シート末尾に列単位書式・空白5行・当期行コピーセクションを追加する（内部ヘルパー）
+
+    openpyxl は Excel の動的配列関数（FILTER 等）を正しく出力できないため、
+    Python 側で当期行を直接コピーする方式を採用する。
+
+    Args:
+        ws: 対象ワークシート
+        data_end_row: データ末尾行番号（コピー対象範囲の終端）
+        flag_ws: 列C（前期・当期）に実値を持つワークシート。
+                 Noneの場合はwsそのものを参照する（_分析シート用）。
+                 派生シート（構成比・YoY等）はanalysis_wsを渡すこと。
+    """
+    import re as _re
+    from openpyxl.utils import get_column_letter
+
+    max_col = ws.max_column
+    _flag_source = flag_ws if flag_ws is not None else ws
+
+    # 当期行かどうかを判定するヘルパー
+    def _is_current_row(row_idx):
+        # wsの列Cが実値の場合（_分析シート）
+        cell_val = ws.cell(row_idx, 3).value
+        if cell_val == "当期":
+            return True
+        # 列Cが数式の場合（派生シート）: =IF('分析'!C5="","","分析'!C5) 等から行番号を抽出
+        if flag_ws and isinstance(cell_val, str) and '!' in cell_val:
+            m = _re.search(r'!C(\d+)', cell_val)
+            if m:
+                ref_row = int(m.group(1))
+                return _flag_source.cell(ref_row, 3).value == "当期"
+        return False
+
+    current_period_rows = [r for r in range(2, data_end_row + 1) if _is_current_row(r)]
+
+    if not current_period_rows:
+        return
+
+    # 列単位の書式設定（データ行から書式を検出して列ディメンションに設定）
+    for col_idx in range(1, max_col + 1):
+        col_letter = get_column_letter(col_idx)
+        fmt = None
+        for row_idx in range(2, data_end_row + 1):
+            cell_fmt = ws.cell(row_idx, col_idx).number_format
+            if cell_fmt and cell_fmt != 'General':
+                fmt = cell_fmt
+                break
+        if fmt:
+            ws.column_dimensions[col_letter].number_format = fmt
+
+    # 5行の空白行を追加
+    for _ in range(5):
+        ws.append([''] * max_col)
+
+    # 当期行を直接コピー（書式も引き継ぐ）
+    for src_row in current_period_rows:
+        row_data = [ws.cell(src_row, c).value for c in range(1, max_col + 1)]
+        new_row_idx = ws.max_row + 1
+        ws.append(row_data)
+        for col_idx in range(1, max_col + 1):
+            fmt = ws.cell(src_row, col_idx).number_format
+            if fmt and fmt != 'General':
+                ws.cell(new_row_idx, col_idx).number_format = fmt
 
 
 def _build_period_lookup(analysis_ws):
@@ -3847,6 +3921,8 @@ def _create_composition_ratio_sheet(workbook, analysis_sheet_name, used_sheet_na
         for cell in row:
             cell.number_format = '0%'
 
+    _append_filter_section(comp_ws, comp_ws.max_row, flag_ws=analysis_ws)
+
     debug_log(f"[Composition] Completed composition ratio sheet: {comp_sheet_name}")
 
 
@@ -3962,6 +4038,8 @@ def _create_yoy_growth_sheet(workbook, analysis_sheet_name, used_sheet_names, de
     for row in yoy_ws.iter_rows(min_row=3, min_col=data_col_start, max_col=max_col):
         for cell in row:
             cell.number_format = '0%'
+
+    _append_filter_section(yoy_ws, yoy_ws.max_row, flag_ws=analysis_ws)
 
     debug_log(f"[YoY] Completed YoY growth sheet: {yoy_sheet_name}")
 
@@ -4387,6 +4465,8 @@ def _create_ebitda_sheet(workbook, analysis_sheet_name, used_sheet_names, debug_
     ebitda_ws.column_dimensions['A'].width = 31
     for col_idx in range(2, max_col + 1):
         ebitda_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    _append_filter_section(ebitda_ws, ebitda_ws.max_row, flag_ws=analysis_ws)
 
     debug_log(f"[EBITDA] Completed EBITDA sheet: {ebitda_sheet_name}")
 
@@ -4897,6 +4977,8 @@ def _create_ebitda_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_names, d
     for col_idx in range(2, max_col + 1):
         ebitda_ws.column_dimensions[get_column_letter(col_idx)].width = 12
 
+    _append_filter_section(ebitda_ws, ebitda_ws.max_row, flag_ws=analysis_ws)
+
     debug_log(f"[EBITDA IFRS] Completed EBITDA sheet: {ebitda_sheet_name}")
 
 
@@ -5073,6 +5155,8 @@ def _create_sales_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names, d
     for col_idx in range(2, max_col + 1):
         ratio_ws.column_dimensions[get_column_letter(col_idx)].width = 12
 
+    _append_filter_section(ratio_ws, ratio_ws.max_row, flag_ws=analysis_ws)
+
     debug_log(f"[SalesRatio] Completed sales ratio sheet: {ratio_sheet_name}")
 
 
@@ -5217,5 +5301,7 @@ def _create_employee_ratio_sheet(workbook, analysis_sheet_name, used_sheet_names
     ratio_ws.column_dimensions['A'].width = 31
     for col_idx in range(2, max_col + 1):
         ratio_ws.column_dimensions[get_column_letter(col_idx)].width = 12
+
+    _append_filter_section(ratio_ws, ratio_ws.max_row, flag_ws=analysis_ws)
 
     debug_log(f"[EmpRatio] Completed employee ratio sheet: {ratio_sheet_name}")
