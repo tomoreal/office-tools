@@ -1441,6 +1441,16 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
             seg_headers.insert(igai_zen_pos + 1, "報告セグメント及びその他の合計")
             included_cols.insert(igai_zen_pos + 1, -2)
 
+    # --- 「報告セグメント及びその他の合計」の直後に重複する「報告セグメント合計」があれば除去 ---
+    # ユニチャームのように XBRL に ReportableSegmentsMember（報告セグメント合計）が
+    # 存在し、かつ報告セグメント及びその他の合計と同値になる場合に重複列が生じるため除去する。
+    _goukei_pos2 = next((i for i, h in enumerate(seg_headers) if "報告セグメント及びその他の合計" in str(h)), None)
+    if _goukei_pos2 is not None and _goukei_pos2 + 1 < len(seg_headers):
+        _next_h = str(seg_headers[_goukei_pos2 + 1])
+        if _next_h == "報告セグメント合計":
+            included_cols.pop(_goukei_pos2 + 1)
+            seg_headers.pop(_goukei_pos2 + 1)
+
     col_to_dim, hokoku_col, igai_col, goukei_col, hokoku_is_synthesized, goukei_is_synthesized = \
         _build_col_info(analysis_ws, max_col)
     _get_val_for_filing = _make_get_val_for_filing(
@@ -1580,6 +1590,18 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
                             h_col = get_column_letter(5 + hokoku_total_idx)
                             i_col = get_column_letter(5 + igai_zen_idx)
                             formula = f'=IF(AND({h_col}{current_row_num}="",{i_col}{current_row_num}=""),"",SUM({h_col}{current_row_num}:{i_col}{current_row_num}))'
+                            row_data.append(formula)
+                        elif hokoku_total_idx is not None and goukei_total_idx is not None and goukei_total_idx > hokoku_total_idx:
+                            # 「報告セグメント以外の全てのセグメント」がない場合のフォールバック:
+                            # 「報告セグメント合計」〜「報告セグメント及びその他の合計」の直前列までをSUM
+                            # (= 報告セグメント合計 + その他事業 など)
+                            h_col = get_column_letter(5 + hokoku_total_idx)
+                            prev_col = get_column_letter(5 + goukei_total_idx - 1)
+                            if hokoku_total_idx == goukei_total_idx - 1:
+                                # 直前列が報告セグメント合計のみ（その他事業なし）→ そのまま参照
+                                formula = f'=IF({h_col}{current_row_num}="","",{h_col}{current_row_num})'
+                            else:
+                                formula = f'=IF(COUNT({h_col}{current_row_num}:{prev_col}{current_row_num})=0,"",SUM({h_col}{current_row_num}:{prev_col}{current_row_num}))'
                             row_data.append(formula)
                         else:
                             row_data.append("")
