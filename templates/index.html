@@ -814,7 +814,7 @@ XBRL to Excel Converter - Main UI Template
                 const conversionMode = document.querySelector('input[name="conversionMode"]:checked')?.value;
                 if (sortedResults.length === 1 && conversionMode === 'auto') {
                     document.querySelector('#searchResults h3').textContent =
-                        '検索結果（1社のみヒット・全期間一括モード）：自動でダウンロードを開始しています...';
+                        '1社のみヒット(全期間一括モード)：自動でダウンロード開始中…';
                     selectCompany(0);
                 }
 
