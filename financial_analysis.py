@@ -1021,6 +1021,83 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
                 debug_log(f"Added R column for 5-9 year data: R={latest_col_letter}/{five_years_col_letter}")
 
+        # ============================================================================
+        # 差分列の追加（引き算）
+        # ============================================================================
+        if base_col is not None:
+            # 差分を表示する列のペアを特定
+            diff_pairs = []
+            
+            # 1. 全期間 (latest - base)
+            diff_pairs.append({
+                'latest': latest_col_letter,
+                'base': base_col_letter,
+                'col_idx': num_cols + 4  # Q, R, S の次
+            })
+            
+            if kikan >= 5:
+                if kikan >= 10:
+                    # 2. 前半5年 (mid - base)
+                    diff_pairs.append({
+                        'latest': mid_col_letter,
+                        'base': base_col_letter,
+                        'col_idx': num_cols + 5
+                    })
+                    # 3. 後半5年 (latest - mid)
+                    diff_pairs.append({
+                        'latest': latest_col_letter,
+                        'base': mid_col_letter,
+                        'col_idx': num_cols + 6
+                    })
+                else:
+                    # 4. 最新5年 (latest - 5years_ago)
+                    diff_pairs.append({
+                        'latest': latest_col_letter,
+                        'base': five_years_col_letter,
+                        'col_idx': num_cols + 5
+                    })
+
+            # 行ごとの書式設定マッピング
+            row_formats = {
+                sales_analysis_row: number_format_integer,
+                profit_analysis_row: number_format_integer,
+                equity_or_net_assets_row: number_format_integer,
+                total_assets_analysis_row: number_format_integer,
+                equity_ratio_analysis_row: number_format_percent,
+                roe_analysis_row: number_format_percent,
+                equity_calc_row_num: number_format_decimal,
+                equity_avg_row_num: number_format_decimal,
+                total_assets_avg_row_num: number_format_decimal,
+                roe_calc_row_num: number_format_percent,
+                ros_row_num: number_format_percent,
+                tor_row_num: number_format_decimal2,
+                lrv_row_num: number_format_decimal2,
+                check1_row_num: number_format_percent,
+                roa_row_num: number_format_percent,
+            }
+
+            for pair in diff_pairs:
+                d_latest = pair['latest']
+                d_base = pair['base']
+                diff_col_letter = openpyxl.utils.get_column_letter(pair['col_idx'])
+                
+                # ヘッダー: YEAR(latest) - YEAR(base)
+                diff_header_formula = f"=YEAR({d_latest}1) & \"-\" & YEAR({d_base}1)"
+                analysis_ws[f'{diff_col_letter}1'] = diff_header_formula
+                
+                # 各行の計算
+                for source_row, fmt in row_formats.items():
+                    if source_row is not None:
+                        diff_formula = f"={d_latest}{source_row}-{d_base}{source_row}"
+                        analysis_ws[f'{diff_col_letter}{source_row}'] = diff_formula
+                        analysis_ws[f'{diff_col_letter}{source_row}'].number_format = fmt
+                
+                # 対前年増加率セクション（ヘッダーのみ差分列のヘッダーを参照）
+                analysis_ws[f'{diff_col_letter}{yoy_header_row_num}'] = f'={diff_col_letter}1'
+                
+                # 列幅の設定
+                analysis_ws.column_dimensions[diff_col_letter].width = 12
+
     debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
 
 
@@ -1794,6 +1871,83 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                 analysis_ws.column_dimensions[r_col_letter].width = 12
 
                 debug_log(f"Added R column for 5-9 year data: R={latest_col_letter}/{five_years_col_letter}")
+
+        # ============================================================================
+        # 差分列の追加（引き算）
+        # ============================================================================
+        if base_col is not None:
+            # 差分を表示する列のペアを特定
+            diff_pairs = []
+            
+            # 1. 全期間 (latest - base)
+            diff_pairs.append({
+                'latest': latest_col_letter,
+                'base': base_col_letter,
+                'col_idx': num_cols + 4  # Q, R, S の次
+            })
+            
+            if kikan >= 5:
+                if kikan >= 10:
+                    # 2. 前半5年 (mid - base)
+                    diff_pairs.append({
+                        'latest': mid_col_letter,
+                        'base': base_col_letter,
+                        'col_idx': num_cols + 5
+                    })
+                    # 3. 後半5年 (latest - mid)
+                    diff_pairs.append({
+                        'latest': latest_col_letter,
+                        'base': mid_col_letter,
+                        'col_idx': num_cols + 6
+                    })
+                else:
+                    # 4. 最新5年 (latest - 5years_ago)
+                    diff_pairs.append({
+                        'latest': latest_col_letter,
+                        'base': five_years_col_letter,
+                        'col_idx': num_cols + 5
+                    })
+
+            # 行ごとの書式設定マッピング
+            row_formats = {
+                sales_analysis_row: number_format_integer,
+                profit_analysis_row: number_format_integer,
+                net_assets_analysis_row: number_format_integer,
+                total_assets_analysis_row: number_format_integer,
+                equity_ratio_analysis_row: number_format_percent,
+                roe_analysis_row: number_format_percent,
+                equity_calc_row_num: number_format_decimal,
+                equity_avg_row_num: number_format_decimal,
+                total_assets_avg_row_num: number_format_decimal,
+                roe_calc_row_num: number_format_percent,
+                ros_row_num: number_format_percent,
+                tor_row_num: number_format_decimal2,
+                lrv_row_num: number_format_decimal2,
+                check1_row_num: number_format_percent,
+                roa_row_num: number_format_percent,
+            }
+
+            for pair in diff_pairs:
+                d_latest = pair['latest']
+                d_base = pair['base']
+                diff_col_letter = openpyxl.utils.get_column_letter(pair['col_idx'])
+                
+                # ヘッダー: YEAR(latest) - YEAR(base)
+                diff_header_formula = f"=YEAR({d_latest}1) & \"-\" & YEAR({d_base}1)"
+                analysis_ws[f'{diff_col_letter}1'] = diff_header_formula
+                
+                # 各行の計算
+                for source_row, fmt in row_formats.items():
+                    if source_row is not None:
+                        diff_formula = f"={d_latest}{source_row}-{d_base}{source_row}"
+                        analysis_ws[f'{diff_col_letter}{source_row}'] = diff_formula
+                        analysis_ws[f'{diff_col_letter}{source_row}'].number_format = fmt
+                
+                # 対前年増加率セクション（ヘッダーのみ差分列のヘッダーを参照）
+                analysis_ws[f'{diff_col_letter}{yoy_header_row_num}'] = f'={diff_col_letter}1'
+                
+                # 列幅の設定
+                analysis_ws.column_dimensions[diff_col_letter].width = 12
 
     debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
 
