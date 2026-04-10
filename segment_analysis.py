@@ -635,7 +635,11 @@ def _create_segment_analysis_sheet(workbook, sheet_name, ordered_keys, all_years
             'el': el
         }
 
-        is_sales_item = (display_label == "外部顧客への売上高") or ("売上高" in display_label and "計" in display_label)
+        is_sales_item = (
+            display_label == "外部顧客への売上高"
+            or ("売上高" in display_label and "計" in display_label)
+            or display_label.startswith("外部顧客への")  # 「外部顧客への売上高及び金融ビジネス収入」など会社独自のIFRS収益ラベルをカバー
+        )
 
         for period in unique_periods:
             for dim in unique_dims:
