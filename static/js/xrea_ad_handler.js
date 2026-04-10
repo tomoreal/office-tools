@@ -24,8 +24,24 @@
         }
     }
 
+    const DEFAULT_AD_HEIGHT = 60;
+
+    function scrollByAdHeight(adHeight) {
+        const scrollTarget = window.pageYOffset + adHeight + 10;
+        window.scrollTo({ top: scrollTarget, behavior: 'smooth' });
+        scrolled = true;
+    }
+
     function observeAndScroll(el) {
         if (scrolled) return;
+
+        // 広告取得タイムアウト：一定時間後にデフォルトサイズでスクロール
+        const fallbackTimer = setTimeout(() => {
+            if (!scrolled) {
+                scrollByAdHeight(DEFAULT_AD_HEIGHT);
+                ro.disconnect();
+            }
+        }, 3000);
 
         const ro = new ResizeObserver(entries => {
             for (const entry of entries) {
@@ -33,6 +49,7 @@
 
                 // 高さが一定以上＝広告描画完了とみなす
                 if (rect.height > 50) {
+                    clearTimeout(fallbackTimer);
                     const scrollTarget = window.pageYOffset + (rect.bottom * 2) + 10;
 
                     window.scrollTo({
