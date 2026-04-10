@@ -1411,12 +1411,17 @@ def _create_data_acquisition_sheet(workbook, analysis_sheet_name, used_sheet_nam
         # 元の「報告セグメント」列を抜き出し、名称を「報告セグメント合計」に変えて移動
         target_col = included_cols.pop(orig_hokoku_pos)
         seg_headers.pop(orig_hokoku_pos)
-        
+
         # 再計算
         igai_zen_pos = next((i for i, h in enumerate(seg_headers) if "報告セグメント以外の全てのセグメント" in str(h)), None)
-        
+
         seg_headers.insert(igai_zen_pos, "報告セグメント合計")
         included_cols.insert(igai_zen_pos, target_col)
+    elif orig_hokoku_pos is not None:
+        # 「その他」がなく「報告セグメント以外の全てのセグメント」が存在しない場合も
+        # 「報告セグメント」→「報告セグメント合計」に名称変更（位置はそのまま）
+        # これにより hokoku_col が PPM シートで正しく解決され、「計」表示・*1%調整が適用される
+        seg_headers[orig_hokoku_pos] = "報告セグメント合計"
 
     # --- 「報告セグメント及びその他の合計」を「報告セグメント以外の全てのセグメント」の直後に配置する ---
     goukei_total_pos = next((i for i, h in enumerate(seg_headers) if "報告セグメント及びその他の合計" in str(h)), None)
