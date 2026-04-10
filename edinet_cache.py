@@ -254,7 +254,7 @@ class EdinetCache:
                c.japanese_name LIKE ? OR
                r.filer_name LIKE ? OR
                r.filer_name LIKE ? OR
-               r.edinet_code LIKE ? COLLATE NOCASE OR
+               (LENGTH(?) >= 6 AND r.edinet_code = ? COLLATE NOCASE) OR
                r.sec_code LIKE ?
             )
             AND display_name NOT LIKE '%投資法人%'
@@ -262,7 +262,7 @@ class EdinetCache:
             AND r.doc_description NOT LIKE '有価証券報告書（%'
             GROUP BY r.edinet_code
             ORDER BY latest_period_end DESC
-        """, (search_raw, search_kana, search_raw, search_norm, search_raw, search_norm, search_raw, search_raw))
+        """, (search_raw, search_kana, search_raw, search_norm, search_raw, search_norm, raw_query, raw_query, search_raw))
 
         results = []
         for row in cursor.fetchall():
