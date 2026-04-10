@@ -2075,6 +2075,18 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     _acq_sales_label = _ppm_label_to_acq(target_sales_label) if acq_ws_ref else None
 
+    # 売上ラベルのフォールバック候補: 「計」が空の期間で代替ラベルを使う
+    # 例: 2024/3以降に「計」→「売上収益」に勘定科目名が変わった場合
+    _SALES_FALLBACK_KWS = ["外部顧客への売上収益", "売上収益", "営業収益", "外部顧客への売上高", "売上高"]
+    _acq_sales_fallback_labels = []  # acqシートに実際に存在するフォールバックラベルのリスト
+    if acq_ws_ref and _acq_sales_label:
+        for _fb_kw in _SALES_FALLBACK_KWS:
+            for _fb_lbl in acq_canonical_labels:
+                if _fb_lbl != _acq_sales_label and _fb_kw in _fb_lbl:
+                    _acq_sales_fallback_labels.append(_fb_lbl)
+                    break
+    debug_log(f"[PPM Analysis] Sales fallback labels: {_acq_sales_fallback_labels}")
+
     # PPMシートのループ終端: 再構築後の analysis_ws 列範囲を使用
     # acq_col_map_ref で対応付けられない列（(計算値)でacqにない等）は空になる
     _ppm_loop_end = analysis_ws.max_column  # 再構築後の analysis_ws max_col
@@ -2310,10 +2322,45 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     _data_col_count = _COL_END - _COL_START + 1
 
+    def _read_for_chart_sales(cur_p_str, flag, c):
+        """売上用チャート数値読み取り。_acq_sales_labelが空なら_acq_sales_fallback_labelsを試みる"""
+        if not acq_ws_ref or not _acq_sales_label:
+            return None
+        v = _read_for_chart(_acq_sales_label, cur_p_str, flag, c)
+        if v is None:
+            for _fb_lbl in _acq_sales_fallback_labels:
+                v = _read_for_chart(_fb_lbl, cur_p_str, flag, c)
+                if v is not None:
+                    return v
+        return v
+
     # -----------------------------------------------------------------------
     # 6. 売上セクション（2*N 行）
     # -----------------------------------------------------------------------
     sales_start_row = ppm_ws.max_row + 1
+
+    def _formula_for_sales_with_fallback(acq_label, fallback_labels, cur_p_str, flag, c):
+        """売上用数式を生成。acq_labelが空の場合、fallback_labelsから代替を参照するIF式を返す"""
+        if acq_ws_ref is None or acq_label is None:
+            return None
+        col_letter = get_column_letter(c)
+        primary_row = acq_row_lookup.get((acq_label, cur_p_str, flag))
+        if primary_row is not None:
+            primary_ref = f"'{_safe_acq}'!{col_letter}{primary_row}"
+            # フォールバックラベルがあり、そのperiod+flagの行もあれば、IFネスト式を生成
+            for fb_lbl in fallback_labels:
+                fb_row = acq_row_lookup.get((fb_lbl, cur_p_str, flag))
+                if fb_row is not None:
+                    fb_ref = f"'{_safe_acq}'!{col_letter}{fb_row}"
+                    return f"=IF({primary_ref}=\"\",IF({fb_ref}=\"\",\"\",{fb_ref}),{primary_ref})"
+            return f"=IF({primary_ref}=\"\",\"\",{primary_ref})"
+        # 主ラベルの行がこの期間に存在しない場合、フォールバックを直接使用
+        for fb_lbl in fallback_labels:
+            fb_row = acq_row_lookup.get((fb_lbl, cur_p_str, flag))
+            if fb_row is not None:
+                fb_ref = f"'{_safe_acq}'!{col_letter}{fb_row}"
+                return f"=IF({fb_ref}=\"\",\"\",{fb_ref})"
+        return None
 
     for i, fp in enumerate(valid_pairs):
         cur_p = fp['current']
@@ -2324,7 +2371,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         pri_row = [sales_lbl, cur_p, "前期", pri_p if pri_p else ""]
         for c in range(_COL_START, _COL_END + 1):
             if acq_ws_ref and _acq_sales_label:
-                formula = _formula_for_data(_acq_sales_label, cur_p, "前期", c)
+                formula = _formula_for_sales_with_fallback(
+                    _acq_sales_label, _acq_sales_fallback_labels, cur_p, "前期", c)
                 pri_row.append(formula if formula is not None else "")
             else:
                 pri_src = period_lookup.get((target_sales_label, pri_p)) if (target_sales_label and pri_p) else None
@@ -2336,7 +2384,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         cur_row = [sales_lbl, cur_p, "当期", cur_p]
         for c in range(_COL_START, _COL_END + 1):
             if acq_ws_ref and _acq_sales_label:
-                formula = _formula_for_data(_acq_sales_label, cur_p, "当期", c)
+                formula = _formula_for_sales_with_fallback(
+                    _acq_sales_label, _acq_sales_fallback_labels, cur_p, "当期", c)
                 cur_row.append(formula if formula is not None else "")
             else:
                 cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
@@ -2430,8 +2479,8 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
                 g_row.append(formula)
             # 実値（軸計算用）
             if acq_ws_ref and _acq_sales_label:
-                pri_val = _read_for_chart(_acq_sales_label, cur_p, "前期", c)
-                cur_val = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+                pri_val = _read_for_chart_sales(cur_p, "前期", c)
+                cur_val = _read_for_chart_sales(cur_p, "当期", c)
             else:
                 pri_src = period_lookup.get((target_sales_label, fp['prior'])) if (target_sales_label and fp['prior']) else None
                 cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
@@ -2473,7 +2522,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         if acq_ws_ref and _acq_sales_label and base_prior:
             _base_profit_lbl, _ = _get_profit_src(base_prior)
             _acq_base_profit_lbl = _ppm_label_to_acq(_base_profit_lbl)
-            s_val = _read_for_chart(_acq_sales_label, _fp0['current'], "前期", c)
+            s_val = _read_for_chart_sales(_fp0["current"], "前期", c)
             p_val = _read_for_chart(_acq_base_profit_lbl, _fp0['current'], "前期", c) if _acq_base_profit_lbl else None
         else:
             pri_s_src = period_lookup.get((target_sales_label, base_prior)) if (target_sales_label and base_prior) else None
@@ -2502,7 +2551,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             if acq_ws_ref and _acq_sales_label:
                 _cur_profit_lbl_ref, _ = _get_profit_src(cur_p)
                 _acq_cur_profit_lbl = _ppm_label_to_acq(_cur_profit_lbl_ref)
-                s_val = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+                s_val = _read_for_chart_sales(cur_p, "当期", c)
                 p_val = _read_for_chart(_acq_cur_profit_lbl, cur_p, "当期", c) if _acq_cur_profit_lbl else None
             else:
                 cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
@@ -2523,7 +2572,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         sv = {}
         for c in range(_COL_START, _COL_END + 1):
             if acq_ws_ref and _acq_sales_label:
-                v = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+                v = _read_for_chart_sales(cur_p, "当期", c)
             else:
                 cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
                 v = _get_val_for_filing(cur_s_src, c, fp, True)
@@ -2612,6 +2661,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
         vcols = _valid_cols(filing_idx)
         # チャート用列範囲: 「計」(hokoku_col) 以左のみ（その他・合計は除外）
         vcols_chart = [ci for ci in vcols if ci <= hokoku_col] if hokoku_col else vcols
+
 
         cur_p = valid_pairs[filing_idx]['current']
         cur_sales_ppm  = sales_start_row  + 2 * filing_idx + 1
@@ -2738,7 +2788,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
             if _scale_cutoff_col is not None and c >= _scale_cutoff_col:
                 continue
             if acq_ws_ref and _acq_sales_label:
-                val = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+                val = _read_for_chart_sales(cur_p, "当期", c)
             else:
                 cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
                 val = _get_val_for_filing(cur_src, c, fp, True)
@@ -3698,6 +3748,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         """集約データ4行を指定行・C列起点で ppm_ws.cell() 書き込み"""
         vcols = _valid_cols(filing_idx)
         vcols_chart = [ci for ci in vcols if ci <= hokoku_col] if hokoku_col else vcols
+
+
 
         cur_p = valid_pairs[filing_idx]['current']
         cur_sales_ppm  = sales_start_row  + 2 * filing_idx + 1
