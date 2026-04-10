@@ -62,28 +62,24 @@ fi
 DB_SIZE=$(ls -lh "$DB_FILE" | awk '{print $5}')
 log "転送ファイル: $DB_FILE ($DB_SIZE)"
 
-# FTP転送関数（lftp使用）
-# 引数: $1=ホスト, $2=ユーザー, $3=パスワード, $4=リモートパス
-ftp_transfer() {
+# SSH秘密鍵
+SSH_KEY="$HOME/.ssh/edinet_sync_key"
+
+# SCP転送関数
+# 引数: $1=ホスト, $2=ユーザー, $3=リモートパス, $4=サーバー名
+scp_transfer() {
     local HOST=$1
     local USER=$2
-    local PASS=$3
-    local REMOTE_PATH=$4
-    local SERVER_NAME=$5
+    local REMOTE_PATH=$3
+    local SERVER_NAME=$4
 
     log "---"
     log "$SERVER_NAME への転送開始..."
 
-    # lftpで転送（ミラーモード、既存ファイルは上書き）
-    lftp -c "
-        set ftp:ssl-allow no
-        set net:timeout 30
-        set net:max-retries 3
-        open -u $USER,$PASS $HOST
-        cd $REMOTE_PATH
-        put -O . $DB_FILE
-        bye
-    " 2>&1 | tee -a "$LOG_FILE"
+    scp -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=30 \
+        "$DB_FILE" "${USER}@${HOST}:${REMOTE_PATH}/${DB_FILE}" 2>&1 | tee -a "$LOG_FILE"
 
     if [ ${PIPESTATUS[0]} -eq 0 ]; then
         log "✓ $SERVER_NAME への転送成功"
@@ -134,21 +130,21 @@ SUCCESS_COUNT=0
 FAIL_COUNT=0
 
 # s211への転送
-if ftp_transfer "$S211_HOST" "$S211_USER" "$S211_PASS" "$S211_PATH" "s211"; then
+if scp_transfer "$S211_HOST" "$S211_USER" "$S211_PATH" "s211"; then
     ((SUCCESS_COUNT++))
 else
     ((FAIL_COUNT++))
 fi
 
 # s217への転送
-if ftp_transfer "$S217_HOST" "$S217_USER" "$S217_PASS" "$S217_PATH" "s217"; then
+if scp_transfer "$S217_HOST" "$S217_USER" "$S217_PATH" "s217"; then
     ((SUCCESS_COUNT++))
 else
     ((FAIL_COUNT++))
 fi
 
 # s63への転送
-if ftp_transfer "$S63_HOST" "$S63_USER" "$S63_PASS" "$S63_PATH" "s63"; then
+if scp_transfer "$S63_HOST" "$S63_USER" "$S63_PATH" "s63"; then
     ((SUCCESS_COUNT++))
 else
     ((FAIL_COUNT++))
