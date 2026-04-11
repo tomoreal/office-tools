@@ -652,6 +652,7 @@ IFRS_LABEL_MAPPING = {
     'jpigp_cor_CurrentAssetsIFRS': '流動資産合計',
     'jpigp_cor_NonCurrentAssetsIFRS': '非流動資産合計',
     'jpigp_cor_LiabilitiesIFRS': '負債合計',
+    'jpcrp_cor_TotalAssetsIFRSSummaryOfBusinessResults': '資産合計',
 }
 
 # Helper to find specific linkbase/instance files in the unzipped folder
@@ -2966,6 +2967,59 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             if el in global_element_period_values:
                 for period, val in global_element_period_values[el].items():
                     all_years_data[role][full_path][period] = val
+
+    # --- Normalize company-specific TotalAssets to standard IFRS element ---
+    # Some companies use jpcrp030000-asr_EXXXXX-000_TotalAssets (or TotalAssetsIFRS)
+    # in BusinessResultsOfGroup instead of the standard jpcrp_cor_TotalAssetsIFRSSummaryOfBusinessResults.
+    # Merge these into the standard element so they appear on the same row.
+    _COMPANY_TOTAL_ASSETS_RE = re.compile(r'jpcrp030000-asr_E\d{5}-\d{3}_TotalAssets(?:IFRS)?$')
+    _STD_IFRS_TOTAL_ASSETS = 'jpcrp_cor_TotalAssetsIFRSSummaryOfBusinessResults'
+
+    for role in list(role_to_order.keys()):
+        _base = role.split('_')[-1]
+        if _base not in ('BusinessResultsOfGroup', 'SummaryOfBusinessResults'):
+            continue
+
+        standard_fp = None
+        company_fps = []
+        for fp, pl in role_to_order[role]:
+            _el = fp.split('::')[-1].split('|')[0]
+            if _STD_IFRS_TOTAL_ASSETS in _el:
+                standard_fp = fp
+            elif _COMPANY_TOTAL_ASSETS_RE.search(_el):
+                company_fps.append((fp, pl))
+
+        if not company_fps:
+            continue
+
+        # Build the standard path if it doesn't exist yet in this role
+        if standard_fp is None:
+            old_fp, old_pl = company_fps[0]
+            parts = old_fp.split('::')
+            parts[-1] = _STD_IFRS_TOTAL_ASSETS
+            standard_fp = '::'.join(parts)
+            role_to_order[role].append((standard_fp, old_pl))
+            all_years_data[role][standard_fp] = {}
+
+        # Merge data and remove company-specific entries
+        # Also normalize fact_std to 'IFRS': old XBRLs may tag extension elements with 'JP'
+        # (when jpigp_cor is absent), but this data belongs in the IFRS summary sheet.
+        for comp_fp, _ in company_fps:
+            for period_key, val in all_years_data[role].get(comp_fp, {}).items():
+                # Re-key (JP/None → IFRS) if needed
+                if isinstance(period_key, tuple) and len(period_key) == 3:
+                    f_std, f_dim, f_p = period_key
+                    if f_std != 'IFRS':
+                        period_key = ('IFRS', f_dim, f_p)
+                if period_key not in all_years_data[role][standard_fp]:
+                    all_years_data[role][standard_fp][period_key] = val
+            if comp_fp in all_years_data[role]:
+                del all_years_data[role][comp_fp]
+
+        comp_fps_set = {fp for fp, _ in company_fps}
+        role_to_order[role] = [(fp, pl) for fp, pl in role_to_order[role] if fp not in comp_fps_set]
+        debug_log(f"[TotalAssets-Normalize] Role {role}: merged {len(company_fps)} company-specific element(s) into {_STD_IFRS_TOTAL_ASSETS}")
+        debug_log(f"[TotalAssets-Normalize] standard_fp={standard_fp}, data_keys={list(all_years_data[role].get(standard_fp, {}).keys())[:5]}")
 
     # --- Deduplicate overlapping roles (Fix B - Refined) ---
     # Group roles by their fundamental base name (ignoring prefixes like jppfs_cor_ and suffixes like -indirect)
