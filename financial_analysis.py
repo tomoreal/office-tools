@@ -2418,20 +2418,7 @@ def create_percentage_bs_sheet(workbook, source_sheet_name, debug_log=None):
     # ============================================================================
     # 対前年差セクション
     # ============================================================================
-    # 実際の内容がある行を特定
-    valid_data_rows = []
-    for r in range(2, max_row + 1):
-        # いずれかのデータ列に数値（空でないセル）があるかチェック
-        has_data = False
-        for col in range(3, max_col + 1):
-            val = source_ws.cell(r, col).value
-            if val is not None and val != "":
-                has_data = True
-                break
-        if has_data:
-            valid_data_rows.append(r)
-
-    if valid_data_rows:
+    if max_row > 1:
         analysis_ws.append([''] * total_cols)
         analysis_ws.append([''] * total_cols)
 
@@ -2443,8 +2430,8 @@ def create_percentage_bs_sheet(workbook, source_sheet_name, debug_log=None):
             diff_yoy_header_row.append(f'={col_letter}1')
         analysis_ws.append(diff_yoy_header_row)
 
-        # 特定されたデータ行についてのみ計算
-        for r in valid_data_rows:
+        # 全てのデータ行について計算 (見出し等を含め構造を維持)
+        for r in range(2, max_row + 1):
             diff_row_num = analysis_ws.max_row + 1
             diff_row = [f'=A{r}', f'=B{r}']
             
@@ -2676,19 +2663,7 @@ def create_percentage_pl_sheet(workbook, source_sheet_name, debug_log=None):
     # ============================================================================
     # 対前年差セクション
     # ============================================================================
-    # 実際の内容がある行を特定
-    valid_data_rows = []
-    for r in range(2, max_row + 1):
-        has_data = False
-        for col in range(3, max_col + 1):
-            val = source_ws.cell(r, col).value
-            if val is not None and val != "":
-                has_data = True
-                break
-        if has_data:
-            valid_data_rows.append(r)
-
-    if valid_data_rows:
+    if max_row > 1:
         analysis_ws.append([''] * total_cols)
         analysis_ws.append([''] * total_cols)
 
@@ -2700,8 +2675,8 @@ def create_percentage_pl_sheet(workbook, source_sheet_name, debug_log=None):
             diff_yoy_header_row.append(f'={col_letter}1')
         analysis_ws.append(diff_yoy_header_row)
 
-        # 特定されたデータ行についてのみ計算
-        for r in valid_data_rows:
+        # 全てのデータ行について計算 (見出し等を含め構造を維持)
+        for r in range(2, max_row + 1):
             diff_row_num = analysis_ws.max_row + 1
             diff_row = [f'=A{r}', f'=B{r}']
             
@@ -2928,19 +2903,7 @@ def create_percentage_bs_sheet_non_consolidated(workbook, source_sheet_name, deb
     # ============================================================================
     # 対前年差セクション
     # ============================================================================
-    # 実際の内容がある行を特定
-    valid_data_rows = []
-    for r in range(2, max_row + 1):
-        has_data = False
-        for col in range(3, max_col + 1):
-            val = source_ws.cell(r, col).value
-            if val is not None and val != "":
-                has_data = True
-                break
-        if has_data:
-            valid_data_rows.append(r)
-
-    if valid_data_rows:
+    if max_row > 1:
         analysis_ws.append([''] * total_cols)
         analysis_ws.append([''] * total_cols)
 
@@ -2952,8 +2915,8 @@ def create_percentage_bs_sheet_non_consolidated(workbook, source_sheet_name, deb
             diff_yoy_header_row.append(f'={col_letter}1')
         analysis_ws.append(diff_yoy_header_row)
 
-        # 特定されたデータ行についてのみ計算
-        for r in valid_data_rows:
+        # 全てのデータ行について計算 (見出し等を含め構造を維持)
+        for r in range(2, max_row + 1):
             diff_row_num = analysis_ws.max_row + 1
             diff_row = [f'=A{r}', f'=B{r}']
             
@@ -3174,19 +3137,7 @@ def create_percentage_pl_sheet_non_consolidated(workbook, source_sheet_name, deb
     # ============================================================================
     # 対前年差セクション
     # ============================================================================
-    # 実際の内容がある行を特定
-    valid_data_rows = []
-    for r in range(2, max_row + 1):
-        has_data = False
-        for col in range(3, max_col + 1):
-            val = source_ws.cell(r, col).value
-            if val is not None and val != "":
-                has_data = True
-                break
-        if has_data:
-            valid_data_rows.append(r)
-
-    if valid_data_rows:
+    if max_row > 1:
         analysis_ws.append([''] * total_cols)
         analysis_ws.append([''] * total_cols)
 
@@ -3198,8 +3149,8 @@ def create_percentage_pl_sheet_non_consolidated(workbook, source_sheet_name, deb
             diff_yoy_header_row.append(f'={col_letter}1')
         analysis_ws.append(diff_yoy_header_row)
 
-        # 特定されたデータ行についてのみ計算
-        for r in valid_data_rows:
+        # 全てのデータ行について計算 (見出し等を含め構造を維持)
+        for r in range(2, max_row + 1):
             diff_row_num = analysis_ws.max_row + 1
             diff_row = [f'=A{r}', f'=B{r}']
             
@@ -3447,19 +3398,7 @@ def create_percentage_ifrs_financial_position_sheet(workbook, source_sheet_name,
     # ============================================================================
     # 対前年差セクション
     # ============================================================================
-    # 実際の内容がある行を特定
-    valid_data_rows = []
-    for r in range(2, max_row + 1):
-        has_data = False
-        for col in range(3, max_col + 1):
-            val = source_ws.cell(r, col).value
-            if val is not None and val != "":
-                has_data = True
-                break
-        if has_data:
-            valid_data_rows.append(r)
-
-    if valid_data_rows:
+    if max_row > 1:
         analysis_ws.append([''] * total_cols)
         analysis_ws.append([''] * total_cols)
 
@@ -3471,8 +3410,8 @@ def create_percentage_ifrs_financial_position_sheet(workbook, source_sheet_name,
             diff_yoy_header_row.append(f'={col_letter}1')
         analysis_ws.append(diff_yoy_header_row)
 
-        # 特定されたデータ行についてのみ計算
-        for r in valid_data_rows:
+        # 全てのデータ行について計算 (見出し等を含め構造を維持)
+        for r in range(2, max_row + 1):
             diff_row_num = analysis_ws.max_row + 1
             diff_row = [f'=A{r}', f'=B{r}']
             
@@ -3692,19 +3631,7 @@ def create_percentage_ifrs_income_sheet(workbook, source_sheet_name, debug_log=N
     # ============================================================================
     # 対前年差セクション
     # ============================================================================
-    # 実際の内容がある行を特定
-    valid_data_rows = []
-    for r in range(2, max_row + 1):
-        has_data = False
-        for col in range(3, max_col + 1):
-            val = source_ws.cell(r, col).value
-            if val is not None and val != "":
-                has_data = True
-                break
-        if has_data:
-            valid_data_rows.append(r)
-
-    if valid_data_rows:
+    if max_row > 1:
         analysis_ws.append([''] * total_cols)
         analysis_ws.append([''] * total_cols)
 
@@ -3716,8 +3643,8 @@ def create_percentage_ifrs_income_sheet(workbook, source_sheet_name, debug_log=N
             diff_yoy_header_row.append(f'={col_letter}1')
         analysis_ws.append(diff_yoy_header_row)
 
-        # 特定されたデータ行についてのみ計算
-        for r in valid_data_rows:
+        # 全てのデータ行について計算 (見出し等を含め構造を維持)
+        for r in range(2, max_row + 1):
             diff_row_num = analysis_ws.max_row + 1
             diff_row = [f'=A{r}', f'=B{r}']
             
