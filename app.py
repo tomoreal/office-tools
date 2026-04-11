@@ -217,19 +217,23 @@ def index():
                 return redirect(request.url)
                 
             # Call the updated parsing logic
-            out_excel = convert_xbrl_to_excel.process_xbrl_zips(saved_paths, output_dir=temp_dir)
+            result = convert_xbrl_to_excel.process_xbrl_zips(saved_paths, output_dir=temp_dir)
+            out_excel = result.get("excel_path")
+            conversion_errors = result.get("errors", [])
             
             if out_excel and os.path.exists(out_excel):
                 # Return JSON with the relative file path for the download API
                 relative_path = os.path.relpath(out_excel, BASE_TEMP_DIR)
                 return {
                     "success": True,
-                    "file": relative_path
+                    "file": relative_path,
+                    "warnings": conversion_errors
                 }
             else:
                 return {
                     "success": False,
-                    "error": "Excelファイルの生成に失敗しました。"
+                    "error": "Excelファイルの生成に失敗しました。",
+                    "details": conversion_errors
                 }
                 
         except Exception as e:
@@ -323,9 +327,11 @@ def edinet_preload():
             """単一XBRLをダウンロードする関数（リトライ機能付き）"""
             file_path = os.path.join(temp_dir, f"{doc_id}.zip")
             start_time = time.time()
+            last_error = "Unknown error"
 
             for attempt in range(retry_count + 1):
-                success = api.download_xbrl(doc_id, file_path)
+                res_info = {}
+                success = api.download_xbrl(doc_id, file_path, result_out=res_info)
 
                 if success:
                     elapsed = time.time() - start_time
@@ -337,14 +343,16 @@ def edinet_preload():
                         'retry_count': attempt
                     }
 
-                # リトライ前に少し待機
+                last_error = res_info.get('error', "Download failed")
+                # リトライ前に少し待機（回数に応じて少しずつ増やす）
                 if attempt < retry_count:
-                    time.sleep(1)
+                    time.sleep(1 + attempt)
 
             elapsed = time.time() - start_time
             return {
                 'doc_id': doc_id,
                 'status': 'failed',
+                'error': last_error,
                 'elapsed': round(elapsed, 2),
                 'retry_count': retry_count
             }
@@ -421,17 +429,24 @@ def edinet_download_and_convert():
             return jsonify({'error': 'ダウンロード済みファイルが見つかりません'}), 404
 
         # Excelに変換
-        out_excel = convert_xbrl_to_excel.process_xbrl_zips(downloaded_paths, output_dir=temp_dir)
+        result = convert_xbrl_to_excel.process_xbrl_zips(downloaded_paths, output_dir=temp_dir)
+        out_excel = result.get("excel_path")
+        conversion_errors = result.get("errors", [])
 
         if out_excel and os.path.exists(out_excel):
             # Return JSON with the relative file path for the download API
             relative_path = os.path.relpath(out_excel, BASE_TEMP_DIR)
             return jsonify({
                 "success": True,
-                "file": relative_path
+                "file": relative_path,
+                "warnings": conversion_errors
             })
         else:
-            return jsonify({'error': 'Excelファイルの生成に失敗しました'}), 500
+            return jsonify({
+                'success': False,
+                'error': 'Excelファイルの生成に失敗しました',
+                'details': conversion_errors
+            }), 500
 
     except Exception as e:
         app.logger.error(f"Error in edinet_download_and_convert: {e}")
@@ -501,10 +516,12 @@ def edinet_download_pdfs():
 
             file_path = os.path.join(pdf_dir, pdf_filename)
             start_time = time.time()
+            last_error = "Unknown error"
 
             for attempt in range(retry_count + 1):
+                res_info = {}
                 # download_type=2 でPDFを取得
-                success = api.download_xbrl(doc_id, file_path, download_type=2)
+                success = api.download_xbrl(doc_id, file_path, download_type=2, result_out=res_info)
 
                 if success:
                     elapsed = time.time() - start_time
@@ -518,14 +535,16 @@ def edinet_download_pdfs():
                         'retry_count': attempt
                     }
 
+                last_error = res_info.get('error', "Download failed")
                 # リトライ前に少し待機
                 if attempt < retry_count:
-                    time.sleep(1)
+                    time.sleep(1 + attempt)
 
             elapsed = time.time() - start_time
             return {
                 'doc_id': doc_id,
                 'status': 'failed',
+                'error': last_error,
                 'elapsed': round(elapsed, 2),
                 'retry_count': retry_count
             }

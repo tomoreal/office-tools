@@ -79,7 +79,8 @@ class EdinetAPI:
         self,
         doc_id: str,
         output_path: str,
-        download_type: int = 1
+        download_type: int = 1,
+        result_out: Optional[Dict] = None
     ) -> bool:
         """
         XBRL ZIPファイルをダウンロード
@@ -93,6 +94,7 @@ class EdinetAPI:
                 3: 代替書面・添付文書
                 4: 英文ファイル
                 5: CSV形式のXBRL
+            result_out: オプションのエラー情報格納用辞書
 
         Returns:
             成功時True、失敗時False
@@ -118,9 +120,18 @@ class EdinetAPI:
 
                 return True
             else:
+                err_msg = f"HTTP Error {response.status_code}"
+                if result_out is not None:
+                    result_out['error'] = err_msg
                 return False
 
-        except Exception:
+        except requests.exceptions.Timeout:
+            if result_out is not None:
+                result_out['error'] = "Timeout"
+            return False
+        except Exception as e:
+            if result_out is not None:
+                result_out['error'] = str(e)
             return False
 
 

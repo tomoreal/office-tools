@@ -1831,45 +1831,51 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             thread_periods = set()
             thread_values = {} # {el: {col: val}}
             
-            debug_log(f"Starting worker for {os.path.basename(zip_path)}")
+            basename = os.path.basename(zip_path)
+            debug_log(f"Starting worker for {basename}")
             if not os.path.exists(zip_path):
-                return None
+                return {'error': f"File not found: {basename}", 'zip_path': zip_path}
                 
             extract_dir = os.path.join(temp_base, f"zip_{zip_idx}")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                # Check for ZIP bomb before extraction
-                check_zip_bomb(zip_ref)
-
-                # Selective extraction: only extract files we actually need
-                # This significantly reduces I/O for large EDINET ZIPs (2000+ files)
-                for info in zip_ref.infolist():
-                    filename_lower = info.filename.lower()
-
-                    # Skip directories
-                    if info.is_dir():
+            
+            # --- Retry logic for ZIP opening/extraction ---
+            max_zip_retries = 2
+            zip_ref = None
+            for attempt in range(max_zip_retries + 1):
+                try:
+                    zip_ref = zipfile.ZipFile(zip_path, 'r')
+                    check_zip_bomb(zip_ref)
+                    
+                    # Selective extraction
+                    for info in zip_ref.infolist():
+                        filename_lower = info.filename.lower()
+                        if info.is_dir(): continue
+                        
+                        should_extract = (
+                            (filename_lower.endswith('_lab.xml') and not filename_lower.endswith('_lab-en.xml')) or
+                            filename_lower.endswith('_pre.xml') or
+                            filename_lower.endswith('.xbrl') or
+                            (filename_lower.endswith(('.htm', '.html')) and 'publicdoc' in filename_lower) or
+                            filename_lower.endswith('manifest.xml')
+                        )
+                        if should_extract:
+                            info.filename = info.filename.replace('\\', '/')
+                            target_path = os.path.join(extract_dir, info.filename)
+                            validate_zip_path(target_path, extract_dir)
+                            zip_ref.extract(info, extract_dir)
+                    break # Success
+                except Exception as e:
+                    if zip_ref: zip_ref.close()
+                    if attempt < max_zip_retries:
+                        debug_log(f"Retry ZIP extraction ({attempt+1}/{max_zip_retries}) for {basename}: {e}")
+                        time.sleep(1)
+                        if os.path.exists(extract_dir):
+                            shutil.rmtree(extract_dir)
                         continue
-
-                    # Extract only necessary files:
-                    # 1. Japanese label linkbases (exclude English versions)
-                    # 2. Presentation linkbases
-                    # 3. XBRL instance files
-                    # 4. iXBRL HTML files (in PublicDoc only, skip AuditDoc)
-                    # 5. manifest.xml (for metadata)
-                    should_extract = (
-                        (filename_lower.endswith('_lab.xml') and not filename_lower.endswith('_lab-en.xml')) or
-                        filename_lower.endswith('_pre.xml') or
-                        filename_lower.endswith('.xbrl') or
-                        (filename_lower.endswith(('.htm', '.html')) and 'publicdoc' in filename_lower) or
-                        filename_lower.endswith('manifest.xml')
-                    )
-
-                    if should_extract:
-                        # Normalize Windows backslashes in paths
-                        info.filename = info.filename.replace('\\', '/')
-                        # Path validation to prevent Zip Slip
-                        target_path = os.path.join(extract_dir, info.filename)
-                        validate_zip_path(target_path, extract_dir)
-                        zip_ref.extract(info, extract_dir)
+                    else:
+                        return {'error': f"Failed to extract {basename}: {str(e)}", 'zip_path': zip_path}
+                finally:
+                    if zip_ref: zip_ref.close()
                 
             subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
             if len(subdirs) == 1:
@@ -2022,7 +2028,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             def process_single_zip_wrapper(p):
                 try:
                     res = process_single_zip(p[0], p[1])
-                    if res:
+                    if res and 'error' not in res:
                         # Build suffix index for O(1) label lookups
                         res_suffix_index = build_suffix_index(res['labels'])
 
@@ -2057,8 +2063,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     return res
                 except Exception as e:
                     debug_log(f"Worker failed for {p[1]}: {e}")
-                    return None
-            results = list(executor.map(process_single_zip_wrapper, enumerate(zip_paths)))
+                    return {'error': str(e), 'zip_path': p[1]}
+            results_raw = list(executor.map(process_single_zip_wrapper, enumerate(zip_paths)))
+
+        errors = [r['error'] for r in results_raw if r and 'error' in r]
+        results = [r for r in results_raw if r and 'error' not in r]
 
         debug_log(f"Parallel ZIP processing completed in {time.time() - t_parallel_start:.2f}s")
 
@@ -4407,7 +4416,11 @@ def process_xbrl_zips(zip_paths, output_dir=None):
 
     debug_log(f"SUCCESS: Excel saved to {out_file} in {time.time() - t_excel_start:.2f}s")
     debug_log(f"TOTAL: process_xbrl_zips completed in {time.time() - overall_start:.2f}s")
-    return out_file
+    
+    return {
+        "excel_path": out_file,
+        "errors": errors
+    }
 
 # ============================================================================
 # CLI ENTRY POINT
