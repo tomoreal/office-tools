@@ -2299,9 +2299,10 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                         continue
                     # (fact_std, dim_label, period) が当期カバー済みならスキップ
                     # ※ 勘定科目名変更によるOldElement/NewElement二重計上を防ぐ
-                    # FS コア要素（jpigp_cor等）のみを対象とし、jpcrp_cor サマリー要素には適用しない
-                    if (any(el.startswith(p) for p in _FS_CORE_PREFIXES)
-                            and col_key in covered_by_current):
+                    # カバー済み判定は jpigp_cor_ 等のコア要素で行うが（covered_by_current の構築時）、
+                    # ブロックはすべての要素に適用する。
+                    # こうすることで、jpcrp030000-asr_ 等の会社固有拡張要素も二重計上を防げる。
+                    if col_key in covered_by_current:
                         continue
                     _merge_value(el, col_key, new_val)
             
