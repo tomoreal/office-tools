@@ -2415,6 +2415,63 @@ def create_percentage_bs_sheet(workbook, source_sheet_name, debug_log=None):
     # ウィンドウ枠の固定 (B2)
     analysis_ws.freeze_panes = 'B2'
 
+    # ============================================================================
+    # 対前年差セクション
+    # ============================================================================
+    # 実際の内容がある行を特定
+    valid_data_rows = []
+    for r in range(2, max_row + 1):
+        # いずれかのデータ列に数値（空でないセル）があるかチェック
+        has_data = False
+        for col in range(3, max_col + 1):
+            val = source_ws.cell(r, col).value
+            if val is not None and val != "":
+                has_data = True
+                break
+        if has_data:
+            valid_data_rows.append(r)
+
+    if valid_data_rows:
+        analysis_ws.append([''] * total_cols)
+        analysis_ws.append([''] * total_cols)
+
+        diff_yoy_header_row_num = analysis_ws.max_row + 1
+        diff_yoy_header_row = ['　対前年差', '']
+        # C列以降の年度をコピー
+        for col in range(3, total_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            diff_yoy_header_row.append(f'={col_letter}1')
+        analysis_ws.append(diff_yoy_header_row)
+
+        # 特定されたデータ行についてのみ計算
+        for r in valid_data_rows:
+            diff_row_num = analysis_ws.max_row + 1
+            diff_row = [f'=A{r}', f'=B{r}']
+            
+            # 最初のデータ列（C列）は空白
+            diff_row.append('')
+            
+            # D列以降: =IF(OR(D{r}="",C{r}=""),"",D{r}-C{r})
+            for col in range(4, max_col + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+                formula = f"=IF(OR({col_letter}{r}=\"\",{prev_col_letter}{r}=\"\"),\"\",{col_letter}{r}-{prev_col_letter}{r})"
+                diff_row.append(formula)
+                
+            # 比較列についても同様の計算式を設定 (メインテーブルと同じ計算)
+            for comp in comparison_cols:
+                l_letter = openpyxl.utils.get_column_letter(comp['latest'])
+                b_letter = openpyxl.utils.get_column_letter(comp['base'])
+                comp_formula = f"=IF(OR({l_letter}{r}=\"\",{b_letter}{r}=\"\"),\"\",{l_letter}{r}-{b_letter}{r})"
+                diff_row.append(comp_formula)
+                
+            analysis_ws.append(diff_row)
+            
+            # 書式設定（C列以降）
+            for col in range(3, total_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = number_format_percent
+
     debug_log(f"Percentage BS sheet created: {analysis_sheet_name}")
 
 
@@ -2616,6 +2673,62 @@ def create_percentage_pl_sheet(workbook, source_sheet_name, debug_log=None):
     # ウィンドウ枠の固定 (B2)
     analysis_ws.freeze_panes = 'B2'
 
+    # ============================================================================
+    # 対前年差セクション
+    # ============================================================================
+    # 実際の内容がある行を特定
+    valid_data_rows = []
+    for r in range(2, max_row + 1):
+        has_data = False
+        for col in range(3, max_col + 1):
+            val = source_ws.cell(r, col).value
+            if val is not None and val != "":
+                has_data = True
+                break
+        if has_data:
+            valid_data_rows.append(r)
+
+    if valid_data_rows:
+        analysis_ws.append([''] * total_cols)
+        analysis_ws.append([''] * total_cols)
+
+        diff_yoy_header_row_num = analysis_ws.max_row + 1
+        diff_yoy_header_row = ['　対前年差', '']
+        # C列以降の年度をコピー
+        for col in range(3, total_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            diff_yoy_header_row.append(f'={col_letter}1')
+        analysis_ws.append(diff_yoy_header_row)
+
+        # 特定されたデータ行についてのみ計算
+        for r in valid_data_rows:
+            diff_row_num = analysis_ws.max_row + 1
+            diff_row = [f'=A{r}', f'=B{r}']
+            
+            # 最初のデータ列（C列）は空白
+            diff_row.append('')
+            
+            # D列以降: =IF(OR(D{r}="",C{r}=""),"",D{r}-C{r})
+            for col in range(4, max_col + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+                formula = f"=IF(OR({col_letter}{r}=\"\",{prev_col_letter}{r}=\"\"),\"\",{col_letter}{r}-{prev_col_letter}{r})"
+                diff_row.append(formula)
+                
+            # 比較列についても同様の計算式を設定 (メインテーブルと同じ計算)
+            for comp in comparison_cols:
+                l_letter = openpyxl.utils.get_column_letter(comp['latest'])
+                b_letter = openpyxl.utils.get_column_letter(comp['base'])
+                comp_formula = f"=IF(OR({l_letter}{r}=\"\",{b_letter}{r}=\"\"),\"\",{l_letter}{r}-{b_letter}{r})"
+                diff_row.append(comp_formula)
+                
+            analysis_ws.append(diff_row)
+            
+            # 書式設定（C列以降）
+            for col in range(3, total_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = number_format_percent
+
     debug_log(f"Percentage PL sheet created: {analysis_sheet_name}")
 
 
@@ -2812,6 +2925,62 @@ def create_percentage_bs_sheet_non_consolidated(workbook, source_sheet_name, deb
     # ウィンドウ枠の固定 (B2)
     analysis_ws.freeze_panes = 'B2'
 
+    # ============================================================================
+    # 対前年差セクション
+    # ============================================================================
+    # 実際の内容がある行を特定
+    valid_data_rows = []
+    for r in range(2, max_row + 1):
+        has_data = False
+        for col in range(3, max_col + 1):
+            val = source_ws.cell(r, col).value
+            if val is not None and val != "":
+                has_data = True
+                break
+        if has_data:
+            valid_data_rows.append(r)
+
+    if valid_data_rows:
+        analysis_ws.append([''] * total_cols)
+        analysis_ws.append([''] * total_cols)
+
+        diff_yoy_header_row_num = analysis_ws.max_row + 1
+        diff_yoy_header_row = ['　対前年差', '']
+        # C列以降の年度をコピー
+        for col in range(3, total_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            diff_yoy_header_row.append(f'={col_letter}1')
+        analysis_ws.append(diff_yoy_header_row)
+
+        # 特定されたデータ行についてのみ計算
+        for r in valid_data_rows:
+            diff_row_num = analysis_ws.max_row + 1
+            diff_row = [f'=A{r}', f'=B{r}']
+            
+            # 最初のデータ列（C列）は空白
+            diff_row.append('')
+            
+            # D列以降: =IF(OR(D{r}="",C{r}=""),"",D{r}-C{r})
+            for col in range(4, max_col + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+                formula = f"=IF(OR({col_letter}{r}=\"\",{prev_col_letter}{r}=\"\"),\"\",{col_letter}{r}-{prev_col_letter}{r})"
+                diff_row.append(formula)
+                
+            # 比較列についても同様の計算式を設定 (メインテーブルと同じ計算)
+            for comp in comparison_cols:
+                l_letter = openpyxl.utils.get_column_letter(comp['latest'])
+                b_letter = openpyxl.utils.get_column_letter(comp['base'])
+                comp_formula = f"=IF(OR({l_letter}{r}=\"\",{b_letter}{r}=\"\"),\"\",{l_letter}{r}-{b_letter}{r})"
+                diff_row.append(comp_formula)
+                
+            analysis_ws.append(diff_row)
+            
+            # 書式設定（C列以降）
+            for col in range(3, total_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = number_format_percent
+
     debug_log(f"Percentage BS sheet (non-consolidated) created: {analysis_sheet_name}")
 
 
@@ -3001,6 +3170,62 @@ def create_percentage_pl_sheet_non_consolidated(workbook, source_sheet_name, deb
 
     # ウィンドウ枠の固定 (B2)
     analysis_ws.freeze_panes = 'B2'
+
+    # ============================================================================
+    # 対前年差セクション
+    # ============================================================================
+    # 実際の内容がある行を特定
+    valid_data_rows = []
+    for r in range(2, max_row + 1):
+        has_data = False
+        for col in range(3, max_col + 1):
+            val = source_ws.cell(r, col).value
+            if val is not None and val != "":
+                has_data = True
+                break
+        if has_data:
+            valid_data_rows.append(r)
+
+    if valid_data_rows:
+        analysis_ws.append([''] * total_cols)
+        analysis_ws.append([''] * total_cols)
+
+        diff_yoy_header_row_num = analysis_ws.max_row + 1
+        diff_yoy_header_row = ['　対前年差', '']
+        # C列以降の年度をコピー
+        for col in range(3, total_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            diff_yoy_header_row.append(f'={col_letter}1')
+        analysis_ws.append(diff_yoy_header_row)
+
+        # 特定されたデータ行についてのみ計算
+        for r in valid_data_rows:
+            diff_row_num = analysis_ws.max_row + 1
+            diff_row = [f'=A{r}', f'=B{r}']
+            
+            # 最初のデータ列（C列）は空白
+            diff_row.append('')
+            
+            # D列以降: =IF(OR(D{r}="",C{r}=""),"",D{r}-C{r})
+            for col in range(4, max_col + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+                formula = f"=IF(OR({col_letter}{r}=\"\",{prev_col_letter}{r}=\"\"),\"\",{col_letter}{r}-{prev_col_letter}{r})"
+                diff_row.append(formula)
+                
+            # 比較列についても同様の計算式を設定 (メインテーブルと同じ計算)
+            for comp in comparison_cols:
+                l_letter = openpyxl.utils.get_column_letter(comp['latest'])
+                b_letter = openpyxl.utils.get_column_letter(comp['base'])
+                comp_formula = f"=IF(OR({l_letter}{r}=\"\",{b_letter}{r}=\"\"),\"\",{l_letter}{r}-{b_letter}{r})"
+                diff_row.append(comp_formula)
+                
+            analysis_ws.append(diff_row)
+            
+            # 書式設定（C列以降）
+            for col in range(3, total_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = number_format_percent
 
     debug_log(f"Percentage PL sheet (non-consolidated) created: {analysis_sheet_name}")
 
@@ -3219,6 +3444,62 @@ def create_percentage_ifrs_financial_position_sheet(workbook, source_sheet_name,
     # ウィンドウ枠の固定 (B2)
     analysis_ws.freeze_panes = 'B2'
 
+    # ============================================================================
+    # 対前年差セクション
+    # ============================================================================
+    # 実際の内容がある行を特定
+    valid_data_rows = []
+    for r in range(2, max_row + 1):
+        has_data = False
+        for col in range(3, max_col + 1):
+            val = source_ws.cell(r, col).value
+            if val is not None and val != "":
+                has_data = True
+                break
+        if has_data:
+            valid_data_rows.append(r)
+
+    if valid_data_rows:
+        analysis_ws.append([''] * total_cols)
+        analysis_ws.append([''] * total_cols)
+
+        diff_yoy_header_row_num = analysis_ws.max_row + 1
+        diff_yoy_header_row = ['　対前年差', '']
+        # C列以降の年度をコピー
+        for col in range(3, total_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            diff_yoy_header_row.append(f'={col_letter}1')
+        analysis_ws.append(diff_yoy_header_row)
+
+        # 特定されたデータ行についてのみ計算
+        for r in valid_data_rows:
+            diff_row_num = analysis_ws.max_row + 1
+            diff_row = [f'=A{r}', f'=B{r}']
+            
+            # 最初のデータ列（C列）は空白
+            diff_row.append('')
+            
+            # D列以降: =IF(OR(D{r}="",C{r}=""),"",D{r}-C{r})
+            for col in range(4, max_col + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+                formula = f"=IF(OR({col_letter}{r}=\"\",{prev_col_letter}{r}=\"\"),\"\",{col_letter}{r}-{prev_col_letter}{r})"
+                diff_row.append(formula)
+                
+            # 比較列についても同様の計算式を設定 (メインテーブルと同じ計算)
+            for comp in comparison_cols:
+                l_letter = openpyxl.utils.get_column_letter(comp['latest'])
+                b_letter = openpyxl.utils.get_column_letter(comp['base'])
+                comp_formula = f"=IF(OR({l_letter}{r}=\"\",{b_letter}{r}=\"\"),\"\",{l_letter}{r}-{b_letter}{r})"
+                diff_row.append(comp_formula)
+                
+            analysis_ws.append(diff_row)
+            
+            # 書式設定（C列以降）
+            for col in range(3, total_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = number_format_percent
+
     debug_log(f"Percentage Financial Position sheet (IFRS) created: {analysis_sheet_name}")
 
 
@@ -3407,6 +3688,62 @@ def create_percentage_ifrs_income_sheet(workbook, source_sheet_name, debug_log=N
 
     # ウィンドウ枠の固定 (B2)
     analysis_ws.freeze_panes = 'B2'
+
+    # ============================================================================
+    # 対前年差セクション
+    # ============================================================================
+    # 実際の内容がある行を特定
+    valid_data_rows = []
+    for r in range(2, max_row + 1):
+        has_data = False
+        for col in range(3, max_col + 1):
+            val = source_ws.cell(r, col).value
+            if val is not None and val != "":
+                has_data = True
+                break
+        if has_data:
+            valid_data_rows.append(r)
+
+    if valid_data_rows:
+        analysis_ws.append([''] * total_cols)
+        analysis_ws.append([''] * total_cols)
+
+        diff_yoy_header_row_num = analysis_ws.max_row + 1
+        diff_yoy_header_row = ['　対前年差', '']
+        # C列以降の年度をコピー
+        for col in range(3, total_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            diff_yoy_header_row.append(f'={col_letter}1')
+        analysis_ws.append(diff_yoy_header_row)
+
+        # 特定されたデータ行についてのみ計算
+        for r in valid_data_rows:
+            diff_row_num = analysis_ws.max_row + 1
+            diff_row = [f'=A{r}', f'=B{r}']
+            
+            # 最初のデータ列（C列）は空白
+            diff_row.append('')
+            
+            # D列以降: =IF(OR(D{r}="",C{r}=""),"",D{r}-C{r})
+            for col in range(4, max_col + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+                formula = f"=IF(OR({col_letter}{r}=\"\",{prev_col_letter}{r}=\"\"),\"\",{col_letter}{r}-{prev_col_letter}{r})"
+                diff_row.append(formula)
+                
+            # 比較列についても同様の計算式を設定 (メインテーブルと同じ計算)
+            for comp in comparison_cols:
+                l_letter = openpyxl.utils.get_column_letter(comp['latest'])
+                b_letter = openpyxl.utils.get_column_letter(comp['base'])
+                comp_formula = f"=IF(OR({l_letter}{r}=\"\",{b_letter}{r}=\"\"),\"\",{l_letter}{r}-{b_letter}{r})"
+                diff_row.append(comp_formula)
+                
+            analysis_ws.append(diff_row)
+            
+            # 書式設定（C列以降）
+            for col in range(3, total_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = number_format_percent
 
     debug_log(f"Percentage Income sheet (IFRS) created: {analysis_sheet_name}")
 
