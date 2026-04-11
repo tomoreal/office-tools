@@ -28,12 +28,32 @@ LOG_FILE="sync_db_to_servers.log"
 # 転送対象ファイル
 DB_FILE="edinet_cache.db"
 
+# 前回同期状態ファイル
+LAST_SYNC_FILE=".last_db_sync"
+
 # タイムスタンプ
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
 # ログ出力関数
 log() {
     echo "[$TIMESTAMP] $1" | tee -a "$LOG_FILE"
+}
+
+# 状態ファイルから値を取得
+# 引数: $1=key
+get_sync_state() {
+    local KEY=$1
+    if [ ! -f "$LAST_SYNC_FILE" ]; then
+        return 0
+    fi
+
+    grep "^${KEY}=" "$LAST_SYNC_FILE" | tail -n 1 | cut -d'=' -f2-
+}
+
+# 同期状態記録関数
+# 引数: $1=mtime, $2=s211 status, $3=s217 status, $4=s63 status
+write_sync_state() {
+    printf 'mtime=%s\ns211=%s\ns217=%s\ns63=%s\n' "$1" "$2" "$3" "$4" > "$LAST_SYNC_FILE"
 }
 
 log "========================================"
@@ -46,16 +66,29 @@ if [ ! -f "$DB_FILE" ]; then
     exit 1
 fi
 
-# 更新チェック: 前回転送時のタイムスタンプと比較
-LAST_SYNC_FILE=".last_db_sync"
+# 更新チェック: 前回サーバー別の転送結果と比較
 DB_MTIME=$(stat -c '%Y' "$DB_FILE")
+LAST_SYNC_MTIME=""
+LAST_S211_STATUS=""
+LAST_S217_STATUS=""
+LAST_S63_STATUS=""
 
 if [ -f "$LAST_SYNC_FILE" ]; then
-    LAST_SYNC_MTIME=$(cat "$LAST_SYNC_FILE")
+    LAST_SYNC_MTIME=$(get_sync_state "mtime")
+    LAST_S211_STATUS=$(get_sync_state "s211")
+    LAST_S217_STATUS=$(get_sync_state "s217")
+    LAST_S63_STATUS=$(get_sync_state "s63")
+
     if [ "$DB_MTIME" = "$LAST_SYNC_MTIME" ]; then
-        log "DBファイルに変更なし（前回転送時刻と同じ）。転送をスキップします。"
-        log "========================================"
-        exit 0
+        if [ "$LAST_S211_STATUS" = "success" ] && \
+           [ "$LAST_S217_STATUS" = "success" ] && \
+           [ "$LAST_S63_STATUS" = "success" ]; then
+            log "DBファイルに変更なし、かつ全サーバーで前回成功しているため転送をスキップします。"
+            log "========================================"
+            exit 0
+        fi
+
+        log "DBファイルは未変更ですが、前回失敗したサーバーまたは状態不明のサーバーを再転送します。"
     fi
 fi
 
@@ -128,26 +161,54 @@ S63_PATH="${S63_PATH:-/virtual/tomo/public_html/xbrl1.xtomo.com}"
 
 SUCCESS_COUNT=0
 FAIL_COUNT=0
+SKIP_COUNT=0
+S211_RESULT="failure"
+S217_RESULT="failure"
+S63_RESULT="failure"
 
 # s211への転送
-if scp_transfer "$S211_HOST" "$S211_USER" "$S211_PATH" "s211"; then
-    ((SUCCESS_COUNT++))
+if [ "$DB_MTIME" = "$LAST_SYNC_MTIME" ] && [ "$LAST_S211_STATUS" = "success" ]; then
+    log "---"
+    log "s211 は前回成功済みのため転送をスキップします。"
+    ((SKIP_COUNT++))
+    S211_RESULT="success"
 else
-    ((FAIL_COUNT++))
+    if scp_transfer "$S211_HOST" "$S211_USER" "$S211_PATH" "s211"; then
+        ((SUCCESS_COUNT++))
+        S211_RESULT="success"
+    else
+        ((FAIL_COUNT++))
+    fi
 fi
 
 # s217への転送
-if scp_transfer "$S217_HOST" "$S217_USER" "$S217_PATH" "s217"; then
-    ((SUCCESS_COUNT++))
+if [ "$DB_MTIME" = "$LAST_SYNC_MTIME" ] && [ "$LAST_S217_STATUS" = "success" ]; then
+    log "---"
+    log "s217 は前回成功済みのため転送をスキップします。"
+    ((SKIP_COUNT++))
+    S217_RESULT="success"
 else
-    ((FAIL_COUNT++))
+    if scp_transfer "$S217_HOST" "$S217_USER" "$S217_PATH" "s217"; then
+        ((SUCCESS_COUNT++))
+        S217_RESULT="success"
+    else
+        ((FAIL_COUNT++))
+    fi
 fi
 
 # s63への転送
-if scp_transfer "$S63_HOST" "$S63_USER" "$S63_PATH" "s63"; then
-    ((SUCCESS_COUNT++))
+if [ "$DB_MTIME" = "$LAST_SYNC_MTIME" ] && [ "$LAST_S63_STATUS" = "success" ]; then
+    log "---"
+    log "s63 は前回成功済みのため転送をスキップします。"
+    ((SKIP_COUNT++))
+    S63_RESULT="success"
 else
-    ((FAIL_COUNT++))
+    if scp_transfer "$S63_HOST" "$S63_USER" "$S63_PATH" "s63"; then
+        ((SUCCESS_COUNT++))
+        S63_RESULT="success"
+    else
+        ((FAIL_COUNT++))
+    fi
 fi
 
 # ==========================================
@@ -155,15 +216,15 @@ fi
 # ==========================================
 
 log "========================================"
-log "同期完了: 成功=$SUCCESS_COUNT, 失敗=$FAIL_COUNT"
+log "同期完了: 成功=$SUCCESS_COUNT, 失敗=$FAIL_COUNT, スキップ=$SKIP_COUNT"
 log "========================================"
+
+write_sync_state "$DB_MTIME" "$S211_RESULT" "$S217_RESULT" "$S63_RESULT"
 
 if [ $FAIL_COUNT -gt 0 ]; then
     log "エラーが発生しました"
     exit 1
 else
     log "全サーバーへの転送成功"
-    # 転送成功時にDBのmtimeを記録（次回の更新チェック用）
-    echo "$DB_MTIME" > "$LAST_SYNC_FILE"
     exit 0
 fi
