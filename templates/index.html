@@ -719,6 +719,8 @@ XBRL to Excel Converter - Main UI Template
         let sessionId = null;
         let downloadedFiles = [];
         let isDownloading = false;
+        let isProcessing = false; // 二重実行防止用グローバルフラグ
+        let autoSelectTimer = null; // 自動選択用タイマー
 
         // 企業検索
         searchBtn.addEventListener('click', async () => {
@@ -737,6 +739,13 @@ XBRL to Excel Converter - Main UI Template
             document.getElementById('conversionCompleteInfo').style.display = 'none';
             document.getElementById('pdfDownloadBtn').style.display = 'none';
             document.getElementById('xbrlDownloadBtn').style.display = 'none';
+
+            // 自動選択タイマーをクリア
+            if (autoSelectTimer) {
+                clearTimeout(autoSelectTimer);
+                autoSelectTimer = null;
+            }
+            isProcessing = false;
 
             searchBtnText.style.display = 'none';
             searchLoader.style.display = 'block';
@@ -829,6 +838,19 @@ XBRL to Excel Converter - Main UI Template
 
         // 企業選択
         window.selectCompany = async function (index) {
+            if (isProcessing) return;
+
+            // 他の操作をブロック
+            isProcessing = true;
+            if (autoSelectTimer) {
+                clearTimeout(autoSelectTimer);
+                autoSelectTimer = null;
+            }
+
+            // UIを一時的に無効化
+            companyList.style.pointerEvents = 'none';
+            companyList.style.opacity = '0.6';
+
             selectedCompany = window.companiesData[index];
             document.getElementById('reportsHeader').textContent =
                 `${selectedCompany.filerName}　：期間を選択してください`;
@@ -1071,9 +1093,15 @@ XBRL to Excel Converter - Main UI Template
                 const conversionMode = document.querySelector('input[name="conversionMode"]:checked')?.value;
                 if (conversionMode === 'auto') {
                     console.log('自動変換モード: 変換を自動開始します');
-                    setTimeout(() => {
+                    autoSelectTimer = setTimeout(() => {
+                        autoSelectTimer = null;
                         convertBtn.click();
                     }, 1000);
+                } else {
+                    // 手動モードの場合はフラグを解除して操作可能にする
+                    isProcessing = false;
+                    companyList.style.pointerEvents = 'auto';
+                    companyList.style.opacity = '1';
                 }
 
             } catch (error) {
@@ -1083,10 +1111,15 @@ XBRL to Excel Converter - Main UI Template
                 convertBtnText.textContent = '選択した報告書をダウンロード＆変換';
                 convertBtn.disabled = false;
                 isDownloading = false;
+                isProcessing = false;
 
                 if (progressContainer) {
                     progressContainer.style.display = 'none';
                 }
+
+                // UI復帰
+                companyList.style.pointerEvents = 'auto';
+                companyList.style.opacity = '1';
             } finally {
                 convertLoader.style.display = 'none';
                 convertBtnText.style.display = 'block';
@@ -1105,8 +1138,17 @@ XBRL to Excel Converter - Main UI Template
 
         // ダウンロード＆変換
         convertBtn.addEventListener('click', async () => {
+            // 自動モードで既走中の場合などは isProcessing が true
+            // 手動モードで preload 完了後は false に戻っているので、ここで改めて true にする
+            isProcessing = true;
+            companyList.style.pointerEvents = 'none';
+            companyList.style.opacity = '0.6';
+
             if (selectedReports.length === 0) {
                 alert('少なくとも1つの報告書を選択してください');
+                isProcessing = false;
+                companyList.style.pointerEvents = 'auto';
+                companyList.style.opacity = '1';
                 return;
             }
 
@@ -1200,6 +1242,9 @@ XBRL to Excel Converter - Main UI Template
                 convertBtnText.style.display = 'block';
                 convertLoader.style.display = 'none';
                 convertBtn.disabled = false;
+                isProcessing = false;
+                companyList.style.pointerEvents = 'auto';
+                companyList.style.opacity = '1';
             }
         });
 
