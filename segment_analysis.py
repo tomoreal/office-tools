@@ -2103,7 +2103,7 @@ def _create_ppm_analysis_sheet(workbook, analysis_sheet_name, used_sheet_names, 
 
     # 売上ラベルのフォールバック候補: 「計」が空の期間で代替ラベルを使う
     # 例: 2024/3以降に「計」→「売上収益」に勘定科目名が変わった場合
-    _SALES_FALLBACK_KWS = ["外部顧客への売上収益", "売上収益", "営業収益", "外部顧客への売上高", "売上高"]
+    _SALES_FALLBACK_KWS = ["外部顧客への売上収益", "売上収益", "営業収益", "売上高"]
     _acq_sales_fallback_labels = []  # acqシートに実際に存在するフォールバックラベルのリスト
     if acq_ws_ref and _acq_sales_label:
         for _fb_kw in _SALES_FALLBACK_KWS:
@@ -3295,6 +3295,17 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
     _acq_sales_label = _ppm_label_to_acq(target_sales_label) if acq_ws_ref else None
 
+    # 売上ラベルのフォールバック候補: 主ラベルが空の期間で代替ラベルを使う
+    # 例: 2019-2022は「売上高」→2023以降「売上収益」にラベルが変わった場合
+    _SALES_FALLBACK_KWS_IFRS = ["売上収益", "売上高", "営業収益"]
+    _acq_sales_fallback_labels = []
+    if acq_ws_ref and _acq_sales_label:
+        for _fb_kw in _SALES_FALLBACK_KWS_IFRS:
+            # 完全一致のみ（「売上高」が「外部顧客への売上高」「セグメント間売上高」等にマッチするのを防ぐ）
+            if _fb_kw in acq_canonical_labels and _fb_kw != _acq_sales_label:
+                _acq_sales_fallback_labels.append(_fb_kw)
+    debug_log(f"[PPM IFRS] Sales fallback labels: {_acq_sales_fallback_labels}")
+
     debug_log(f"[PPM IFRS] acq_ws_ref={'exists' if acq_ws_ref else 'None'}, "
               f"acq_sales_label='{_acq_sales_label}'")
 
@@ -3495,6 +3506,50 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
 
     _data_col_count = _COL_END - _COL_START + 1
 
+    def _read_for_chart_sales_ifrs(cur_p_str, flag, c):
+        """売上用チャート数値読み取り。_acq_sales_labelが空なら_acq_sales_fallback_labelsを試みる"""
+        v = _read_for_chart(_acq_sales_label, cur_p_str, flag, c)
+        if v is None:
+            for _fb_lbl in _acq_sales_fallback_labels:
+                v = _read_for_chart(_fb_lbl, cur_p_str, flag, c)
+                if v is not None:
+                    return v
+        return v
+
+    def _formula_for_sales_with_fallback_ifrs(acq_label, fallback_labels, cur_p_str, flag, c):
+        """売上用数式を生成。acq_labelが空の場合、fallback_labelsを順番に試みるネストIF式を返す。
+        重複ラベルを除去して全フォールバックを連鎖する。"""
+        if acq_ws_ref is None or acq_label is None:
+            return None
+        col_letter = get_column_letter(c)
+        # 重複除去してフォールバック行リストを構築
+        seen_fb = set()
+        fb_refs = []
+        for fb_lbl in fallback_labels:
+            if fb_lbl in seen_fb:
+                continue
+            seen_fb.add(fb_lbl)
+            fb_row = acq_row_lookup.get((fb_lbl, cur_p_str, flag))
+            if fb_row is not None:
+                fb_refs.append(f"'{_safe_acq}'!{col_letter}{fb_row}")
+        primary_row = acq_row_lookup.get((acq_label, cur_p_str, flag))
+        if primary_row is not None:
+            primary_ref = f"'{_safe_acq}'!{col_letter}{primary_row}"
+            # フォールバックをネスト: IF(primary="", IF(fb1="", IF(fb2="", "", fb2), fb1), primary)
+            inner = "\"\""
+            for fb_ref in reversed(fb_refs):
+                inner = f"IF({fb_ref}=\"\",{inner},{fb_ref})"
+            if fb_refs:
+                return f"=IF({primary_ref}=\"\",{inner},{primary_ref})"
+            return f"=IF({primary_ref}=\"\",\"\",{primary_ref})"
+        # 主ラベルの行がこの期間に存在しない場合、フォールバックを直接使用
+        if not fb_refs:
+            return None
+        inner = "\"\""
+        for fb_ref in reversed(fb_refs):
+            inner = f"IF({fb_ref}=\"\",{inner},{fb_ref})"
+        return f"={inner}"
+
     # -----------------------------------------------------------------------
     # 6. 売上収益セクション（2*N 行）
     # -----------------------------------------------------------------------
@@ -3510,7 +3565,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         pri_row = [sales_lbl, cur_p, "前期", pri_p if pri_p else ""]
         for c in range(_COL_START, _COL_END + 1):
             if acq_ws_ref and _acq_sales_label:
-                formula = _formula_for_data(_acq_sales_label, cur_p, "前期", c)
+                formula = _formula_for_sales_with_fallback_ifrs(
+                    _acq_sales_label, _acq_sales_fallback_labels, cur_p, "前期", c)
                 pri_row.append(formula if formula is not None else "")
             else:
                 v = _get_val_for_filing(pri_src, c, fp, False)
@@ -3520,7 +3576,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         cur_row = [sales_lbl, cur_p, "当期", cur_p]
         for c in range(_COL_START, _COL_END + 1):
             if acq_ws_ref and _acq_sales_label:
-                formula = _formula_for_data(_acq_sales_label, cur_p, "当期", c)
+                formula = _formula_for_sales_with_fallback_ifrs(
+                    _acq_sales_label, _acq_sales_fallback_labels, cur_p, "当期", c)
                 cur_row.append(formula if formula is not None else "")
             else:
                 v = _get_val_for_filing(cur_src, c, fp, True)
@@ -3607,8 +3664,8 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
                 g_row.append(formula)
             # 実値（軸計算用）
             if acq_ws_ref and _acq_sales_label:
-                pri_val = _read_for_chart(_acq_sales_label, cur_p, "前期", c)
-                cur_val = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+                pri_val = _read_for_chart_sales_ifrs(cur_p, "前期", c)
+                cur_val = _read_for_chart_sales_ifrs(cur_p, "当期", c)
             else:
                 pri_src = period_lookup.get((target_sales_label, fp['prior'])) if (target_sales_label and fp['prior']) else None
                 cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
@@ -3646,7 +3703,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         if acq_ws_ref and _acq_sales_label and base_prior:
             _base_profit_lbl, _ = _get_profit_src(base_prior)
             _acq_base_profit_lbl = _ppm_label_to_acq(_base_profit_lbl)
-            s_val = _read_for_chart(_acq_sales_label, _fp0['current'], "前期", c)
+            s_val = _read_for_chart_sales_ifrs(_fp0['current'], "前期", c)
             p_val = _read_for_chart(_acq_base_profit_lbl, _fp0['current'], "前期", c) if _acq_base_profit_lbl else None
         else:
             pri_s_src = period_lookup.get((target_sales_label, base_prior)) if (target_sales_label and base_prior) else None
@@ -3675,7 +3732,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             if acq_ws_ref and _acq_sales_label:
                 _cur_profit_lbl_ref, _ = _get_profit_src(cur_p)
                 _acq_cur_profit_lbl = _ppm_label_to_acq(_cur_profit_lbl_ref)
-                s_val = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+                s_val = _read_for_chart_sales_ifrs(cur_p, "当期", c)
                 p_val = _read_for_chart(_acq_cur_profit_lbl, cur_p, "当期", c) if _acq_cur_profit_lbl else None
             else:
                 cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
@@ -3695,7 +3752,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
         sv = {}
         for c in range(_COL_START, _COL_END + 1):
             if acq_ws_ref and _acq_sales_label:
-                v = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+                v = _read_for_chart_sales_ifrs(cur_p, "当期", c)
             else:
                 cur_s_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
                 v = _get_val_for_filing(cur_s_src, c, fp, True)
@@ -3906,7 +3963,7 @@ def _create_ppm_analysis_sheet_ifrs(workbook, analysis_sheet_name, used_sheet_na
             if hokoku_col is not None and c >= hokoku_col:
                 continue
             if acq_ws_ref and _acq_sales_label:
-                val = _read_for_chart(_acq_sales_label, cur_p, "当期", c)
+                val = _read_for_chart_sales_ifrs(cur_p, "当期", c)
             else:
                 cur_src = period_lookup.get((target_sales_label, cur_p)) if target_sales_label else None
                 val = _get_val_for_filing(cur_src, c, fp, True)
