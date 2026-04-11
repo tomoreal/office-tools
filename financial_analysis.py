@@ -633,22 +633,58 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
     }
 
     # 各項目を追加
-    all_source_rows = (
-        [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
-         total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row] +
-        [None] +  # 空行
-        [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num] +
-        [None] +  # 空行
-        [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
-         check1_row_num, check2_row_num, roa_row_num]
-    )
-
-    for source_row in all_source_rows:
-        if source_row is None:
-            analysis_ws.append([''] * num_cols)
-            continue
-
+    diff_rows_basic = []
+    for source_row in [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
+                       total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
         diff_row_num = analysis_ws.max_row + 1
+        diff_rows_basic.append(diff_row_num)
+        diff_row = [f'=A{source_row}', '']
+        diff_row.append('')  # C列
+        diff_row.append('')  # D列は空
+        # E列以降: =E{source_row}-D{source_row}
+        for col in range(5, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}-{prev_col_letter}{source_row}"
+            diff_row.append(formula)
+        analysis_ws.append(diff_row)
+        # 書式設定の適用
+        fmt = row_formats_map.get(source_row)
+        if fmt:
+            for col in range(5, num_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = fmt
+
+    # 空行
+    analysis_ws.append([''] * num_cols)
+
+    diff_rows_calc = []
+    for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+        diff_row_num = analysis_ws.max_row + 1
+        diff_rows_calc.append(diff_row_num)
+        diff_row = [f'=A{source_row}', '']
+        diff_row.append('')  # C列
+        diff_row.append('')  # D列は空
+        for col in range(5, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}-{prev_col_letter}{source_row}"
+            diff_row.append(formula)
+        analysis_ws.append(diff_row)
+        fmt = row_formats_map.get(source_row)
+        if fmt:
+            for col in range(5, num_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = fmt
+
+    # 空行
+    analysis_ws.append([''] * num_cols)
+
+    diff_rows_roe = []
+    for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                       check1_row_num, check2_row_num, roa_row_num]:
+        diff_row_num = analysis_ws.max_row + 1
+        diff_rows_roe.append(diff_row_num)
         diff_row = [f'=A{source_row}', '']
         diff_row.append('')  # C列
         if source_row == check2_row_num:
@@ -662,13 +698,12 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                 formula = f"={col_letter}{source_row}-{prev_col_letter}{source_row}"
                 diff_row.append(formula)
         analysis_ws.append(diff_row)
-
-        # 書式設定の適用
         fmt = row_formats_map.get(source_row)
         if fmt:
             for col in range(5, num_cols + 1):
                 col_letter = openpyxl.utils.get_column_letter(col)
                 analysis_ws[f'{col_letter}{diff_row_num}'].number_format = fmt
+
 
     # ============================================================================
     # 10年前からの増加率計算（Q列）
@@ -881,6 +916,31 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
         for row_num in yoy_rows_basic + yoy_rows_calc + yoy_rows_roe:
             analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
 
+        # Q列: 対前年差セクションの追加 (latest - base)
+        analysis_ws[f'{growth_col_letter}{diff_yoy_header_row_num}'] = f"=YEAR({latest_col_letter}1) & \"-\" & YEAR({base_col_letter}1)"
+
+        for idx, row_num in enumerate(diff_rows_basic):
+            source_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
+                         total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+            diff_formula = f"={latest_col_letter}{source_row}-{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{row_num}'] = diff_formula
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+        for idx, row_num in enumerate(diff_rows_calc):
+            source_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+            diff_formula = f"={latest_col_letter}{source_row}-{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{row_num}'] = diff_formula
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+        for idx, row_num in enumerate(diff_rows_roe):
+            source_row = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                         check1_row_num, check2_row_num, roa_row_num][idx]
+            if source_row == check2_row_num:
+                continue
+            diff_formula = f"={latest_col_letter}{source_row}-{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{row_num}'] = diff_formula
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
         # ============================================================================
         # R列とS列: 5年間の比較
         # ============================================================================
@@ -930,6 +990,31 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
                 # R23: ヘッダー（R1を参照）
                 analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
+
+                # R列: 対前年差セクションの追加 (mid - base)
+                analysis_ws[f'{r_col_letter}{diff_yoy_header_row_num}'] = f"=YEAR({mid_col_letter}1) & \"-\" & YEAR({base_col_letter}1)"
+
+                for idx, row_num in enumerate(diff_rows_basic):
+                    source_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
+                                 total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    diff_formula = f"={mid_col_letter}{source_row}-{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_calc):
+                    source_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    diff_formula = f"={mid_col_letter}{source_row}-{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_roe):
+                    source_row = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                 check1_row_num, check2_row_num, roa_row_num][idx]
+                    if source_row == check2_row_num:
+                        continue
+                    diff_formula = f"={mid_col_letter}{source_row}-{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
 
                 # R24-R41: CAGR計算 (base to mid)
                 for idx, row_num in enumerate(yoy_rows_basic):
@@ -992,6 +1077,32 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
                 # S23: ヘッダー（S1を参照）
                 analysis_ws[f'{s_col_letter}{yoy_header_row_num}'] = f'={s_col_letter}1'
+
+                # S列: 対前年差セクションの追加 (latest - mid)
+                analysis_ws[f'{s_col_letter}{diff_yoy_header_row_num}'] = f"=YEAR({latest_col_letter}1) & \"-\" & YEAR({mid_col_letter}1)"
+
+                for idx, row_num in enumerate(diff_rows_basic):
+                    source_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
+                                 total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    diff_formula = f"={latest_col_letter}{source_row}-{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_calc):
+                    source_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    diff_formula = f"={latest_col_letter}{source_row}-{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_roe):
+                    source_row = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                 check1_row_num, check2_row_num, roa_row_num][idx]
+                    if source_row == check2_row_num:
+                        continue
+                    diff_formula = f"={latest_col_letter}{source_row}-{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
 
                 # S24-S41: CAGR計算 (mid to latest)
                 # Note: S列のCAGRは (latest/mid)^(1/(latest_year - mid_year)) - 1
@@ -1064,6 +1175,31 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
                 # R23: ヘッダー（R1を参照）
                 analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
 
+                # R列: 対前年差セクションの追加 (latest - 5years_ago)
+                analysis_ws[f'{r_col_letter}{diff_yoy_header_row_num}'] = f"=YEAR({latest_col_letter}1) & \"-\" & YEAR({five_years_col_letter}1)"
+
+                for idx, row_num in enumerate(diff_rows_basic):
+                    source_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
+                                 total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    diff_formula = f"={latest_col_letter}{source_row}-{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_calc):
+                    source_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    diff_formula = f"={latest_col_letter}{source_row}-{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_roe):
+                    source_row = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                 check1_row_num, check2_row_num, roa_row_num][idx]
+                    if source_row == check2_row_num:
+                        continue
+                    diff_formula = f"={latest_col_letter}{source_row}-{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
                 # R24-R41: CAGR計算 (5years_ago to latest)
                 for idx, row_num in enumerate(yoy_rows_basic):
                     source_cagr_row = [sales_analysis_row, profit_analysis_row, equity_or_net_assets_row,
@@ -1094,84 +1230,8 @@ def create_roe_analysis_sheet(workbook, source_sheet_name, debug_log=None):
 
                 debug_log(f"Added R column for 5-9 year data: R={latest_col_letter}/{five_years_col_letter}")
 
-        # ============================================================================
-        # 差分列の追加（引き算）
-        # ============================================================================
-        if base_col is not None:
-            # 差分を表示する列のペアを特定
-            diff_pairs = []
-            
-            # 1. 全期間 (latest - base)
-            diff_pairs.append({
-                'latest': latest_col_letter,
-                'base': base_col_letter,
-                'col_idx': num_cols + 4  # Q, R, S の次
-            })
-            
-            if kikan >= 5:
-                if kikan >= 10:
-                    # 2. 前半5年 (mid - base)
-                    diff_pairs.append({
-                        'latest': mid_col_letter,
-                        'base': base_col_letter,
-                        'col_idx': num_cols + 5
-                    })
-                    # 3. 後半5年 (latest - mid)
-                    diff_pairs.append({
-                        'latest': latest_col_letter,
-                        'base': mid_col_letter,
-                        'col_idx': num_cols + 6
-                    })
-                else:
-                    # 4. 最新5年 (latest - 5years_ago)
-                    diff_pairs.append({
-                        'latest': latest_col_letter,
-                        'base': five_years_col_letter,
-                        'col_idx': num_cols + 5
-                    })
-
-            # 行ごとの書式設定マッピング
-            row_formats = {
-                sales_analysis_row: number_format_integer,
-                profit_analysis_row: number_format_integer,
-                equity_or_net_assets_row: number_format_integer,
-                total_assets_analysis_row: number_format_integer,
-                equity_ratio_analysis_row: number_format_percent,
-                roe_analysis_row: number_format_percent,
-                equity_calc_row_num: number_format_decimal,
-                equity_avg_row_num: number_format_decimal,
-                total_assets_avg_row_num: number_format_decimal,
-                roe_calc_row_num: number_format_percent,
-                ros_row_num: number_format_percent,
-                tor_row_num: number_format_decimal2,
-                lrv_row_num: number_format_decimal2,
-                check1_row_num: number_format_percent,
-                roa_row_num: number_format_percent,
-            }
-
-            for pair in diff_pairs:
-                d_latest = pair['latest']
-                d_base = pair['base']
-                diff_col_letter = openpyxl.utils.get_column_letter(pair['col_idx'])
-                
-                # ヘッダー: YEAR(latest) - YEAR(base)
-                diff_header_formula = f"=YEAR({d_latest}1) & \"-\" & YEAR({d_base}1)"
-                analysis_ws[f'{diff_col_letter}1'] = diff_header_formula
-                
-                # 各行の計算
-                for source_row, fmt in row_formats.items():
-                    if source_row is not None:
-                        diff_formula = f"={d_latest}{source_row}-{d_base}{source_row}"
-                        analysis_ws[f'{diff_col_letter}{source_row}'] = diff_formula
-                        analysis_ws[f'{diff_col_letter}{source_row}'].number_format = fmt
-                
-                # 対前年増加率セクション（ヘッダーのみ差分列のヘッダーを参照）
-                analysis_ws[f'{diff_col_letter}{yoy_header_row_num}'] = f'={diff_col_letter}1'
-                
-                # 列幅の設定
-                analysis_ws.column_dimensions[diff_col_letter].width = 12
-
     debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
+
 
 
 def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debug_log=None):
@@ -1663,22 +1723,56 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
     }
 
     # 各項目を追加
-    all_source_rows = (
-        [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
-         total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row] +
-        [None] +  # 空行
-        [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num] +
-        [None] +  # 空行
-        [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
-         check1_row_num, check2_row_num, roa_row_num]
-    )
-
-    for source_row in all_source_rows:
-        if source_row is None:
-            analysis_ws.append([''] * num_cols)
-            continue
-
+    diff_rows_basic = []
+    for source_row in [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                       total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row]:
         diff_row_num = analysis_ws.max_row + 1
+        diff_rows_basic.append(diff_row_num)
+        diff_row = [f'=A{source_row}', '']
+        diff_row.append('')  # C列
+        diff_row.append('')  # D列は空
+        for col in range(5, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}-{prev_col_letter}{source_row}"
+            diff_row.append(formula)
+        analysis_ws.append(diff_row)
+        fmt = row_formats_map.get(source_row)
+        if fmt:
+            for col in range(5, num_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = fmt
+
+    # 空行
+    analysis_ws.append([''] * num_cols)
+
+    diff_rows_calc = []
+    for source_row in [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num]:
+        diff_row_num = analysis_ws.max_row + 1
+        diff_rows_calc.append(diff_row_num)
+        diff_row = [f'=A{source_row}', '']
+        diff_row.append('')  # C列
+        diff_row.append('')  # D列は空
+        for col in range(5, num_cols + 1):
+            col_letter = openpyxl.utils.get_column_letter(col)
+            prev_col_letter = openpyxl.utils.get_column_letter(col - 1)
+            formula = f"={col_letter}{source_row}-{prev_col_letter}{source_row}"
+            diff_row.append(formula)
+        analysis_ws.append(diff_row)
+        fmt = row_formats_map.get(source_row)
+        if fmt:
+            for col in range(5, num_cols + 1):
+                col_letter = openpyxl.utils.get_column_letter(col)
+                analysis_ws[f'{col_letter}{diff_row_num}'].number_format = fmt
+
+    # 空行
+    analysis_ws.append([''] * num_cols)
+
+    diff_rows_roe = []
+    for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                       check1_row_num, check2_row_num, roa_row_num]:
+        diff_row_num = analysis_ws.max_row + 1
+        diff_rows_roe.append(diff_row_num)
         diff_row = [f'=A{source_row}', '']
         diff_row.append('')  # C列
         if source_row == check2_row_num:
@@ -1692,13 +1786,12 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                 formula = f"={col_letter}{source_row}-{prev_col_letter}{source_row}"
                 diff_row.append(formula)
         analysis_ws.append(diff_row)
-
-        # 書式設定の適用
         fmt = row_formats_map.get(source_row)
         if fmt:
             for col in range(5, num_cols + 1):
                 col_letter = openpyxl.utils.get_column_letter(col)
                 analysis_ws[f'{col_letter}{diff_row_num}'].number_format = fmt
+
 
     # 10年前からの増加率計算（Q列以降）
     latest_col = source_cols
@@ -1843,6 +1936,31 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
         for row_num in yoy_rows_basic + yoy_rows_calc + yoy_rows_roe:
             analysis_ws[f'{growth_col_letter}{row_num}'].number_format = number_format_percent
 
+        # Q列: 対前年差セクションの追加 (latest - base)
+        analysis_ws[f'{growth_col_letter}{diff_yoy_header_row_num}'] = f"=YEAR({latest_col_letter}1) & \"-\" & YEAR({base_col_letter}1)"
+
+        for idx, row_num in enumerate(diff_rows_basic):
+            source_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                         total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+            diff_formula = f"={latest_col_letter}{source_row}-{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{row_num}'] = diff_formula
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+        for idx, row_num in enumerate(diff_rows_calc):
+            source_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+            diff_formula = f"={latest_col_letter}{source_row}-{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{row_num}'] = diff_formula
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+        for idx, row_num in enumerate(diff_rows_roe):
+            source_row = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                         check1_row_num, check2_row_num, roa_row_num][idx]
+            if source_row == check2_row_num:
+                continue
+            diff_formula = f"={latest_col_letter}{source_row}-{base_col_letter}{source_row}"
+            analysis_ws[f'{growth_col_letter}{row_num}'] = diff_formula
+            analysis_ws[f'{growth_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
         # R列とS列: 5年間の比較
         if kikan >= 5:
             if kikan >= 10:
@@ -1866,15 +1984,33 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
-                for source_row in [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
-                                  check1_row_num, check2_row_num, roa_row_num]:
+                # R23: ヘッダー（R1を参照）
+                analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
+
+                # R列: 対前年差セクションの追加 (mid - base)
+                analysis_ws[f'{r_col_letter}{diff_yoy_header_row_num}'] = f"=YEAR({mid_col_letter}1) & \"-\" & YEAR({base_col_letter}1)"
+
+                for idx, row_num in enumerate(diff_rows_basic):
+                    source_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                 total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    diff_formula = f"={mid_col_letter}{source_row}-{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_calc):
+                    source_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    diff_formula = f"={mid_col_letter}{source_row}-{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_roe):
+                    source_row = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                 check1_row_num, check2_row_num, roa_row_num][idx]
                     if source_row == check2_row_num:
                         continue
-                    ratio_formula = f"={mid_col_letter}{source_row}/{base_col_letter}{source_row}"
-                    analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
-                    analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
-
-                analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
+                    diff_formula = f"={mid_col_letter}{source_row}-{base_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
 
                 for idx, row_num in enumerate(yoy_rows_basic):
                     source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
@@ -1927,8 +2063,33 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     ratio_formula = f"={latest_col_letter}{source_row}/{mid_col_letter}{source_row}"
                     analysis_ws[f'{s_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{s_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
-
+                # S23: ヘッダー（S1を参照）
                 analysis_ws[f'{s_col_letter}{yoy_header_row_num}'] = f'={s_col_letter}1'
+
+                # S列: 対前年差セクションの追加 (latest - mid)
+                analysis_ws[f'{s_col_letter}{diff_yoy_header_row_num}'] = f"=YEAR({latest_col_letter}1) & \"-\" & YEAR({mid_col_letter}1)"
+
+                for idx, row_num in enumerate(diff_rows_basic):
+                    source_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                 total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    diff_formula = f"={latest_col_letter}{source_row}-{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_calc):
+                    source_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    diff_formula = f"={latest_col_letter}{source_row}-{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_roe):
+                    source_row = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                 check1_row_num, check2_row_num, roa_row_num][idx]
+                    if source_row == check2_row_num:
+                        continue
+                    diff_formula = f"={latest_col_letter}{source_row}-{mid_col_letter}{source_row}"
+                    analysis_ws[f'{s_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{s_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
 
                 for idx, row_num in enumerate(yoy_rows_basic):
                     source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
@@ -1987,7 +2148,33 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
                     analysis_ws[f'{r_col_letter}{source_row}'] = ratio_formula
                     analysis_ws[f'{r_col_letter}{source_row}'].number_format = '#,##0.00_);[Red](#,##0.00)'
 
+                # R23: ヘッダー（R1を参照）
                 analysis_ws[f'{r_col_letter}{yoy_header_row_num}'] = f'={r_col_letter}1'
+
+                # R列: 対前年差セクションの追加 (latest - 5years_ago)
+                analysis_ws[f'{r_col_letter}{diff_yoy_header_row_num}'] = f"=YEAR({latest_col_letter}1) & \"-\" & YEAR({five_years_col_letter}1)"
+
+                for idx, row_num in enumerate(diff_rows_basic):
+                    source_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
+                                 total_assets_analysis_row, equity_ratio_analysis_row, roe_analysis_row][idx]
+                    diff_formula = f"={latest_col_letter}{source_row}-{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_calc):
+                    source_row = [equity_calc_row_num, equity_avg_row_num, total_assets_avg_row_num][idx]
+                    diff_formula = f"={latest_col_letter}{source_row}-{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
+
+                for idx, row_num in enumerate(diff_rows_roe):
+                    source_row = [roe_calc_row_num, ros_row_num, tor_row_num, lrv_row_num,
+                                 check1_row_num, check2_row_num, roa_row_num][idx]
+                    if source_row == check2_row_num:
+                        continue
+                    diff_formula = f"={latest_col_letter}{source_row}-{five_years_col_letter}{source_row}"
+                    analysis_ws[f'{r_col_letter}{row_num}'] = diff_formula
+                    analysis_ws[f'{r_col_letter}{row_num}'].number_format = row_formats_map.get(source_row)
 
                 for idx, row_num in enumerate(yoy_rows_basic):
                     source_cagr_row = [sales_analysis_row, profit_analysis_row, net_assets_analysis_row,
@@ -2017,84 +2204,8 @@ def create_roe_analysis_sheet_non_consolidated(workbook, source_sheet_name, debu
 
                 debug_log(f"Added R column for 5-9 year data: R={latest_col_letter}/{five_years_col_letter}")
 
-        # ============================================================================
-        # 差分列の追加（引き算）
-        # ============================================================================
-        if base_col is not None:
-            # 差分を表示する列のペアを特定
-            diff_pairs = []
-            
-            # 1. 全期間 (latest - base)
-            diff_pairs.append({
-                'latest': latest_col_letter,
-                'base': base_col_letter,
-                'col_idx': num_cols + 4  # Q, R, S の次
-            })
-            
-            if kikan >= 5:
-                if kikan >= 10:
-                    # 2. 前半5年 (mid - base)
-                    diff_pairs.append({
-                        'latest': mid_col_letter,
-                        'base': base_col_letter,
-                        'col_idx': num_cols + 5
-                    })
-                    # 3. 後半5年 (latest - mid)
-                    diff_pairs.append({
-                        'latest': latest_col_letter,
-                        'base': mid_col_letter,
-                        'col_idx': num_cols + 6
-                    })
-                else:
-                    # 4. 最新5年 (latest - 5years_ago)
-                    diff_pairs.append({
-                        'latest': latest_col_letter,
-                        'base': five_years_col_letter,
-                        'col_idx': num_cols + 5
-                    })
-
-            # 行ごとの書式設定マッピング
-            row_formats = {
-                sales_analysis_row: number_format_integer,
-                profit_analysis_row: number_format_integer,
-                net_assets_analysis_row: number_format_integer,
-                total_assets_analysis_row: number_format_integer,
-                equity_ratio_analysis_row: number_format_percent,
-                roe_analysis_row: number_format_percent,
-                equity_calc_row_num: number_format_decimal,
-                equity_avg_row_num: number_format_decimal,
-                total_assets_avg_row_num: number_format_decimal,
-                roe_calc_row_num: number_format_percent,
-                ros_row_num: number_format_percent,
-                tor_row_num: number_format_decimal2,
-                lrv_row_num: number_format_decimal2,
-                check1_row_num: number_format_percent,
-                roa_row_num: number_format_percent,
-            }
-
-            for pair in diff_pairs:
-                d_latest = pair['latest']
-                d_base = pair['base']
-                diff_col_letter = openpyxl.utils.get_column_letter(pair['col_idx'])
-                
-                # ヘッダー: YEAR(latest) - YEAR(base)
-                diff_header_formula = f"=YEAR({d_latest}1) & \"-\" & YEAR({d_base}1)"
-                analysis_ws[f'{diff_col_letter}1'] = diff_header_formula
-                
-                # 各行の計算
-                for source_row, fmt in row_formats.items():
-                    if source_row is not None:
-                        diff_formula = f"={d_latest}{source_row}-{d_base}{source_row}"
-                        analysis_ws[f'{diff_col_letter}{source_row}'] = diff_formula
-                        analysis_ws[f'{diff_col_letter}{source_row}'].number_format = fmt
-                
-                # 対前年増加率セクション（ヘッダーのみ差分列のヘッダーを参照）
-                analysis_ws[f'{diff_col_letter}{yoy_header_row_num}'] = f'={diff_col_letter}1'
-                
-                # 列幅の設定
-                analysis_ws.column_dimensions[diff_col_letter].width = 12
-
     debug_log(f"ROE analysis sheet created: {analysis_sheet_name}")
+
 
 
 def create_percentage_bs_sheet(workbook, source_sheet_name, debug_log=None):
