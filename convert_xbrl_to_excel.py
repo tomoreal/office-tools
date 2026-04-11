@@ -2158,6 +2158,56 @@ def process_xbrl_zips(zip_paths, output_dir=None):
             sorted_p_r = sorted(seg_periods_r)
             res['_ppm_cur_period'] = sorted_p_r[-1] if sorted_p_r else None
 
+        # 一番古い財務諸表の当期末を特定する（resultsは新しい年度順ソート済み）。
+        # 最古のZIPのみ前期・当期両方のデータを使用し、それ以外は当期データのみを使用する。
+        # これにより、勘定科目名が変更された場合の前期データ二重計上を防ぐ。
+        #
+        # 注意: _max_period は提出日（例: 2025-06-19）が最大になる場合がある。
+        # XBRLには FilingDateInstant 等の提出日コンテキストが含まれ、監査書類を含む場合は
+        # 提出日の出現頻度が高くなるため、頻度ベースの判定は誤りやすい。
+        #
+        # より確実な判定方法:
+        # 提出日は Instant コンテキストのみに使われ、Duration（期間）コンテキストには現れない。
+        # 一方、財政年度末は損益計算書・CF計算書等の Duration ファクトの終了日として必ず使われる。
+        # よって、Duration ファクト（start_date が存在するファクト）の終了日の最大値を当期末とする。
+        def _calc_fs_cur_period(res):
+            """当期財務期末日を算出する。
+            Durationファクトの終了日（= 財政年度末）の最大値を返す。
+            提出日は Instant のみに使われるため自動的に除外される。"""
+            metadata = res.get('values', {}).get('_metadata', {})
+            duration_end_dates = set()
+            for col_key, start_date in metadata.items():
+                if start_date:  # start_date が存在する = Duration ファクト
+                    _, _, period = col_key
+                    if period:
+                        duration_end_dates.add(period)
+            if duration_end_dates:
+                return max(duration_end_dates)
+            # フォールバック: Duration ファクトがない場合は _max_period を使う
+            return res.get('_max_period', '')
+        for _res in results:
+            _res['_fs_cur_period'] = _calc_fs_cur_period(_res)
+        debug_log(f"[PriorPeriodFilter] total results={len(results)}")
+        for _res in results:
+            debug_log(f"[PriorPeriodFilter]   zip _max_period={_res.get('_max_period')}, _fs_cur_period={_res.get('_fs_cur_period')}")
+
+        def _get_precision(s):
+            if not s or '.' not in s: return 0
+            return len(s.split('.')[-1])
+
+        def _merge_value(el, col_key, new_val):
+            """global_element_period_valuesへ精度優先でマージする。"""
+            if el not in global_element_period_values:
+                global_element_period_values[el] = {}
+            old_val = global_element_period_values[el].get(col_key)
+            if old_val is None:
+                global_element_period_values[el][col_key] = new_val
+            elif _get_precision(new_val) > _get_precision(old_val):
+                global_element_period_values[el][col_key] = new_val
+
+        # ── Pass 1: ラベル・ファクト・当期データのみをマージ ───────────────────────
+        # 各ZIPから _fs_cur_period（当期末日）に一致するperiodのデータのみを登録する。
+        # 勘定科目名が変更された場合、前期データを新旧両方の要素名で重複登録しないための処置。
         for res in results:
             if res.get('report_std'):
                 report_stds.add(res['report_std'])
@@ -2169,40 +2219,28 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     labels_map[k] = v
                     labels_map_priorities[k] = p
 
-            # Merge facts, periods, and values
             all_facts.extend(res['facts'])
             periods_seen.update(res['periods'])
+
             res_cur_period = res.get('_ppm_cur_period')
+            res_max_period = res.get('_fs_cur_period', '')
+
             for el, vals in res['values'].items():
-                if el not in global_element_period_values:
-                    global_element_period_values[el] = {}
                 for col_key, new_val in vals.items():
                     fact_std, dim_label, period = col_key
-                    # セグメント事業区分ディメンションの場合、新しいXBRLが既にカバーした
-                    # periodのデータは古いXBRLからスキップする（前期データの二重登録防止）。
-                    # ただし「当期」データ（period == res_cur_period）はブロックしない。
-                    # 理由: 新しいXBRLが同期間を前期として新セグメントで再集計した場合でも、
-                    # 古いXBRLの当期の旧セグメントデータを保持しPPMで正しく参照するため。
+                    # セグメントフィルタ（既存ロジック維持）
                     if (el != '_metadata'
                             and _is_segment_dim(dim_label)
                             and period != res_cur_period
                             and (fact_std, period) in segment_covered_dims
                             and dim_label not in segment_covered_dims[(fact_std, period)]):
                         continue
-                    old_val = global_element_period_values[el].get(col_key)
-                    if old_val is None:
-                        global_element_period_values[el][col_key] = new_val
-                    else:
-                        # Tie-breaking: prefer values that look more precise (more decimals)
-                        # This happens when the same fact appears in a table (precise) and a note (rounded)
-                        # Or just be deterministic based on zip file order (already sorted)
-                        def get_precision(s):
-                            if not s or '.' not in s: return 0
-                            return len(s.split('.')[-1])
-                        if get_precision(new_val) > get_precision(old_val):
-                            global_element_period_values[el][col_key] = new_val
+                    # 当期データのみ登録（前期はPass 2で補完）
+                    if el != '_metadata' and res_max_period and period != res_max_period:
+                        continue
+                    _merge_value(el, col_key, new_val)
 
-            # このXBRLがカバーしたセグメント事業区分のdim_labelを記録（次のXBRL処理時の判定に使用）
+            # セグメントカバー情報を更新（Pass 2のセグメントフィルタで使用）
             for col_key in res['periods']:
                 _fs, _dim, _per = col_key
                 if _is_segment_dim(_dim):
@@ -2210,6 +2248,62 @@ def process_xbrl_zips(zip_paths, output_dir=None):
                     if key not in segment_covered_dims:
                         segment_covered_dims[key] = set()
                     segment_covered_dims[key].add(_dim)
+
+        # ── Pass 2: 前期データをギャップ補完 ──────────────────────────────────────
+        # 例: IFRS開示がFY2019から始まった場合、FY2018のデータはFY2019申告の前期として取得する。
+        # これにより、財務諸表の種類ごとに「一番古い当期を持つZIP」が自動的に異なっても正しく動作する。
+        #
+        # ギャップ判定の単位: (fact_std, dim_label, period) の組み合わせ。
+        # いずれかのZIPの当期としてこの組み合わせがカバーされている場合は前期データをスキップする。
+        # こうすることで、勘定科目名が変わった年度でも二重計上を防げる:
+        #   例: 2024/3期のデータが OldElement (202403当期) に存在するとき、
+        #       NewElement (202503前期) の 2024/3期データは (JP,全体,2024-03-31) がカバー済みなのでスキップ。
+        # 財務諸表コア要素のプレフィックス（勘定科目として扱う要素）
+        # jpcrp_cor は主要経営指標等（サマリー）要素を含むため除外する。
+        # 例: jpcrp_cor:RevenueIFRSSummaryOfBusinessResults は IFRS 開示前の ZIP にも含まれており、
+        #     これを covered_by_current に含めると、後続 ZIP の IFRS 財務諸表ギャップ補完を誤ってブロックする。
+        _FS_CORE_PREFIXES = ('jpigp_cor_', 'jppfs_cor_', 'jpusp_cor_', 'jpmis_cor_')
+
+        covered_by_current = set()  # Pass 1 でカバーされた (fact_std, dim_label, period)
+        for res in results:
+            res_max_period = res.get('_fs_cur_period', '')
+            if not res_max_period:
+                continue
+            for el, vals in res['values'].items():
+                if el == '_metadata':
+                    continue
+                # 財務諸表コア要素のみ対象（jpcrp_cor 等のサマリー要素は除外）
+                if not any(el.startswith(p) for p in _FS_CORE_PREFIXES):
+                    continue
+                for col_key in vals:
+                    fact_std, dim_label, period = col_key
+                    if period == res_max_period:
+                        covered_by_current.add(col_key)
+
+        for res in results:
+            res_cur_period = res.get('_ppm_cur_period')
+            res_max_period = res.get('_fs_cur_period', '')
+
+            for el, vals in res['values'].items():
+                for col_key, new_val in vals.items():
+                    fact_std, dim_label, period = col_key
+                    # セグメントフィルタ（既存ロジック維持）
+                    if (el != '_metadata'
+                            and _is_segment_dim(dim_label)
+                            and period != res_cur_period
+                            and (fact_std, period) in segment_covered_dims
+                            and dim_label not in segment_covered_dims[(fact_std, period)]):
+                        continue
+                    # 前期データのみ対象（当期はPass 1で処理済み）
+                    if el == '_metadata' or not res_max_period or period == res_max_period:
+                        continue
+                    # (fact_std, dim_label, period) が当期カバー済みならスキップ
+                    # ※ 勘定科目名変更によるOldElement/NewElement二重計上を防ぐ
+                    # FS コア要素（jpigp_cor等）のみを対象とし、jpcrp_cor サマリー要素には適用しない
+                    if (any(el.startswith(p) for p in _FS_CORE_PREFIXES)
+                            and col_key in covered_by_current):
+                        continue
+                    _merge_value(el, col_key, new_val)
             
             # Merge presentation trees
             for role, tree_arcs in res['trees'].items():
