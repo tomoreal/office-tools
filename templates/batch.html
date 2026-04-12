@@ -249,81 +249,9 @@
     <!-- ここの中身は index.html の JS と同等が必要ですが、簡略化のため search/selectCompany 等を実装します -->
     <script>
         // 状態変数
-        var isDownloading = false;
-        var isProcessing = false;
-        var companiesData = [];
-        var reportsData = [];
         var batchResults = []; // 成功した企業の情報を保持 { sessionId, docIds, companyName, reportsInfo }
 
-        // 検索API
-        async function searchCompany(name) {
-            const resp = await fetch('/api/edinet/search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ company_name: name })
-            });
-            const data = await resp.json();
-            if (data.results && data.results.length > 0) {
-                companiesData = data.results;
-                return true;
-            }
-            return false;
-        }
 
-        // 報告書一覧取得 & ダウンロード開始
-        async function selectCompany(index) {
-            isProcessing = true;
-            const company = companiesData[index];
-            try {
-                const resp = await fetch('/api/edinet/reports', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ edinet_code: company.edinetCode })
-                });
-                const data = await resp.json();
-                if (data.results && data.results.length > 0) {
-                    const docIds = data.results.map(r => r.docID);
-                    isDownloading = true;
-                    const preloadResp = await fetch('/api/edinet/preload', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            edinet_code: company.edinetCode,
-                            doc_ids: docIds
-                        })
-                    });
-                    const preloadData = await preloadResp.json();
-                    isDownloading = false;
-
-                    const convertResp = await fetch('/api/edinet/convert', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            session_id: preloadData.session_id,
-                            doc_ids: docIds
-                        })
-                    });
-                    const convertData = await convertResp.json();
-                    if (convertData.success) {
-                        // ダウンロードをトリガー
-                        window.location.href = `/api/edinet/download?file=${encodeURIComponent(convertData.file)}`;
-                        return {
-                            success: true,
-                            sessionId: preloadData.session_id,
-                            docIds: docIds,
-                            companyName: company.filerName,
-                            reportsInfo: data.results,
-                            index: index // オリジナルのインデックスを保持
-                        };
-                    }
-                }
-            } catch (e) {
-                console.error('selectCompany error:', e);
-            } finally {
-                isProcessing = false;
-            }
-            return { success: false };
-        }
 
         // バッチ処理メイン
         (function () {
@@ -386,6 +314,124 @@
                 }
             }
 
+            // 検索API
+            async function searchCompany(name) {
+                try {
+                    const resp = await fetch('/api/edinet/search', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ company_name: name })
+                    });
+                    const data = await resp.json();
+                    if (data.results && data.results.length > 0) {
+                        return data.results;
+                    }
+                } catch (e) {
+                    console.error('searchCompany error:', e);
+                }
+                return null;
+            }
+
+            // EDINET APIからXBRLを先読みダウンロード (逐次実行)
+            async function preloadStep(company, idx) {
+                const startTime = Date.now();
+                updateCompanyStatus(idx, 'XBRL取得中...', 'fa-sync fa-spin');
+
+                try {
+                    // 1. 報告書一覧取得
+                    const resp = await fetch('/api/edinet/reports', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ edinet_code: company.edinetCode })
+                    });
+                    const data = await resp.json();
+
+                    if (!data.results || data.results.length === 0) {
+                        updateCompanyStatus(idx, '報告書なし', 'fa-exclamation-circle', '#ef4444');
+                        return null;
+                    }
+
+                    const docIds = data.results.map(r => r.docID);
+
+                    // 2. 先読みダウンロード
+                    const preloadResp = await fetch('/api/edinet/preload', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            edinet_code: company.edinetCode,
+                            doc_ids: docIds
+                        })
+                    });
+
+                    if (!preloadResp.ok) {
+                        const errorData = await preloadResp.json();
+                        throw new Error(errorData.message || 'ダウンロードエラー');
+                    }
+
+                    const preloadData = await preloadResp.json();
+                    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                    updateCompanyStatus(idx, `XBRL取得済み (${elapsed}s)`, 'fa-check', '#10b981');
+
+                    return {
+                        sessionId: preloadData.session_id,
+                        docIds: docIds,
+                        reportsInfo: data.results,
+                        preloadElapsed: elapsed
+                    };
+                } catch (e) {
+                    console.error('preloadStep error:', e);
+                    updateCompanyStatus(idx, '取得失敗', 'fa-times-circle', '#ef4444');
+                    return null;
+                }
+            }
+
+            // ダウンロード済みXBRLをExcelに変換 (並列実行)
+            async function convertStep(company, preloadData, idx) {
+                const startTime = Date.now();
+                updateCompanyStatus(idx, '変換中...', 'fa-sync fa-spin');
+
+                try {
+                    const convertResp = await fetch('/api/edinet/convert', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            session_id: preloadData.sessionId,
+                            doc_ids: preloadData.docIds
+                        })
+                    });
+
+                    const convertData = await convertResp.json();
+                    if (convertData.success) {
+                        // ダウンロード情報を保存 (ここでの batchResults.push はグローバル)
+                        batchResults.push({
+                            sessionId: preloadData.sessionId,
+                            docIds: preloadData.docIds,
+                            companyName: company.filerName,
+                            reportsInfo: preloadData.reportsInfo,
+                            index: idx
+                        });
+
+                        // 自動ダウンロードをトリガー
+                        const a = document.createElement('a');
+                        a.href = `/api/edinet/download?file=${encodeURIComponent(convertData.file)}`;
+                        a.style.display = 'none';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+
+                        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                        updateCompanyStatus(idx, `完了 (取得:${preloadData.preloadElapsed}s/変換:${elapsed}s)`, 'fa-check-circle', '#10b981');
+                        return true;
+                    } else {
+                        throw new Error(convertData.error || '変換失敗');
+                    }
+                } catch (e) {
+                    console.error('convertStep error:', e);
+                    updateCompanyStatus(idx, '変換エラー', 'fa-exclamation-triangle', '#ef4444');
+                    return false;
+                }
+            }
+
             async function runBatch() {
                 const rawText = batchCodesInput.value.trim();
                 const codes = rawText.split(/\n/).map(c => c.trim()).filter(c => c);
@@ -427,9 +473,9 @@
                 // 2. プレフェーズ：企業名の並列解決
                 const nameResolutionPromises = codes.map(async (code, idx) => {
                     try {
-                        const success = await searchCompany(code);
-                        if (success && companiesData && companiesData.length > 0) {
-                            const company = companiesData[0];
+                        const results = await searchCompany(code);
+                        if (results && results.length > 0) {
+                            const company = results[0];
                             const name = company.filerName;
                             updateCompanyName(idx, name);
                             updateCompanyStatus(idx, '準備完了', 'fa-check');
@@ -452,48 +498,48 @@
                 batchCurrentAction.innerHTML = `<i class="fas fa-play"></i> ${validCompanies.length}件の取得を開始します`;
                 startBatchBtnText.textContent = '一括処理中...';
 
-                // 3. 本処理ループ
+                const overallStartTime = Date.now();
+                const conversionPromises = [];
+
+                // 3. 本処理ループ (ダウンロードは逐次、変換は並列で行うパイプライン処理)
                 for (let i = 0; i < allResults.length; i++) {
                     const res = allResults[i];
                     batchProgressCount.textContent = `${i + 1} / ${codes.length}`;
-                    batchProgressBarFill.style.width = `${(i / codes.length) * 100}%`;
-
+                    
                     if (!res.found) {
+                        batchProgressBarFill.style.width = `${((i + 1) / codes.length) * 100}%`;
                         continue; // 見つからなかった企業はスキップ
                     }
 
-                    const startTime = Date.now();
                     const row = document.getElementById(`company-row-${i}`);
                     if (row) row.style.borderColor = 'var(--primary-color)';
 
-                    batchCurrentAction.innerHTML = `<strong>${res.code} ${res.name}</strong> を処理中...`;
-                    updateCompanyStatus(i, '処理中...', 'fa-sync fa-spin');
+                    batchCurrentAction.innerHTML = `<strong>${res.code} ${res.name}</strong> を取得中...`;
+                    
+                    // 3.1 ダウンロードフェーズ (逐次実行: await する)
+                    const preloadData = await preloadStep(res.companyData[0], i);
 
-                    try {
-                        // グローバルの companiesData をセット（selectCompanyが参照するため）
-                        companiesData = res.companyData;
-                        const processResult = await selectCompany(0);
-
-                        if (processResult && processResult.success) {
-                            processResult.index = i; // 正しいインデックス（ループ変数i）で上書き
-                            batchResults.push(processResult);
-                        }
-
-                        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-                        updateCompanyStatus(i, `完了 (${elapsed}秒)`, 'fa-check-circle', '#10b981');
-                    } catch (e) {
-                        console.error(e);
-                        updateCompanyStatus(i, '処理エラー', 'fa-exclamation-triangle', '#ef4444');
+                    if (preloadData) {
+                        // 3.2 変換フェーズ (並列実行: await しない)
+                        const convertPromise = convertStep(res.companyData[0], preloadData, i);
+                        conversionPromises.push(convertPromise);
                     }
 
                     if (row) row.style.borderColor = 'var(--border-color)';
                     batchProgressBarFill.style.width = `${((i + 1) / codes.length) * 100}%`;
 
-                    // 連続負荷軽減
-                    await new Promise(r => setTimeout(r, 1000));
+                    // 連続負荷軽減のためのわずかな待機
+                    await new Promise(r => setTimeout(r, 500));
                 }
 
-                batchCurrentAction.innerHTML = `<i class="fas fa-check-double" style="color: #10b981;"></i> 全ての処理が完了しました`;
+                // 全ての変換処理の完了を待機
+                if (conversionPromises.length > 0) {
+                    batchCurrentAction.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 全ての変換処理の完了を待っています...';
+                    await Promise.all(conversionPromises);
+                }
+
+                const totalElapsed = ((Date.now() - overallStartTime) / 1000).toFixed(1);
+                batchCurrentAction.innerHTML = `<i class="fas fa-check-double" style="color: #10b981;"></i> 全ての処理が完了しました (${totalElapsed}秒)`;
 
                 if (batchResults.length > 0) {
                     batchPdfActionArea.style.display = 'block';
