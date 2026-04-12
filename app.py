@@ -780,7 +780,7 @@ def csv_bookmarklets():
 @app.route('/csv_converter.html')
 def csv_converter():
     """CSV変換ツールのページ"""
-    return send_file('csv_converter.html')
+    return render_template('csv_converter.html')
 
 # ========================================================================
 # TEMP CLEAR ROUTE - 一時ファイルクリア
