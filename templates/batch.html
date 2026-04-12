@@ -134,15 +134,17 @@
                 </a>
             </div>
 
-            <h1>バッチモード (東証コード一括処理)</h1>
+            <h1>バッチモード (一括処理)</h1>
             <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 2rem;">
-                複数の東証コードを1行に1つずつ入力して「一括処理を開始」ボタンを押してください。順次データの取得・変換が行われます。<br>
-                ※東証コードは4桁で入力してください。4桁未満で入力した場合、最初にヒットした企業のみがダウンロードされます。
+                複数の東証コードまたはEDINETコードを1行に1つずつ入力して「一括処理を開始」ボタンを押してください。順次データの取得・変換が行われます。<br>
+                ※東証コードは4桁、EDINETコードは6桁で入力してください。<br>
+                　東証コードが4桁未満の場合は最初にヒットした企業のみ処理します。
             </p>
 
             <div id="batchModeSection"
                 style="background: var(--drop-bg); border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; border: 1px solid var(--border-color); border-left: 4px solid var(--primary-color);">
-                <textarea id="batchCodesInput" placeholder="例:&#10;7203&#10;6758&#10;9984" autofocus></textarea>
+                <textarea id="batchCodesInput" placeholder="例:&#10;7203 (東証コード)&#10;E02144 (EDINETコード)&#10;9984"
+                    autofocus></textarea>
 
                 <button id="startBatchBtn" class="btn"
                     style="background: linear-gradient(135deg, var(--primary-color), #8b5cf6);">
@@ -388,7 +390,7 @@
                 const rawText = batchCodesInput.value.trim();
                 const codes = rawText.split(/\n/).map(c => c.trim()).filter(c => c);
                 if (codes.length === 0) {
-                    alert('東証コードを入力してください');
+                    alert('東証コードまたはEDINETコードを入力してください');
                     return;
                 }
 
