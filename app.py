@@ -759,6 +759,11 @@ def download_excel():
 # ========================================================================
 # 【将来の分割先】web/routes/bookmarklets.py
 
+@app.route('/batch')
+def batch_mode():
+    """バッチモード (東証コード一括処理) のページ"""
+    return render_template('batch.html')
+
 @app.route('/bookmarklets')
 def bookmarklets():
     return render_template('bookmarklets.html')
