@@ -167,6 +167,11 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- 企業別進捗リスト -->
+                <div id="batchCompanyList" style="display: none; margin-top: 1rem; max-height: 400px; overflow-y: auto; padding-right: 5px;">
+                    <!-- ここに動的に企業リストが追加されます -->
+                </div>
             </div>
 
             <!-- 互換性のための非表示要素（既存のJSがこれらを参照するため） -->
@@ -282,43 +287,134 @@
             const batchProgressCount = document.getElementById('batchProgressCount');
             const batchCurrentAction = document.getElementById('batchCurrentAction');
             const batchProgressBarFill = document.getElementById('batchProgressBarFill');
+            const batchCompanyList = document.getElementById('batchCompanyList');
+
+            function updateCompanyStatus(idx, status, icon = null, color = null) {
+                const statusDiv = document.getElementById(`company-status-${idx}`);
+                if (!statusDiv) return;
+                
+                let content = '';
+                if (icon) content += `<i class="fas ${icon}" ${color ? `style="color: ${color}"` : ''}></i> `;
+                content += status;
+                statusDiv.innerHTML = content;
+
+                if (color) {
+                    statusDiv.style.color = color;
+                } else if (status.includes('待機中')) {
+                    statusDiv.style.color = 'var(--text-muted)';
+                } else if (status.includes('処理中') || status.includes('検索中')) {
+                    statusDiv.style.color = 'var(--primary-color)';
+                }
+            }
+
+            function updateCompanyName(idx, name) {
+                const nameSpan = document.getElementById(`company-name-${idx}`);
+                if (nameSpan) nameSpan.textContent = name;
+            }
 
             async function runBatch() {
                 const rawText = batchCodesInput.value.trim();
                 const codes = rawText.split(/\n/).map(c => c.trim()).filter(c => c);
-                if (codes.length === 0) return;
+                if (codes.length === 0) {
+                    alert('東証コードを入力してください');
+                    return;
+                }
+
+                if (!confirm(`${codes.length}件の処理を開始しますか？`)) {
+                    return;
+                }
 
                 startBatchBtn.disabled = true;
+                startBatchBtnText.textContent = '初期化中...';
                 batchLoader.style.display = 'block';
                 batchStatusArea.style.display = 'block';
+                batchCompanyList.style.display = 'block';
+                batchProgressBarFill.style.width = '0%';
+                batchCurrentAction.innerHTML = '<i class="fas fa-search"></i> 企業名を確認しています...';
 
-                for (let i = 0; i < codes.length; i++) {
-                    const code = codes[i];
-                    batchProgressCount.textContent = `${i + 1} / ${codes.length}`;
-                    batchCurrentAction.innerHTML = `<strong>${code}</strong> を検索中...`;
-                    batchProgressBarFill.style.width = `${((i) / codes.length) * 100}%`;
+                // 1. 初期リスト表示
+                batchCompanyList.innerHTML = codes.map((code, idx) => `
+                    <div id="company-row-${idx}" style="padding: 0.75rem; margin-bottom: 0.5rem; background: var(--container-bg); border-radius: 8px; border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; transition: all 0.3s ease;">
+                        <div style="display: flex; align-items: center; gap: 12px; overflow: hidden; flex: 1;">
+                            <div style="font-weight: 600; color: var(--primary-color); min-width: 50px;">${code}</div>
+                            <div id="company-name-${idx}" style="font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-main);">企業名を取得中...</div>
+                        </div>
+                        <div id="company-status-${idx}" style="font-size: 0.8rem; color: var(--text-muted); margin-left: 10px; white-space: nowrap;">
+                            <i class="fas fa-clock"></i> 待機中
+                        </div>
+                    </div>
+                `).join('');
 
+                const results = []; // {code, name, found, data}
+
+                // 2. プレフェーズ：企業名の並列解決
+                const nameResolutionPromises = codes.map(async (code, idx) => {
                     try {
-                        const found = await searchCompany(code);
-                        if (found) {
-                            const companyName = companiesData[0].filerName;
-                            batchCurrentAction.innerHTML = `<strong>${code} ${companyName}</strong> を処理中...`;
-                            await selectCompany(0);
+                        const success = await searchCompany(code);
+                        if (success && companiesData && companiesData.length > 0) {
+                            const company = companiesData[0];
+                            const name = company.filerName;
+                            updateCompanyName(idx, name);
+                            updateCompanyStatus(idx, '準備完了', 'fa-check');
+                            return { code, name, found: true, companyData: [company] };
                         } else {
-                            batchCurrentAction.innerHTML = `<strong>${code}</strong>: 企業が見つかりませんでした`;
+                            updateCompanyName(idx, '(見つかりませんでした)');
+                            updateCompanyStatus(idx, '対象外', 'fa-times-circle', '#ef4444');
+                            return { code, name: null, found: false };
                         }
                     } catch (e) {
-                        console.error(e);
-                        batchCurrentAction.innerHTML = `<strong>${code}</strong>: エラーが発生しました`;
+                        updateCompanyName(idx, '(検索エラー)');
+                        updateCompanyStatus(idx, 'エラー', 'fa-exclamation-triangle', '#ef4444');
+                        return { code, name: null, found: false };
                     }
+                });
+
+                const allResults = await Promise.all(nameResolutionPromises);
+                const validCompanies = allResults.filter(r => r.found);
+                
+                batchCurrentAction.innerHTML = `<i class="fas fa-play"></i> ${validCompanies.length}件の取得を開始します`;
+                startBatchBtnText.textContent = '一括処理中...';
+
+                // 3. 本処理ループ
+                for (let i = 0; i < allResults.length; i++) {
+                    const res = allResults[i];
+                    batchProgressCount.textContent = `${i + 1} / ${codes.length}`;
+                    batchProgressBarFill.style.width = `${(i / codes.length) * 100}%`;
+
+                    if (!res.found) {
+                        continue; // 見つからなかった企業はスキップ
+                    }
+
+                    const startTime = Date.now();
+                    const row = document.getElementById(`company-row-${i}`);
+                    if (row) row.style.borderColor = 'var(--primary-color)';
+                    
+                    batchCurrentAction.innerHTML = `<strong>${res.code} ${res.name}</strong> を処理中...`;
+                    updateCompanyStatus(i, '処理中...', 'fa-sync fa-spin');
+
+                    try {
+                        // グローバルの companiesData をセット（selectCompanyが参照するため）
+                        companiesData = res.companyData; 
+                        await selectCompany(0);
+                        
+                        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                        updateCompanyStatus(i, `完了 (${elapsed}秒)`, 'fa-check-circle', '#10b981');
+                    } catch (e) {
+                        console.error(e);
+                        updateCompanyStatus(i, '処理エラー', 'fa-exclamation-triangle', '#ef4444');
+                    }
+
+                    if (row) row.style.borderColor = 'var(--border-color)';
                     batchProgressBarFill.style.width = `${((i + 1) / codes.length) * 100}%`;
-                    // サーバーへの連続負荷を避けるため少し待機
+                    
+                    // 連続負荷軽減
                     await new Promise(r => setTimeout(r, 1000));
                 }
 
-                batchCurrentAction.innerHTML = "全ての処理が完了しました。";
-                alert("一括処理が完了しました。ダウンロードが開始されない場合は、ポップアップブロックが解除されているか確認してください。");
+                batchCurrentAction.innerHTML = `<i class="fas fa-check-double" style="color: #10b981;"></i> 全ての処理が完了しました`;
+                alert("一括処理が完了しました。");
                 startBatchBtn.disabled = false;
+                startBatchBtnText.textContent = '一括処理を開始';
                 batchLoader.style.display = 'none';
             }
 

@@ -144,7 +144,7 @@ XBRL to Excel Converter - Main UI Template
             transition: all 0.3s ease;
             position: relative;
             cursor: pointer;
-            margin-bottom: 1.5rem;
+            margin-bottom: 0.5rem;
         }
 
         .upload-area:hover,
@@ -220,7 +220,7 @@ XBRL to Excel Converter - Main UI Template
         .file-list {
             text-align: left;
             margin-top: 1rem;
-            margin-bottom: 1.5rem;
+            margin-bottom: 0.5rem;
             font-size: 0.9rem;
             color: var(--primary-color);
             max-height: 250px;
@@ -483,11 +483,6 @@ XBRL to Excel Converter - Main UI Template
                     <div class="loader" id="convertLoader" style="display: none;"></div>
                 </button>
             </div>
-
-            <div style="text-align: center; margin: 1.5rem 0; color: var(--text-muted); font-size: 0.9rem;">
-                ━━━ または ━━━
-            </div>
-
             {% with messages = get_flashed_messages() %}
             {% if messages %}
             {% for message in messages %}
@@ -497,7 +492,7 @@ XBRL to Excel Converter - Main UI Template
             {% endwith %}
 
             <div
-                style="background: var(--drop-bg); border-radius: 12px; padding: 0.75rem; border: 1px solid var(--border-color);">
+                style="background: var(--drop-bg); border-radius: 12px; padding: 0.75rem; margin-bottom: 1rem; border: 1px solid var(--border-color);">
                 <h2 style="font-size: 1.1rem; margin-bottom: 0.5rem; color: var(--primary-color);">
                     <i class="fas fa-upload" style="margin-right: 8px;"></i>方法2: ZIPファイルをアップロード
                 </h2>
@@ -550,17 +545,6 @@ XBRL to Excel Converter - Main UI Template
             </div>
 
             <!-- ==================================================================
-                 CLEAR FORM - サーバーファイルクリア
-                 【将来の分割先】templates/components/admin_actions.html
-                 ================================================================== -->
-            <form action="{{ url_for('clear_temp') }}" method="POST" id="clearForm"
-                onsubmit="return confirm('サーバー上の一次ファイルをすべて削除しますか？');">
-                <button type="submit" class="btn btn-secondary">
-                    <i class="fas fa-trash-alt" style="margin-right: 8px;"></i>サーバー上のファイルをクリア
-                </button>
-            </form>
-
-            <!-- ==================================================================
                  METHOD 3 - バッチモード (東証コード一括処理)
                  ================================================================== -->
             <div style="margin-top: 1.5rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
@@ -570,7 +554,8 @@ XBRL to Excel Converter - Main UI Template
                 <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
                     複数の東証コードをリスト入力して、連続的にデータを取得・変換します。
                 </p>
-                <a href="{{ url_for('batch_mode') }}" class="btn btn-secondary" style="text-decoration: none; display: flex; align-items: center; justify-content: center; border-color: var(--primary-color); color: var(--primary-color);">
+                <a href="{{ url_for('batch_mode') }}" class="btn btn-secondary"
+                    style="width: 100%; box-sizing: border-box; text-decoration: none; border-color: var(--primary-color); color: var(--primary-color);">
                     <i class="fas fa-external-link-alt" style="margin-right: 8px;"></i>バッチモード入力画面へ
                 </a>
             </div>
