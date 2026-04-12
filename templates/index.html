@@ -318,21 +318,6 @@ XBRL to Excel Converter - Main UI Template
     <div class="page-wrapper">
         <div class="container">
             <!-- ==================================================================
-                 NAVIGATION - ブックマークレット・ツールリンク
-                 【将来の分割先】templates/components/navbar.html
-                 ================================================================== -->
-            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 1.5rem;">
-                <a href="./bookmarklets"
-                    style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
-                    <i class="fas fa-bookmark" style="margin-right: 8px;"></i>ブックマークレット・VBAマクロ
-                </a>
-                <a href="./csv_converter.html"
-                    style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
-                    <i class="fas fa-exchange-alt" style="margin-right: 8px;"></i>CSV変換ツールへ
-                </a>
-            </div>
-
-            <!-- ==================================================================
                  MAIN FORM - ファイルアップロード UI
                  【将来の分割先】templates/converter/upload_form.html
                  ================================================================== -->
@@ -557,6 +542,21 @@ XBRL to Excel Converter - Main UI Template
                 <a href="{{ url_for('batch_mode') }}" class="btn btn-secondary"
                     style="width: 100%; box-sizing: border-box; text-decoration: none; border-color: var(--primary-color); color: var(--primary-color);">
                     <i class="fas fa-external-link-alt" style="margin-right: 8px;"></i>バッチモード入力画面へ
+                </a>
+            </div>
+
+            <!-- ==================================================================
+                 NAVIGATION - ブックマークレット・ツールリンク
+                 【将来の分割先】templates/components/navbar.html
+                 ================================================================== -->
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 1.5rem; margin-bottom: 1.5rem;">
+                <a href="./bookmarklets"
+                    style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
+                    <i class="fas fa-bookmark" style="margin-right: 8px;"></i>ブックマークレット・VBAマクロ
+                </a>
+                <a href="./csv_converter.html"
+                    style="color: var(--primary-color); text-decoration: none; border: 1px solid var(--primary-color); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; display: flex; align-items: center; transition: all 0.2s;">
+                    <i class="fas fa-exchange-alt" style="margin-right: 8px;"></i>CSV変換ツールへ
                 </a>
             </div>
 
