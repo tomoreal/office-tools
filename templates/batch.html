@@ -154,7 +154,8 @@
                     style="display: none; margin-top: 1.5rem; padding: 1rem; background: rgba(59, 130, 246, 0.05); border-radius: 8px; border: 1px solid rgba(59, 130, 246, 0.2);">
                     <div
                         style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                        <span id="batchProgressLabel" style="font-size: 0.9rem; font-weight: 500;">一括処理の進捗</span>
+                        <span id="batchProgressLabel"
+                            style="font-size: 0.9rem; font-weight: 500;">一括処理の進捗(20～30秒/社かかります)</span>
                         <span id="batchProgressCount" style="font-size: 0.85rem; color: var(--primary-color);">0 /
                             0</span>
                     </div>
@@ -169,8 +170,43 @@
                 </div>
 
                 <!-- 企業別進捗リスト -->
-                <div id="batchCompanyList" style="display: none; margin-top: 1rem; max-height: 400px; overflow-y: auto; padding-right: 5px;">
+                <div id="batchCompanyList"
+                    style="display: none; margin-top: 1rem; max-height: 400px; overflow-y: auto; padding-right: 5px;">
                     <!-- ここに動的に企業リストが追加されます -->
+                </div>
+
+                <!-- PDF一括ダウンロード -->
+                <div id="batchPdfActionArea"
+                    style="display: none; margin-top: 1.5rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                        一括処理が完了した企業のPDF（オリジナル）をまとめてダウンロードできます。
+                    </p>
+                    <button id="batchPdfDownloadBtn" class="btn" style="background: #ef4444;">
+                        <i class="fas fa-file-pdf" style="margin-right: 8px;"></i>
+                        <span id="batchPdfDownloadBtnText">変換済み企業のPDFを一括ダウンロード</span>
+                        <div class="loader" id="batchPdfLoader" style="display: none;"></div>
+                    </button>
+
+                    <div id="batchPdfStatusArea"
+                        style="display: none; margin-top: 1rem; padding: 1rem; background: rgba(239, 68, 68, 0.05); border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.2);">
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <span style="font-size: 0.9rem; font-weight: 500;">PDF整理・取得の進捗</span>
+                            <span id="batchPdfProgressCount" style="font-size: 0.85rem; color: #ef4444;">0 / 0</span>
+                        </div>
+                        <div id="batchPdfCurrentAction"
+                            style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;">待機中...</div>
+                        <div
+                            style="width: 100%; height: 6px; background: var(--border-color); border-radius: 3px; overflow: hidden;">
+                            <div id="batchPdfProgressBarFill"
+                                style="height: 100%; width: 0%; background: #ef4444; transition: width 0.3s ease;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="batchPdfCountInfo"
+                        style="font-size: 0.75rem; color: var(--text-muted); text-align: center; margin-top: 0.5rem;">
+                    </div>
                 </div>
             </div>
 
@@ -214,6 +250,7 @@
         var isProcessing = false;
         var companiesData = [];
         var reportsData = [];
+        var batchResults = []; // 成功した企業の情報を保持 { sessionId, docIds, companyName, reportsInfo }
 
         // 検索API
         async function searchCompany(name) {
@@ -234,47 +271,55 @@
         async function selectCompany(index) {
             isProcessing = true;
             const company = companiesData[index];
-            const resp = await fetch('/api/edinet/reports', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ edinet_code: company.edinetCode })
-            });
-            const data = await resp.json();
-            if (data.results && data.results.length > 0) {
-                const docIds = data.results.map(r => r.docID);
-                // 10年分自動取得ロジック（実際には app.py 側で処理されるか、preloadが走る）
-                // 簡略化して preload api を叩く
-                isDownloading = true;
-                const preloadResp = await fetch('/api/edinet/preload', {
+            try {
+                const resp = await fetch('/api/edinet/reports', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        edinet_code: company.edinetCode,
-                        doc_ids: docIds
-                    })
+                    body: JSON.stringify({ edinet_code: company.edinetCode })
                 });
-                const preloadData = await preloadResp.json();
+                const data = await resp.json();
+                if (data.results && data.results.length > 0) {
+                    const docIds = data.results.map(r => r.docID);
+                    isDownloading = true;
+                    const preloadResp = await fetch('/api/edinet/preload', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            edinet_code: company.edinetCode,
+                            doc_ids: docIds
+                        })
+                    });
+                    const preloadData = await preloadResp.json();
+                    isDownloading = false;
 
-                // ダウンロード完了待機（本来はポーリングが必要だが、APIが即時返る場合はここでフラグを操作）
-                // index.html の挙動に合わせる場合は preloadAPI が完了を待つか別途通知が必要
-                isDownloading = false;
-
-                // 変換開始
-                const convertResp = await fetch('/api/edinet/convert', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        session_id: preloadData.session_id,
-                        doc_ids: docIds
-                    })
-                });
-                const convertData = await convertResp.json();
-                if (convertData.success) {
-                    // ダウンロードをトリガー
-                    window.location.href = `/api/edinet/download?file=${encodeURIComponent(convertData.file)}`;
+                    const convertResp = await fetch('/api/edinet/convert', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            session_id: preloadData.session_id,
+                            doc_ids: docIds
+                        })
+                    });
+                    const convertData = await convertResp.json();
+                    if (convertData.success) {
+                        // ダウンロードをトリガー
+                        window.location.href = `/api/edinet/download?file=${encodeURIComponent(convertData.file)}`;
+                        return {
+                            success: true,
+                            sessionId: preloadData.session_id,
+                            docIds: docIds,
+                            companyName: company.filerName,
+                            reportsInfo: data.results,
+                            index: index // オリジナルのインデックスを保持
+                        };
+                    }
                 }
+            } catch (e) {
+                console.error('selectCompany error:', e);
+            } finally {
+                isProcessing = false;
             }
-            isProcessing = false;
+            return { success: false };
         }
 
         // バッチ処理メイン
@@ -288,11 +333,20 @@
             const batchCurrentAction = document.getElementById('batchCurrentAction');
             const batchProgressBarFill = document.getElementById('batchProgressBarFill');
             const batchCompanyList = document.getElementById('batchCompanyList');
+            const batchPdfActionArea = document.getElementById('batchPdfActionArea');
+            const batchPdfDownloadBtn = document.getElementById('batchPdfDownloadBtn');
+            const batchPdfDownloadBtnText = document.getElementById('batchPdfDownloadBtnText');
+            const batchPdfLoader = document.getElementById('batchPdfLoader');
+            const batchPdfCountInfo = document.getElementById('batchPdfCountInfo');
+            const batchPdfStatusArea = document.getElementById('batchPdfStatusArea');
+            const batchPdfProgressCount = document.getElementById('batchPdfProgressCount');
+            const batchPdfCurrentAction = document.getElementById('batchPdfCurrentAction');
+            const batchPdfProgressBarFill = document.getElementById('batchPdfProgressBarFill');
 
             function updateCompanyStatus(idx, status, icon = null, color = null) {
                 const statusDiv = document.getElementById(`company-status-${idx}`);
                 if (!statusDiv) return;
-                
+
                 let content = '';
                 if (icon) content += `<i class="fas ${icon}" ${color ? `style="color: ${color}"` : ''}></i> `;
                 content += status;
@@ -312,6 +366,23 @@
                 if (nameSpan) nameSpan.textContent = name;
             }
 
+            function updateCompanyPdfStatus(idx, status, icon = null, color = null) {
+                const statusDiv = document.getElementById(`company-pdf-status-${idx}`);
+                if (!statusDiv) return;
+
+                statusDiv.style.display = 'block'; // PDFフェーズ開始時に表示
+                let content = '<span style="color: var(--text-muted); margin: 0 5px;">|</span> PDF: ';
+                if (icon) content += `<i class="fas ${icon}" ${color ? `style="color: ${color}"` : ''}></i> `;
+                content += status;
+                statusDiv.innerHTML = content;
+
+                if (color) {
+                    statusDiv.style.color = color;
+                } else if (status.includes('取得中')) {
+                    statusDiv.style.color = '#ef4444';
+                }
+            }
+
             async function runBatch() {
                 const rawText = batchCodesInput.value.trim();
                 const codes = rawText.split(/\n/).map(c => c.trim()).filter(c => c);
@@ -320,17 +391,16 @@
                     return;
                 }
 
-                if (!confirm(`${codes.length}件の処理を開始しますか？`)) {
-                    return;
-                }
-
                 startBatchBtn.disabled = true;
                 startBatchBtnText.textContent = '初期化中...';
                 batchLoader.style.display = 'block';
                 batchStatusArea.style.display = 'block';
                 batchCompanyList.style.display = 'block';
+                batchPdfActionArea.style.display = 'none'; // 新規開始時は非表示
                 batchProgressBarFill.style.width = '0%';
                 batchCurrentAction.innerHTML = '<i class="fas fa-search"></i> 企業名を確認しています...';
+
+                batchResults = []; // リセット
 
                 // 1. 初期リスト表示
                 batchCompanyList.innerHTML = codes.map((code, idx) => `
@@ -339,8 +409,12 @@
                             <div style="font-weight: 600; color: var(--primary-color); min-width: 50px;">${code}</div>
                             <div id="company-name-${idx}" style="font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-main);">企業名を取得中...</div>
                         </div>
-                        <div id="company-status-${idx}" style="font-size: 0.8rem; color: var(--text-muted); margin-left: 10px; white-space: nowrap;">
-                            <i class="fas fa-clock"></i> 待機中
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div id="company-status-${idx}" style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap;">
+                                <i class="fas fa-clock"></i> 待機中
+                            </div>
+                            <div id="company-pdf-status-${idx}" style="font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; display: none;">
+                            </div>
                         </div>
                     </div>
                 `).join('');
@@ -371,7 +445,7 @@
 
                 const allResults = await Promise.all(nameResolutionPromises);
                 const validCompanies = allResults.filter(r => r.found);
-                
+
                 batchCurrentAction.innerHTML = `<i class="fas fa-play"></i> ${validCompanies.length}件の取得を開始します`;
                 startBatchBtnText.textContent = '一括処理中...';
 
@@ -388,15 +462,20 @@
                     const startTime = Date.now();
                     const row = document.getElementById(`company-row-${i}`);
                     if (row) row.style.borderColor = 'var(--primary-color)';
-                    
+
                     batchCurrentAction.innerHTML = `<strong>${res.code} ${res.name}</strong> を処理中...`;
                     updateCompanyStatus(i, '処理中...', 'fa-sync fa-spin');
 
                     try {
                         // グローバルの companiesData をセット（selectCompanyが参照するため）
-                        companiesData = res.companyData; 
-                        await selectCompany(0);
-                        
+                        companiesData = res.companyData;
+                        const processResult = await selectCompany(0);
+
+                        if (processResult && processResult.success) {
+                            processResult.index = i; // 正しいインデックス（ループ変数i）で上書き
+                            batchResults.push(processResult);
+                        }
+
                         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                         updateCompanyStatus(i, `完了 (${elapsed}秒)`, 'fa-check-circle', '#10b981');
                     } catch (e) {
@@ -406,12 +485,18 @@
 
                     if (row) row.style.borderColor = 'var(--border-color)';
                     batchProgressBarFill.style.width = `${((i + 1) / codes.length) * 100}%`;
-                    
+
                     // 連続負荷軽減
                     await new Promise(r => setTimeout(r, 1000));
                 }
 
                 batchCurrentAction.innerHTML = `<i class="fas fa-check-double" style="color: #10b981;"></i> 全ての処理が完了しました`;
+
+                if (batchResults.length > 0) {
+                    batchPdfActionArea.style.display = 'block';
+                    batchPdfCountInfo.textContent = `成功: ${batchResults.length}社 / 全体: ${codes.length}社`;
+                }
+
                 alert("一括処理が完了しました。");
                 startBatchBtn.disabled = false;
                 startBatchBtnText.textContent = '一括処理を開始';
@@ -419,6 +504,78 @@
             }
 
             startBatchBtn.addEventListener('click', runBatch);
+
+            // PDF一括ダウンロード処理
+            batchPdfDownloadBtn.addEventListener('click', async () => {
+                if (batchResults.length === 0) return;
+
+                batchPdfDownloadBtn.disabled = true;
+                batchPdfDownloadBtnText.style.display = 'none';
+                batchPdfLoader.style.display = 'block';
+                batchPdfStatusArea.style.display = 'block';
+                batchPdfProgressBarFill.style.width = '0%';
+                batchPdfCurrentAction.textContent = '準備中...';
+
+                try {
+                    for (let i = 0; i < batchResults.length; i++) {
+                        const result = batchResults[i];
+                        const pdfStartTime = Date.now();
+
+                        // プログレス更新
+                        batchPdfProgressCount.textContent = `${i + 1} / ${batchResults.length}`;
+                        batchPdfProgressBarFill.style.width = `${(i / batchResults.length) * 100}%`;
+                        batchPdfCurrentAction.textContent = `${result.companyName} のPDFを整理中...`;
+
+                        // リストのステータス更新
+                        updateCompanyPdfStatus(result.index, '取得中...', 'fa-sync fa-spin');
+
+                        const response = await fetch('/api/edinet/download-pdfs', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                session_id: result.sessionId,
+                                doc_ids: result.docIds,
+                                company_name: result.companyName,
+                                reports_info: result.reportsInfo
+                            })
+                        });
+
+                        if (response.ok) {
+                            const data = await response.json();
+                            if (data.success) {
+                                // 順番にダウンロードをキック（aタグ生成方式で連続実行）
+                                const a = document.createElement('a');
+                                a.href = `/api/edinet/download?file=${encodeURIComponent(data.file)}`;
+                                a.download = '';
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+
+                                const elapsed = ((Date.now() - pdfStartTime) / 1000).toFixed(1);
+                                updateCompanyPdfStatus(result.index, `完了 (${elapsed}秒)`, 'fa-check-circle', '#ef4444');
+
+                                // ブラウザの同時ダウンロード制限や負荷を考慮し、わずかに待機
+                                await new Promise(r => setTimeout(r, 800));
+                            } else {
+                                updateCompanyPdfStatus(result.index, 'エラー', 'fa-times-circle', '#ef4444');
+                            }
+                        } else {
+                            updateCompanyPdfStatus(result.index, '通信エラー', 'fa-exclamation-triangle', '#ef4444');
+                        }
+                        batchPdfProgressBarFill.style.width = `${((i + 1) / batchResults.length) * 100}%`;
+                    }
+                    batchPdfCurrentAction.innerHTML = '<i class="fas fa-check-circle" style="color: #ef4444;"></i> すべてのPDFダウンロード要求が完了しました';
+                    alert('PDFのダウンロードリクエストが完了しました。');
+                } catch (e) {
+                    console.error('Batch PDF error:', e);
+                    alert('PDFダウンロード中にエラーが発生しました。');
+                    batchPdfStatusArea.style.display = 'none';
+                } finally {
+                    batchPdfDownloadBtn.disabled = false;
+                    batchPdfDownloadBtnText.style.display = 'inline';
+                    batchPdfLoader.style.display = 'none';
+                }
+            });
         })();
     </script>
     <!-- XREA Ad Alignment Enforcement -->
