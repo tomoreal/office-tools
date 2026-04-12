@@ -490,11 +490,6 @@ XBRL to Excel Converter - Main UI Template
                 </p>
 
                 <form method="POST" enctype="multipart/form-data" id="uploadForm">
-                    <button type="submit" class="btn" id="submitBtn" style="margin-bottom: 0.5rem;">
-                        <span id="btnText">Excelに変換してダウンロード</span>
-                        <div class="loader" id="loader"></div>
-                    </button>
-
                     <div class="upload-area" id="dropZone">
                         <i class="fas fa-file-archive upload-icon"></i>
                         <div style="margin-bottom: 0.5rem;">ZIPファイルをドラッグ＆ドロップ</div>
@@ -504,6 +499,11 @@ XBRL to Excel Converter - Main UI Template
                     </div>
 
                     <div class="file-list" id="fileList"></div>
+
+                    <button type="submit" class="btn" id="submitBtn" style="margin-top: 0.5rem;">
+                        <span id="btnText">Excelに変換してダウンロード</span>
+                        <div class="loader" id="loader"></div>
+                    </button>
                 </form>
 
                 <div id="uploadConversionProgress"
