@@ -7,6 +7,7 @@ Diversity Analysis Module for XBRL to Excel Conversion
 
 import re
 import unicodedata
+import html
 from openpyxl.styles import Font, PatternFill, Alignment
 
 
@@ -42,19 +43,35 @@ def _extract_subsidiary_names_from_ixbrl(ixbrl_files):
             if row_num in row_names:
                 continue
             pos = m.start()
-            # Look back up to 4000 chars for the enclosing <tr>
-            chunk = content[max(0, pos - 4000):pos]
-            tr_pos = chunk.rfind('<tr ')
-            if tr_pos == -1:
-                tr_pos = 0
-            row_chunk = chunk[tr_pos:]
-            # Find first <td> whose text is a company-like name (not pure numbers/symbols)
-            tds = re.findall(r'<td[^>]*>(.*?)</td>', row_chunk, re.DOTALL)
-            for td in tds:
-                text = re.sub('<[^>]+>', ' ', td)
-                text = re.sub(r'\s+', '', text).strip()
-                if text and not re.match(r'^[\d\.,\(\)\-\%]+$', text) and len(text) > 1:
-                    row_names[row_num] = text
+            # 直近N行の <tr> を、現在の行に近い順から検索する
+            # 非常に広範囲なテーブルレイアウトに対応するため、検索窓をさらに拡大 (30000)
+            chunk = content[max(0, pos - 30000):pos]
+            tr_matches = list(re.finditer(r'<tr[ >]', chunk))
+            
+            found_name = False
+            for i in range(1, min(len(tr_matches), 5) + 1):
+                start_tr = tr_matches[-i].start()
+                # 次の <tr> があればそこまで、なければ chunk の終わりまで
+                end_tr = tr_matches[-i+1].start() if i > 1 else len(chunk)
+                row_slice = chunk[start_tr:end_tr]
+                
+                tds = re.findall(r'<td[^>]*>(.*?)</td>', row_slice, re.DOTALL)
+                for td in tds:
+                    # HTML実体参照（&#160;等）をデコードしてからタグを除去
+                    text = html.unescape(td)
+                    text = re.sub('<[^>]+>', ' ', text)
+                    text = re.sub(r'\s+', '', text).strip()
+                    # 社名の後ろに付いている注釈（※4等）を除去
+                    text = re.sub(r'[※\*＊].*$', '', text).strip()
+                    # 数字・記号・注釈マーカー・連番ラベルのみの文字列は社名として除外
+                    if (text and 
+                        not re.match(r'^[※\d\.,\(\)\-\%（）\*＊注]+$', text) and 
+                        not re.search(r'連番[：:]?\d+件目', text) and
+                        len(text) > 1):
+                        row_names[row_num] = text
+                        found_name = True
+                        break
+                if found_name:
                     break
 
     return row_names
@@ -322,8 +339,15 @@ def add_diversity_sheet(workbook, global_element_period_values, debug_log=None, 
                     break
             if not company_name:
                 # iXBRL HTMLから抽出した会社名でフォールバック
+                # 抽出された社名があればそれを優先。なければラベルを使用。
+                # ただし「連番：...」のようなラベルは社名として適切でないため除外。
                 row_num = _row_sort_key(dim_label)
-                company_name = ixbrl_row_names.get(row_num) or dim_label
+                company_name = ixbrl_row_names.get(row_num)
+                if not company_name or re.search(r'連番[：:]\d+件目', company_name):
+                    if dim_label and not re.search(r'連番[：:]\d+件目', dim_label):
+                        company_name = dim_label
+                    else:
+                        company_name = company_name or ""
 
             for period in sorted_periods:
                 write_row(company_name, label, _format_period(period), period_val[period],
