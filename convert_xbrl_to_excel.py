@@ -82,7 +82,7 @@ from segment_analysis import add_segment_analysis_sheets
 from ccc_analysis import add_ccc_analysis_sheets
 
 # Import diversity analysis module
-from diversity_analysis import add_diversity_sheet, add_human_capital_sheet
+from diversity_analysis import add_diversity_sheet, add_human_capital_sheet, add_officers_gender_ratio_sheet
 
 # Import share ownership analysis module
 from NumberOfShareholders import add_number_of_shareholders_sheet
@@ -4415,6 +4415,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
         merged_subsidiary_row_names.update(res.get('subsidiary_row_names', {}))
     add_diversity_sheet(wb, global_element_period_values, debug_log, subsidiary_row_names=merged_subsidiary_row_names)
     add_human_capital_sheet(wb, global_element_period_values, debug_log)
+    add_officers_gender_ratio_sheet(wb, global_element_period_values, debug_log)
 
     # ============================================================================
     # SHARE OWNERSHIP SHEET (株式の所有者別状況)

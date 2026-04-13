@@ -8,7 +8,7 @@ Diversity Analysis Module for XBRL to Excel Conversion
 import re
 import unicodedata
 import html
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 
 def _extract_subsidiary_names_from_ixbrl(ixbrl_files):
@@ -380,7 +380,12 @@ HC_UNIT_EL       = f'jpcrp_cor_MetricsUnitDescription{_HC_PREFIX}'
 HC_PERFORMANCE_EL = f'jpcrp_cor_PerformanceDescription{_HC_PREFIX}'
 
 
-def add_human_capital_sheet(workbook, global_element_period_values, debug_log=None, filer_name=None):
+def add_human_capital_sheet(
+    workbook, 
+    global_element_period_values, 
+    debug_log=None, 
+    filer_name=None
+):
     """
     人的資本シートを生成してワークブックに追加する。
 
@@ -583,3 +588,121 @@ def add_human_capital_sheet(workbook, global_element_period_values, debug_log=No
     ws.freeze_panes = 'A2'
 
     debug_log(f"[HumanCapital] シート '{sheet_name}' 作成完了")
+def add_officers_gender_ratio_sheet(workbook, global_element_period_values, debug_log=None):
+    """
+    「役員の男女比率」シートを生成して追加する。
+    """
+    if debug_log is None:
+        def debug_log(msg): pass
+
+    sheet_name = '役員の男女比率'
+    if sheet_name in workbook.sheetnames:
+        workbook.remove(workbook[sheet_name])
+    ws = workbook.create_sheet(title=sheet_name)
+
+    # --- 定義 ---
+    elements = [
+        ('役員のうち男性の人数', 'jpcrp_cor_NumberOfMaleDirectorsAndOtherOfficers', '#,##0'),
+        ('役員のうち女性の人数', 'jpcrp_cor_NumberOfFemaleDirectorsAndOtherOfficers', '#,##0'),
+        ('役員数合計', 'TOTAL', '#,##0'),
+        ('役員の女性比率', 'jpcrp_cor_RatioOfFemaleDirectorsAndOtherOfficers', '0.0%'),
+    ]
+
+    # --- スタイル ---
+    header_fill = PatternFill(fill_type='solid', fgColor='1F4E79')
+    header_font = Font(bold=True, color='FFFFFF', size=10)
+    normal_font = Font(size=10)
+    center_align = Alignment(horizontal='center', vertical='center')
+    right_align = Alignment(horizontal='right', vertical='center')
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+    # ヘッダー
+    ws.cell(row=1, column=1, value='区分').font = header_font
+    ws.cell(row=1, column=1).fill = header_fill
+    ws.cell(row=1, column=1).alignment = center_align
+    ws.cell(row=1, column=1).border = thin_border
+
+    for i, (label, _, _) in enumerate(elements, start=2):
+        cell = ws.cell(row=1, column=i, value=label)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = thin_border
+
+    # データ抽出
+    # data_store[period][element_name] = value
+    data_store = {}
+    periods_seen = set()
+
+    for label, el_name, fmt in elements:
+        if el_name == 'TOTAL': continue
+        vals = global_element_period_values.get(el_name, {})
+        if not vals:
+            continue
+            
+        period_value_map = {}
+        for (std, dim, period), raw_val in vals.items():
+            if not period:
+                continue
+            v = _parse_value(raw_val)
+            if v is None:
+                continue
+            
+            # 優先順位: 全体/単体 > その他
+            if period not in period_value_map:
+                period_value_map[period] = (v, dim)
+            else:
+                _, existing_dim = period_value_map[period]
+                if dim in ('全体', '単体') and existing_dim not in ('全体', '単体'):
+                    period_value_map[period] = (v, dim)
+
+        for p, v_data in period_value_map.items():
+            if p not in data_store: data_store[p] = {}
+            data_store[p][el_name] = v_data[0]
+            periods_seen.add(p)
+        
+        if period_value_map:
+            debug_log(f"[Officers] {el_name} 抽出: {len(period_value_map)} 年度分")
+
+    # 年度軸の作成 (2015-2025)
+    years = range(2015, 2026)
+    current_row = 2
+    for y in years:
+        period_to_use = None
+        matches = [p for p in periods_seen if p.startswith(str(y))]
+        if matches:
+            # 提出日(FilingDate)や決算期末など複数の日付がある可能性があるが、最新のものを採用
+            period_to_use = sorted(matches)[-1]
+        
+        # 表示名 (YYYY/M/D形式)
+        # FilingDateInstantなどは決算期末(3/31)ではない場合が多いがそのまま表示
+        from NumberOfShareholders import _format_date # 既存のフォーマッタを再利用
+        display_date = _format_date(period_to_use) if period_to_use else f"{y}/3/31"
+        
+        cell = ws.cell(row=current_row, column=1, value=display_date)
+        cell.font = normal_font
+        cell.alignment = center_align
+        cell.border = thin_border
+
+        for i, (_, el_name, fmt) in enumerate(elements, start=2):
+            val = None
+            if el_name == 'TOTAL':
+                v_m = data_store.get(period_to_use, {}).get('jpcrp_cor_NumberOfMaleDirectorsAndOtherOfficers')
+                v_f = data_store.get(period_to_use, {}).get('jpcrp_cor_NumberOfFemaleDirectorsAndOtherOfficers')
+                if v_m is not None or v_f is not None:
+                    val = (v_m or 0) + (v_f or 0)
+            else:
+                val = data_store.get(period_to_use, {}).get(el_name)
+
+            cell = ws.cell(row=current_row, column=i, value=val)
+            cell.font = normal_font
+            cell.alignment = right_align
+            cell.number_format = fmt
+            cell.border = thin_border
+        current_row += 1
+
+    ws.column_dimensions['A'].width = 15
+    for i in range(2, 6):
+        ws.column_dimensions[chr(64 + i)].width = 25
+    ws.freeze_panes = 'B2'
+    debug_log(f"[Officers] '{sheet_name}' 出力完了")
