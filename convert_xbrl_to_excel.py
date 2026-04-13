@@ -87,6 +87,9 @@ from diversity_analysis import add_diversity_sheet, add_human_capital_sheet, add
 # Import share ownership analysis module
 from NumberOfShareholders import add_number_of_shareholders_sheet
 
+# Import remuneration analysis module
+from remuneration import add_remuneration_sheet
+
 # Import EDINET Taxonomy Dictionary
 from edinet_taxonomy_dict import common_dict as EDINET_COMMON_DICT
 
@@ -4416,6 +4419,7 @@ def process_xbrl_zips(zip_paths, output_dir=None):
     add_diversity_sheet(wb, global_element_period_values, debug_log, subsidiary_row_names=merged_subsidiary_row_names)
     add_human_capital_sheet(wb, global_element_period_values, debug_log)
     add_officers_gender_ratio_sheet(wb, global_element_period_values, debug_log)
+    add_remuneration_sheet(wb, global_element_period_values, debug_log)
 
     # ============================================================================
     # SHARE OWNERSHIP SHEET (株式の所有者別状況)
